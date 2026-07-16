@@ -116,7 +116,7 @@ DotAi updates configuration conservatively:
 - Skill health is agent-scoped. A skill found only in a Codex plugin cache is reported as `INACTIVE` until installed for Pi/OMP.
 - Dry runs do not modify files or machine state.
 
-Credentials and machine-specific MCP headers belong in the user configuration, not in `stack.json` or version control.
+Credentials belong in environment variables or a secret manager, not in `stack.json` or version control. The manifest may safely store the name of an environment variable for OMP to resolve at runtime.
 
 ## Extending the stack
 
@@ -144,14 +144,40 @@ SSE transport is also supported:
 ./dotai add mcp example --url https://example.com/sse --transport sse
 ```
 
+Add repeatable HTTP headers with `--header NAME=VALUE`. For secrets, use the environment-variable name as the value:
+
+```sh
+./dotai add mcp context7 \
+  --url https://mcp.context7.com/mcp \
+  --header CONTEXT7_API_KEY=CONTEXT7_API_KEY
+
+export CONTEXT7_API_KEY="your-key"
+./dotai sync
+```
+
+PowerShell uses the same environment-variable reference:
+
+```powershell
+$env:CONTEXT7_API_KEY = "your-key"
+.\dotai.ps1 sync
+```
+
+OMP resolves a header value as an environment-variable name first and uses a literal value only when that variable is absent. Do not expand the secret in the command or pass the key itself: that would write the credential into `stack.json`. Ensure referenced variables are defined before starting OMP.
+
 ### Add a local stdio MCP server
 
 ```sh
 ./dotai add mcp local-tools \
   --command npx \
   --arg=-y \
-  --arg=@scope/server
+  --arg=@scope/server \
+  --env API_TOKEN=LOCAL_API_TOKEN \
+  --env LOG_LEVEL=warning
 ```
+
+Use repeatable `--env NAME=VALUE` options to define the environment passed to the stdio server. Values may be environment-variable references, secret commands supported by OMP, or non-sensitive literals.
+
+`--header` is valid only with `--url`; `--env` is valid only with `--command`. Both options are repeatable, reject duplicate names, and preserve values containing additional `=` characters.
 
 ### Add an OMP marketplace and plugin
 

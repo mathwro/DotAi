@@ -28,6 +28,8 @@ Supported platforms:
 - Keep `stack.schema.json`, manifest validation, CLI mutation commands, and `stack.json` aligned when changing the manifest format.
 - Preserve unmanaged user configuration. MCP reconciliation must retain unrelated servers and top-level values, create a timestamped backup before changing an existing file, and be idempotent.
 - MCP status must use semantic endpoint/configuration matching across OMP-discovered provider files. Do not require an exact server alias, and allow provider-specific fields such as authentication headers.
+- `dotai add mcp` supports repeatable `--header NAME=VALUE` options for HTTP/SSE servers and repeatable `--env NAME=VALUE` options for stdio servers. Keep these transport-specific, reject duplicate or invalid names, and preserve values after the first `=`.
+- Secret-bearing header and environment values must be references to environment variables or secret commands supported by OMP, never literal credentials committed to the manifest. Tests and examples must use placeholders only.
 - Skill status is agent-scoped. A skill found only in another agent's plugin cache is not active for OMP and must be reported as `INACTIVE`, not `OK`.
 - Keep status labels consistent: `OK` is green, `RUN` is cyan, `INACTIVE` and `DRIFT` are yellow, and `MISSING` and `FAIL` are red. Respect `--color auto|always|never`, `NO_COLOR`, and `FORCE_COLOR`.
 - Windows package operations must use Scoop. Do not introduce Winget commands.

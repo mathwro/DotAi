@@ -18,6 +18,8 @@ from typing import Any
 ROOT = Path(__file__).resolve().parent
 DEFAULT_MANIFEST = ROOT / "stack.json"
 SERVER_NAME = re.compile(r"^[a-zA-Z0-9_.-]{1,100}$")
+HEADER_NAME = re.compile(r"^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$")
+ENV_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 _COLOR_ENABLED = False
 _ANSI = {
@@ -631,6 +633,24 @@ def parse_platform_commands(values: list[str] | None, option: str) -> dict[str, 
     return commands
 
 
+def parse_assignments(
+    values: list[str] | None,
+    option: str,
+    name_pattern: re.Pattern[str],
+) -> dict[str, str]:
+    assignments: dict[str, str] = {}
+    for item in values or []:
+        name, separator, value = item.partition("=")
+        if not separator or not name or not value:
+            raise DotAiError(f"{option} must use NAME=VALUE")
+        if not name_pattern.fullmatch(name):
+            raise DotAiError(f"{option} has an invalid name: {name}")
+        if name in assignments:
+            raise DotAiError(f"{option} repeats name: {name}")
+        assignments[name] = value
+    return assignments
+
+
 def upsert(items: list[dict[str, Any]], key: str, value: dict[str, Any]) -> None:
     for index, item in enumerate(items):
         if item.get(key) == value[key]:
@@ -666,11 +686,23 @@ def add_integration(args: argparse.Namespace, manifest: dict[str, Any], path: Pa
         if not SERVER_NAME.fullmatch(args.name):
             raise DotAiError(f"Invalid MCP server name: {args.name}")
         if args.url:
+            if args.server_args:
+                raise DotAiError("--arg requires --command")
+            if args.server_env:
+                raise DotAiError("--env requires --command")
             value = {"type": args.transport, "url": args.url}
+            headers = parse_assignments(args.headers, "--header", HEADER_NAME)
+            if headers:
+                value["headers"] = headers
         else:
+            if args.headers:
+                raise DotAiError("--header requires --url")
             value = {"type": "stdio", "command": args.server_command}
             if args.server_args:
                 value["args"] = args.server_args
+            server_env = parse_assignments(args.server_env, "--env", ENV_NAME)
+            if server_env:
+                value["env"] = server_env
         manifest["mcp"]["servers"][args.name] = value
     elif kind == "tool":
         installs = parse_platform_commands(args.install_commands, "--install")
@@ -740,6 +772,20 @@ def build_parser() -> argparse.ArgumentParser:
     mcp_transport.add_argument("--command", dest="server_command")
     add_mcp.add_argument("--transport", choices=["http", "sse"], default="http")
     add_mcp.add_argument("--arg", dest="server_args", action="append")
+    add_mcp.add_argument(
+        "--header",
+        dest="headers",
+        action="append",
+        metavar="NAME=VALUE",
+        help="HTTP header NAME=VALUE; VALUE may name an environment variable; repeatable",
+    )
+    add_mcp.add_argument(
+        "--env",
+        dest="server_env",
+        action="append",
+        metavar="NAME=VALUE",
+        help="stdio environment NAME=VALUE; repeatable",
+    )
     sub.add_parser("status", help="Show installed and configured components")
     sub.add_parser("doctor", help="Check commands, configuration, and platform prerequisites")
     sub.add_parser("validate", help="Validate the manifest")

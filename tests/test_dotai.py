@@ -195,6 +195,74 @@ class DotAiTests(unittest.TestCase):
             self.assertEqual(value["mcp"]["servers"]["local"]["args"], ["-y", "server-package"])
             self.assertEqual(value["packages"][0]["install"]["windows"], ["scoop install example"])
 
+    def test_add_mcp_supports_remote_headers_and_stdio_environment(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "stack.json"
+            path.write_text(json.dumps(self.minimal_manifest("~/.omp/agent/mcp.json")), encoding="utf-8")
+            commands = [
+                [
+                    "add",
+                    "mcp",
+                    "authenticated",
+                    "--url",
+                    "https://example.test/mcp",
+                    "--header",
+                    "Authorization=API_TOKEN",
+                    "--header",
+                    "X-Signed=signature=with=padding",
+                ],
+                [
+                    "add",
+                    "mcp",
+                    "local",
+                    "--command",
+                    "npx",
+                    "--arg=-y",
+                    "--arg=@scope/server",
+                    "--env",
+                    "API_TOKEN=LOCAL_API_TOKEN",
+                    "--env",
+                    "LOG_LEVEL=warning",
+                ],
+            ]
+            with contextlib.redirect_stdout(io.StringIO()):
+                for command in commands:
+                    self.assertEqual(DOTAI.main(["--manifest", str(path), *command]), 0)
+
+            servers = json.loads(path.read_text(encoding="utf-8"))["mcp"]["servers"]
+            self.assertEqual(
+                servers["authenticated"]["headers"],
+                {"Authorization": "API_TOKEN", "X-Signed": "signature=with=padding"},
+            )
+            self.assertEqual(
+                servers["local"]["env"],
+                {"API_TOKEN": "LOCAL_API_TOKEN", "LOG_LEVEL": "warning"},
+            )
+
+    def test_add_mcp_rejects_credentials_for_wrong_transport(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "stack.json"
+            path.write_text(json.dumps(self.minimal_manifest("~/.omp/agent/mcp.json")), encoding="utf-8")
+            commands = [
+                ["add", "mcp", "remote", "--url", "https://example.test/mcp", "--env", "TOKEN=TOKEN"],
+                ["add", "mcp", "local", "--command", "npx", "--header", "Authorization=TOKEN"],
+                [
+                    "add",
+                    "mcp",
+                    "duplicate",
+                    "--url",
+                    "https://example.test/mcp",
+                    "--header",
+                    "Authorization=ONE",
+                    "--header",
+                    "Authorization=TWO",
+                ],
+                ["add", "mcp", "invalid", "--command", "npx", "--env", "INVALID-NAME=TOKEN"],
+            ]
+            for command in commands:
+                with contextlib.redirect_stderr(io.StringIO()):
+                    self.assertEqual(DOTAI.main(["--manifest", str(path), *command]), 2)
+
     def test_windows_plan_uses_scoop(self) -> None:
         manifest = self.minimal_manifest("~/.omp/agent/mcp.json")
         manifest["packages"] = [
