@@ -2,7 +2,7 @@
 
 ## Purpose
 
-DotAi is a declarative, cross-platform manager for a personal AI development stack. `stack.json` is the source of truth for tools, skills, OMP marketplaces/plugins, and MCP servers.
+DotAi is a declarative, cross-platform manager for a personal AI development stack. `stack.example.json` is the tracked baseline; each user owns an ignored `stack.json` generated from that example on first use.
 
 Supported platforms:
 
@@ -15,8 +15,9 @@ Supported platforms:
 ## Repository map
 
 - `dotai.py` — manifest validation, platform detection, reconciliation, status, doctor, and extension commands
-- `stack.json` — managed stack definition
-- `stack.schema.json` — JSON Schema for the manifest
+- `stack.example.json` — tracked baseline stack definition copied for new users
+- `stack.json` — ignored, user-owned stack configuration generated on first use
+- `stack.schema.json` — JSON Schema for both manifests
 - `bootstrap.sh` / `bootstrap.ps1` — first-run installers
 - `dotai` / `dotai.ps1` — operational launchers
 - `tests/test_dotai.py` — behavioral tests
@@ -24,12 +25,14 @@ Supported platforms:
 ## Development rules
 
 - Keep the runtime compatible with Python 3.10 or newer and use the standard library unless a dependency is demonstrably necessary.
-- Treat `stack.json` as declarative data. Do not hard-code stack-specific tools or integrations into `dotai.py` when the manifest can express them.
-- Keep `stack.schema.json`, manifest validation, CLI mutation commands, and `stack.json` aligned when changing the manifest format.
+- Treat stack manifests as declarative data. Do not hard-code stack-specific tools or integrations into `dotai.py` when a manifest can express them.
+- Shared defaults belong in `stack.example.json`; never commit or overwrite the user-owned `stack.json`.
+- When the default `stack.json` is absent, initialize it once from `stack.example.json`. Existing local manifests must remain untouched, and missing explicitly selected custom manifests must still fail.
+- Keep `stack.schema.json`, manifest validation, CLI mutation commands, and `stack.example.json` aligned when changing the manifest format.
 - Preserve unmanaged user configuration. MCP reconciliation must retain unrelated servers and top-level values, create a timestamped backup before changing an existing file, and be idempotent.
 - MCP status must use semantic endpoint/configuration matching across OMP-discovered provider files. Do not require an exact server alias, and allow provider-specific fields such as authentication headers.
 - `dotai add mcp` supports repeatable `--header NAME=VALUE` options for HTTP/SSE servers and repeatable `--env NAME=VALUE` options for stdio servers. Keep these transport-specific, reject duplicate or invalid names, and preserve values after the first `=`.
-- Secret-bearing header and environment values must be references to environment variables or secret commands supported by OMP, never literal credentials committed to the manifest. Tests and examples must use placeholders only.
+- Secret-bearing header and environment values must be references to environment variables or secret commands supported by OMP, never literal credentials in `stack.example.json` or tests. Use placeholders in documentation.
 - Skill status is agent-scoped. A skill found only in another agent's plugin cache is not active for OMP and must be reported as `INACTIVE`, not `OK`.
 - Keep status labels consistent: `OK` is green, `RUN` is cyan, `INACTIVE` and `DRIFT` are yellow, and `MISSING` and `FAIL` are red. Respect `--color auto|always|never`, `NO_COLOR`, and `FORCE_COLOR`.
 - Windows package operations must use Scoop. Do not introduce Winget commands.
@@ -45,7 +48,7 @@ Run the focused behavior suite after changes:
 rtk python3 -m unittest discover -s tests -v
 ```
 
-Validate the repository manifest:
+Validate the local manifest (this initializes it from the example when absent):
 
 ```sh
 rtk python3 dotai.py validate

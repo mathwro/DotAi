@@ -17,6 +17,7 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parent
 DEFAULT_MANIFEST = ROOT / "stack.json"
+EXAMPLE_MANIFEST = ROOT / "stack.example.json"
 SERVER_NAME = re.compile(r"^[a-zA-Z0-9_.-]{1,100}$")
 HEADER_NAME = re.compile(r"^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$")
 ENV_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
@@ -138,6 +139,30 @@ def platform_keys(name: str) -> list[str]:
         "linux": ["linux", "default"],
     }
     return aliases.get(name, [name, "default"])
+
+
+def initialize_default_manifest(path: Path) -> bool:
+    if path.exists() or path.resolve() != DEFAULT_MANIFEST.resolve():
+        return False
+    try:
+        payload = EXAMPLE_MANIFEST.read_text(encoding="utf-8")
+    except FileNotFoundError as exc:
+        raise DotAiError(f"Example manifest not found: {EXAMPLE_MANIFEST}") from exc
+    path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    except FileExistsError:
+        return False
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+    except Exception:
+        path.unlink(missing_ok=True)
+        raise
+    print(f"{badge('OK')} Initialized {path} from {EXAMPLE_MANIFEST.name}")
+    return True
 
 
 def load_manifest(path: Path) -> dict[str, Any]:
@@ -804,8 +829,9 @@ def main(argv: list[str] | None = None) -> int:
         print(platform_name)
         return 0
     try:
+        initialize_default_manifest(args.manifest)
         manifest = load_manifest(args.manifest)
-    except DotAiError as exc:
+    except (OSError, DotAiError) as exc:
         print(f"{styled('dotai:', 'red', 'bold')} {exc}", file=sys.stderr)
         return 2
     if args.command == "validate":

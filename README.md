@@ -2,7 +2,7 @@
 
 DotAi is a declarative, cross-platform manager for a personal AI development stack. It applies the same tools, skills, plugins, and MCP servers across Windows, WSL, Ubuntu, Arch Linux, and macOS while preserving configuration that DotAi does not own.
 
-The managed stack lives in [`stack.json`](stack.json). The Python CLI installs or updates missing components, synchronizes AI integrations, reports drift, and provides commands for extending the manifest.
+Repository defaults live in [`stack.example.json`](stack.example.json). On the first manifest-using command, DotAi copies that template to an ignored, user-owned `stack.json`; later runs install, update, synchronize, and extend the local manifest without overwriting it from the example.
 
 ## Managed stack
 
@@ -47,6 +47,20 @@ Set-Location DotAi
 
 The PowerShell bootstrap installs Python through Scoop when needed and then applies the stack.
 
+## Local stack configuration
+
+`stack.example.json` is the version-controlled baseline for new users. `stack.json` is created automatically from it when `install`, `update`, `sync`, `status`, `doctor`, `validate`, or `add` first needs the default manifest.
+
+The generated `stack.json` is ignored by Git. Pulling repository updates therefore cannot replace personal tools, skills, plugins, MCP servers, or credential references. Changes to `stack.example.json` affect new configurations only; existing users can merge desired template changes into their local file.
+
+To recreate the defaults, remove the local `stack.json` and run:
+
+```sh
+./dotai validate
+```
+
+DotAi never initializes or overwrites an explicitly selected custom `--manifest` path; that file must already exist.
+
 ## Commands
 
 Use `./dotai` on Linux, WSL, and macOS, or `.\dotai.ps1` in PowerShell.
@@ -57,7 +71,7 @@ Use `./dotai` on Linux, WSL, and macOS, or `.\dotai.ps1` in PowerShell.
 ./dotai sync             # Synchronize skills, plugins, and MCP servers only
 ./dotai status           # Show installed, missing, inactive, or drifting components
 ./dotai doctor           # Check the stack plus platform prerequisites
-./dotai validate         # Validate stack.json
+./dotai validate         # Initialize when absent, then validate stack.json
 ./dotai platform         # Print the detected platform
 ```
 
@@ -200,7 +214,7 @@ Plugin scope can be `user` or `project`.
 
 Add repeatable `--update PLATFORM=COMMAND` options when the tool has a separate update operation. Platform keys are `windows`, `wsl`, `ubuntu`, `arch`, `macos`, `linux`, and `default`.
 
-For more complex entries, edit [`stack.json`](stack.json) directly and validate it against [`stack.schema.json`](stack.schema.json):
+For more complex entries, edit the local `stack.json` directly and validate it against [`stack.schema.json`](stack.schema.json):
 
 ```sh
 ./dotai validate
@@ -209,7 +223,8 @@ For more complex entries, edit [`stack.json`](stack.json) directly and validate 
 ## Repository layout
 
 ```text
-stack.json          Declarative stack source of truth
+stack.example.json  Tracked baseline copied for new users
+stack.json          Ignored, user-owned stack configuration
 stack.schema.json   JSON Schema for stack manifests
 dotai.py            Cross-platform manager implementation
 dotai               Unix command wrapper
@@ -237,4 +252,4 @@ rtk python3 dotai.py validate
 rtk sh -n bootstrap.sh dotai
 ```
 
-When changing the manifest format, keep `stack.json`, `stack.schema.json`, CLI mutation commands, and runtime validation aligned. Behavioral changes should include a focused test that protects the user-visible contract.
+When changing the manifest format or shared defaults, keep `stack.example.json`, `stack.schema.json`, CLI mutation commands, and runtime validation aligned. Never commit a generated `stack.json`. Behavioral changes should include a focused test that protects the user-visible contract.

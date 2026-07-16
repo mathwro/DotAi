@@ -284,10 +284,40 @@ class DotAiTests(unittest.TestCase):
             self.assertIn("scoop install example", output.getvalue())
             self.assertNotIn("winget", output.getvalue().lower())
 
-    def test_repository_manifest_has_no_winget_commands(self) -> None:
-        manifest = DOTAI.load_manifest(ROOT / "stack.json")
+    def test_missing_default_manifest_is_initialized_once_from_example(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            target = root / "stack.json"
+            example = root / "stack.example.json"
+            template = self.minimal_manifest("~/.omp/agent/mcp.json")
+            example.write_text(json.dumps(template, indent=2) + "\n", encoding="utf-8")
+
+            output = io.StringIO()
+            with (
+                mock.patch.object(DOTAI, "DEFAULT_MANIFEST", target),
+                mock.patch.object(DOTAI, "EXAMPLE_MANIFEST", example),
+                contextlib.redirect_stdout(output),
+            ):
+                self.assertEqual(DOTAI.main(["validate"]), 0)
+                self.assertEqual(json.loads(target.read_text(encoding="utf-8")), template)
+                local = dict(template)
+                local["localOnly"] = True
+                target.write_text(json.dumps(local, indent=2) + "\n", encoding="utf-8")
+                self.assertEqual(DOTAI.main(["validate"]), 0)
+                custom = root / "custom.json"
+                with contextlib.redirect_stderr(io.StringIO()):
+                    self.assertEqual(DOTAI.main(["--manifest", str(custom), "validate"]), 2)
+                self.assertFalse(custom.exists())
+
+            self.assertEqual(json.loads(target.read_text(encoding="utf-8")), local)
+            self.assertEqual(output.getvalue().count("Initialized"), 1)
+
+    def test_repository_example_manifest_has_no_winget_commands(self) -> None:
+        manifest = DOTAI.load_manifest(ROOT / "stack.example.json")
         self.assertNotIn("winget", json.dumps(manifest).lower())
+        self.assertIn("/stack.json", (ROOT / ".gitignore").read_text(encoding="utf-8").splitlines())
         self.assertEqual(DOTAI.detect_platform(), os.environ.get("DOTAI_PLATFORM", DOTAI.detect_platform()))
+
 
 
 if __name__ == "__main__":
