@@ -1,0 +1,161 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://dotai.local/stack.schema.json",
+  "title": "DotAi stack manifest",
+  "type": "object",
+  "required": ["version", "packages", "skills", "marketplaces", "plugins", "mcp"],
+  "additionalProperties": false,
+  "properties": {
+    "$schema": {"type": "string"},
+    "version": {"const": 1},
+    "packages": {
+      "type": "array",
+      "items": {"$ref": "#/definitions/package"}
+    },
+    "skills": {
+      "type": "array",
+      "items": {"$ref": "#/definitions/skill"}
+    },
+    "marketplaces": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name", "source"],
+        "additionalProperties": false,
+        "properties": {
+          "name": {"type": "string", "minLength": 1},
+          "source": {"type": "string", "minLength": 1}
+        }
+      }
+    },
+    "plugins": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id"],
+        "additionalProperties": false,
+        "properties": {
+          "id": {"type": "string", "pattern": "^[a-z0-9.-]+@[a-z0-9.-]+$"},
+          "scope": {"enum": ["user", "project"]}
+        }
+      }
+    },
+    "mcp": {
+      "type": "object",
+      "required": ["target", "servers"],
+      "additionalProperties": false,
+      "properties": {
+        "$schema": {"type": "string", "format": "uri"},
+        "target": {"type": "string", "minLength": 1},
+        "servers": {
+          "type": "object",
+          "propertyNames": {"pattern": "^[a-zA-Z0-9_.-]{1,100}$"},
+          "additionalProperties": {"$ref": "#/definitions/mcpServer"}
+        }
+      }
+    }
+  },
+  "definitions": {
+    "command": {
+      "oneOf": [
+        {"type": "string", "minLength": 1},
+        {
+          "type": "array",
+          "minItems": 1,
+          "items": {"type": "string"}
+        }
+      ]
+    },
+    "commandList": {
+      "type": "array",
+      "items": {"$ref": "#/definitions/command"}
+    },
+    "platformValue": {
+      "type": "object",
+      "propertyNames": {"enum": ["windows", "wsl", "ubuntu", "arch", "macos", "linux", "unix", "default"]}
+    },
+    "platformCommands": {
+      "oneOf": [
+        {"$ref": "#/definitions/commandList"},
+        {
+          "allOf": [
+            {"$ref": "#/definitions/platformValue"},
+            {"additionalProperties": {"$ref": "#/definitions/commandList"}}
+          ]
+        }
+      ]
+    },
+    "platformCheck": {
+      "oneOf": [
+        {"type": "string"},
+        {"type": "array", "items": {"type": "string"}, "minItems": 1},
+        {
+          "allOf": [
+            {"$ref": "#/definitions/platformValue"},
+            {
+              "additionalProperties": {
+                "oneOf": [
+                  {"type": "string"},
+                  {"type": "array", "items": {"type": "string"}, "minItems": 1}
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    "package": {
+      "type": "object",
+      "required": ["name", "check", "install"],
+      "additionalProperties": false,
+      "properties": {
+        "name": {"type": "string", "minLength": 1},
+        "check": {"$ref": "#/definitions/platformCheck"},
+        "install": {"$ref": "#/definitions/platformCommands"},
+        "update": {"$ref": "#/definitions/platformCommands"},
+        "configure": {"$ref": "#/definitions/platformCommands"}
+      }
+    },
+    "skill": {
+      "type": "object",
+      "required": ["source"],
+      "additionalProperties": false,
+      "properties": {
+        "source": {"type": "string", "minLength": 1},
+        "agent": {"type": "string", "default": "pi"},
+        "skills": {"type": "array", "items": {"type": "string"}, "default": ["*"]},
+        "checkSkills": {"type": "array", "items": {"type": "string"}}
+      }
+    },
+    "mcpServer": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": ["command"],
+          "properties": {
+            "type": {"enum": ["stdio"]},
+            "command": {"type": "string"},
+            "args": {"type": "array", "items": {"type": "string"}},
+            "env": {"type": "object", "additionalProperties": {"type": "string"}},
+            "cwd": {"type": "string"},
+            "enabled": {"type": "boolean"},
+            "timeout": {"type": "integer", "minimum": 0}
+          },
+          "additionalProperties": true
+        },
+        {
+          "type": "object",
+          "required": ["type", "url"],
+          "properties": {
+            "type": {"enum": ["http", "sse"]},
+            "url": {"type": "string", "format": "uri"},
+            "headers": {"type": "object", "additionalProperties": {"type": "string"}},
+            "enabled": {"type": "boolean"},
+            "timeout": {"type": "integer", "minimum": 0}
+          },
+          "additionalProperties": true
+        }
+      ]
+    }
+  }
+}

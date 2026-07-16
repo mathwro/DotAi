@@ -1,0 +1,124 @@
+{
+  "$schema": "./stack.schema.json",
+  "version": 1,
+  "packages": [
+    {
+      "name": "curl",
+      "check": ["curl", "--version"],
+      "install": {
+        "windows": [["scoop", "install", "curl"]],
+        "macos": [["brew", "install", "curl"]],
+        "ubuntu": ["if [ \"$(id -u)\" -eq 0 ]; then apt-get update && apt-get install -y curl; else sudo apt-get update && sudo apt-get install -y curl; fi"],
+        "arch": ["if [ \"$(id -u)\" -eq 0 ]; then pacman -S --needed --noconfirm curl; else sudo pacman -S --needed --noconfirm curl; fi"]
+      },
+      "update": {
+        "default": []
+      }
+    },
+    {
+      "name": "Node.js",
+      "check": ["node", "--version"],
+      "install": {
+        "windows": [["scoop", "install", "nodejs-lts"]],
+        "macos": [["brew", "install", "node"]],
+        "ubuntu": ["if [ \"$(id -u)\" -eq 0 ]; then apt-get update && apt-get install -y nodejs npm; else sudo apt-get update && sudo apt-get install -y nodejs npm; fi"],
+        "arch": ["if [ \"$(id -u)\" -eq 0 ]; then pacman -S --needed --noconfirm nodejs npm; else sudo pacman -S --needed --noconfirm nodejs npm; fi"]
+      },
+      "update": {
+        "windows": ["scoop update nodejs-lts; if ($LASTEXITCODE -ne 0) { scoop install nodejs-lts }"],
+        "macos": ["brew upgrade node || brew install node"],
+        "ubuntu": ["if [ \"$(id -u)\" -eq 0 ]; then apt-get install -y nodejs npm; else sudo apt-get install -y nodejs npm; fi"],
+        "arch": ["if [ \"$(id -u)\" -eq 0 ]; then pacman -S --needed --noconfirm nodejs npm; else sudo pacman -S --needed --noconfirm nodejs npm; fi"]
+      }
+    },
+    {
+      "name": "Oh My Pi",
+      "check": ["omp", "--version"],
+      "install": {
+        "windows": [["scoop", "install", "oh-my-pi"]],
+        "macos": [["brew", "install", "can1357/tap/omp"]],
+        "linux": ["curl -fsSL https://omp.sh/install | sh"]
+      },
+      "update": {
+        "windows": ["scoop update oh-my-pi; if ($LASTEXITCODE -ne 0) { scoop install oh-my-pi }"],
+        "macos": ["brew upgrade can1357/tap/omp || brew install can1357/tap/omp"],
+        "linux": ["curl -fsSL https://omp.sh/install | sh"]
+      }
+    },
+    {
+      "name": "RTK",
+      "check": ["rtk", "--version"],
+      "install": {
+        "windows": [["scoop", "install", "rtk"]],
+        "macos": [["brew", "install", "rtk"]],
+        "linux": ["curl -fsSL https://raw.githubusercontent.com/rtk-ai/rtk/refs/heads/master/install.sh | sh"]
+      },
+      "update": {
+        "windows": ["scoop update rtk; if ($LASTEXITCODE -ne 0) { scoop install rtk }"],
+        "macos": ["brew upgrade rtk || brew install rtk"],
+        "linux": ["curl -fsSL https://raw.githubusercontent.com/rtk-ai/rtk/refs/heads/master/install.sh | sh"]
+      },
+      "configure": {
+        "default": [["rtk", "init", "-g", "--agent", "pi"]]
+      }
+    },
+    {
+      "name": "uv",
+      "check": ["uv", "--version"],
+      "install": {
+        "windows": [["scoop", "install", "uv"]],
+        "macos": [["brew", "install", "uv"]],
+        "linux": ["curl -LsSf https://astral.sh/uv/install.sh | sh"]
+      },
+      "update": {
+        "windows": ["scoop update uv; if ($LASTEXITCODE -ne 0) { scoop install uv }"],
+        "macos": ["brew upgrade uv || brew install uv"],
+        "linux": [["uv", "self", "update"]]
+      }
+    },
+    {
+      "name": "Graphify",
+      "check": ["graphify", "--version"],
+      "install": {
+        "default": [["uv", "tool", "install", "--upgrade", "graphifyy"]]
+      },
+      "update": {
+        "windows": ["uv tool upgrade graphifyy; if ($LASTEXITCODE -ne 0) { uv tool install --upgrade graphifyy }"],
+        "default": ["uv tool upgrade graphifyy || uv tool install --upgrade graphifyy"]
+      },
+      "configure": {
+        "default": [["graphify", "install", "--platform", "pi"]]
+      }
+    }
+  ],
+  "skills": [
+    {
+      "source": "DietrichGebert/ponytail",
+      "agent": "pi",
+      "skills": ["*"],
+      "checkSkills": ["ponytail", "ponytail-review"]
+    },
+    {
+      "source": "obra/superpowers",
+      "agent": "pi",
+      "skills": ["*"],
+      "checkSkills": ["using-superpowers", "systematic-debugging"]
+    }
+  ],
+  "marketplaces": [],
+  "plugins": [],
+  "mcp": {
+    "$schema": "https://raw.githubusercontent.com/can1357/oh-my-pi/main/packages/coding-agent/src/config/mcp-schema.json",
+    "target": "~/.omp/agent/mcp.json",
+    "servers": {
+      "context7": {
+        "type": "http",
+        "url": "https://mcp.context7.com/mcp"
+      },
+      "microsoft-learn": {
+        "type": "http",
+        "url": "https://learn.microsoft.com/api/mcp"
+      }
+    }
+  }
+}
