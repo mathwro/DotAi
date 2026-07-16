@@ -13,6 +13,28 @@ Repository defaults live in [`stack.example.json`](stack.example.json). On the f
 | Skills | [Ponytail](https://github.com/DietrichGebert/ponytail), [Superpowers](https://github.com/obra/superpowers), installed through [skills.sh](https://skills.sh/) |
 | MCP servers | [Context7](https://context7.com/), [Microsoft Learn](https://learn.microsoft.com/training/support/mcp) |
 
+### RTK integration
+
+DotAi uses RTK's native Pi extension rather than the Codex rules integration. RTK 0.43 or newer is required.
+
+During installation or update, DotAi runs:
+
+```sh
+rtk init -g --agent pi
+```
+
+This creates `~/.pi/agent/extensions/rtk.ts`. The manifest's `ompExtensions` entry then merges that path into OMP's global `extensions` setting without removing extensions the user already configured. OMP loads the Pi-compatible TypeScript extension directly and RTK rewrites supported Bash commands through the `tool_call` event; it no longer depends on the model following Codex instructions.
+
+Restart OMP after the first installation. `dotai status` verifies both that the extension is registered with OMP and that its source file exists. If RTK is older than 0.43, run `dotai update` before synchronization.
+
+Users who no longer need the separate Codex integration can remove it without affecting the Pi extension:
+
+```sh
+rtk init -g --codex --uninstall
+```
+
+Keep the Codex integration only when RTK should also be available in Codex itself.
+
 ## Supported platforms
 
 - Native Windows, using [Scoop](https://scoop.sh/)
@@ -127,6 +149,7 @@ DotAi updates configuration conservatively:
 - Existing MCP files receive timestamped backups before a managed change.
 - MCP servers are matched semantically across configurations OMP can discover, so aliases and provider-specific fields such as authentication headers do not create duplicates.
 - Repeated synchronization is idempotent and does not create another backup when nothing changes.
+- Managed `ompExtensions` are appended to OMP's global extension list; unrelated user extensions are retained.
 - Skill health is agent-scoped. A skill found only in a Codex plugin cache is reported as `INACTIVE` until installed for Pi/OMP.
 - Dry runs do not modify files or machine state.
 

@@ -29,6 +29,8 @@ Supported platforms:
 - Shared defaults belong in `stack.example.json`; never commit or overwrite the user-owned `stack.json`.
 - When the default `stack.json` is absent, initialize it once from `stack.example.json`. Existing local manifests must remain untouched, and missing explicitly selected custom manifests must still fail.
 - Keep `stack.schema.json`, manifest validation, CLI mutation commands, and `stack.example.json` aligned when changing the manifest format.
+- `ompExtensions` contains global OMP extension paths managed by DotAi. Reconciliation must append semantically missing paths through `omp config` without replacing unrelated user extensions, and status must verify both registration and source availability.
+- RTK integration requires version 0.43 or newer and must use `rtk init -g --agent pi` plus `~/.pi/agent/extensions/rtk.ts` in `ompExtensions`. Do not replace it with the Codex rules integration; Codex setup is independent and user-owned.
 - Preserve unmanaged user configuration. MCP reconciliation must retain unrelated servers and top-level values, create a timestamped backup before changing an existing file, and be idempotent.
 - MCP status must use semantic endpoint/configuration matching across OMP-discovered provider files. Do not require an exact server alias, and allow provider-specific fields such as authentication headers.
 - `dotai add mcp` supports repeatable `--header NAME=VALUE` options for HTTP/SSE servers and repeatable `--env NAME=VALUE` options for stdio servers. Keep these transport-specific, reject duplicate or invalid names, and preserve values after the first `=`.

@@ -25,6 +25,7 @@ class DotAiTests(unittest.TestCase):
             "skills": [],
             "marketplaces": [],
             "plugins": [],
+            "ompExtensions": [],
             "mcp": {
                 "target": target,
                 "servers": {
@@ -106,6 +107,50 @@ class DotAiTests(unittest.TestCase):
                 self.assertTrue(healthy, detail)
                 self.assertFalse(DOTAI.sync_mcp(manifest, DOTAI.Runner("ubuntu")))
             self.assertEqual(target.read_text(encoding="utf-8"), original)
+
+    def test_omp_extension_reconciliation_preserves_existing_entries(self) -> None:
+        manifest = self.minimal_manifest("~/.omp/agent/mcp.json")
+        managed = "~/.pi/agent/extensions/rtk.ts"
+        manifest["ompExtensions"] = [managed]
+        runner = DOTAI.Runner("ubuntu")
+        current = json.dumps({"key": "extensions", "value": ["~/custom/extension.ts"]})
+
+        with (
+            mock.patch.object(runner, "output", return_value=current),
+            mock.patch.object(runner, "run") as run,
+            contextlib.redirect_stdout(io.StringIO()),
+        ):
+            DOTAI.reconcile_omp_extensions(manifest, runner)
+
+        command = run.call_args.args[0]
+        self.assertEqual(command[:4], ["omp", "config", "set", "extensions"])
+        self.assertEqual(
+            json.loads(command[4]),
+            ["~/custom/extension.ts", managed],
+        )
+
+        dry_runner = DOTAI.Runner("ubuntu", dry_run=True)
+        output = io.StringIO()
+        with (
+            mock.patch.object(dry_runner, "output", return_value=""),
+            contextlib.redirect_stdout(output),
+        ):
+            DOTAI.reconcile_omp_extensions(manifest, dry_runner)
+        self.assertFalse(dry_runner.failures)
+        self.assertIn("OMP extensions: configure", output.getvalue())
+
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            source = home / ".pi" / "agent" / "extensions" / "rtk.ts"
+            source.parent.mkdir(parents=True)
+            source.write_text("// test extension\n", encoding="utf-8")
+            configured = json.dumps({"key": "extensions", "value": [managed]})
+            with (
+                mock.patch.dict(os.environ, {"DOTAI_HOME": str(home)}),
+                mock.patch.object(runner, "output", return_value=configured),
+            ):
+                healthy, detail = DOTAI.omp_extension_status(manifest, runner)
+            self.assertTrue(healthy, detail)
 
     def test_skill_status_distinguishes_codex_plugin_from_pi_install(self) -> None:
         skill = {"source": "owner/skills", "agent": "pi", "checkSkills": ["alpha", "beta"]}
@@ -315,6 +360,11 @@ class DotAiTests(unittest.TestCase):
     def test_repository_example_manifest_has_no_winget_commands(self) -> None:
         manifest = DOTAI.load_manifest(ROOT / "stack.example.json")
         self.assertNotIn("winget", json.dumps(manifest).lower())
+        serialized = json.dumps(manifest)
+        rtk = next(package for package in manifest["packages"] if package["name"] == "RTK")
+        self.assertIn(["rtk", "init", "-g", "--agent", "pi"], rtk["configure"]["default"])
+        self.assertEqual(manifest["ompExtensions"], ["~/.pi/agent/extensions/rtk.ts"])
+        self.assertNotIn("--codex", serialized)
         self.assertIn("/stack.json", (ROOT / ".gitignore").read_text(encoding="utf-8").splitlines())
         self.assertEqual(DOTAI.detect_platform(), os.environ.get("DOTAI_PLATFORM", DOTAI.detect_platform()))
 

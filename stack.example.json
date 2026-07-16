@@ -107,6 +107,7 @@
   ],
   "marketplaces": [],
   "plugins": [],
+  "ompExtensions": ["~/.pi/agent/extensions/rtk.ts"],
   "mcp": {
     "$schema": "https://raw.githubusercontent.com/can1357/oh-my-pi/main/packages/coding-agent/src/config/mcp-schema.json",
     "target": "~/.omp/agent/mcp.json",

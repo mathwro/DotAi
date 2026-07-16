@@ -177,6 +177,9 @@ def load_manifest(path: Path) -> dict[str, Any]:
     for section in ("packages", "skills", "marketplaces", "plugins"):
         if not isinstance(data.get(section, []), list):
             raise DotAiError(f"Manifest '{section}' must be an array")
+    extensions = data.get("ompExtensions", [])
+    if not isinstance(extensions, list) or any(not isinstance(item, str) or not item for item in extensions):
+        raise DotAiError("Manifest 'ompExtensions' must be an array of non-empty strings")
     mcp = data.get("mcp", {})
     if not isinstance(mcp, dict) or not isinstance(mcp.get("servers", {}), dict):
         raise DotAiError("Manifest 'mcp.servers' must be an object")
@@ -360,6 +363,69 @@ def reconcile_plugins(manifest: dict[str, Any], runner: Runner, mode: str) -> No
         else:
             command = ["omp", "plugin", "install", "--force", "--scope", plugin.get("scope", "user"), plugin["id"]]
         runner.run(command, f"Reconcile plugin {plugin['id']}")
+
+
+def extension_identity(value: str) -> str:
+    if value.startswith(("~/", "~\\")) or Path(value).is_absolute():
+        return os.path.normcase(str(expand_path(value).resolve()))
+    return value
+
+
+def configured_omp_extensions(runner: Runner) -> list[str] | None:
+    raw = runner.output(["omp", "config", "get", "extensions", "--json"])
+    if not raw:
+        return None
+    try:
+        value = json.loads(raw).get("value")
+    except (AttributeError, json.JSONDecodeError):
+        return None
+    if not isinstance(value, list) or any(not isinstance(item, str) for item in value):
+        return None
+    return value
+
+
+def reconcile_omp_extensions(manifest: dict[str, Any], runner: Runner) -> None:
+    desired = manifest.get("ompExtensions", [])
+    if not desired:
+        return
+    current = configured_omp_extensions(runner)
+    if current is None:
+        if runner.dry_run:
+            print(f"{badge('RUN')} OMP extensions: configure {', '.join(desired)}")
+            return
+        runner.failures.append("OMP extensions: unable to read global OMP configuration")
+        print(f"{badge('FAIL')} OMP extensions: unable to read global OMP configuration")
+        return
+    known = {extension_identity(item) for item in current}
+    additions = [item for item in desired if extension_identity(item) not in known]
+    if not additions:
+        print(f"{badge('OK')} OMP extensions: all managed extensions are configured")
+        return
+    merged = [*current, *additions]
+    if runner.dry_run:
+        print(f"{badge('RUN')} OMP extensions: add {', '.join(additions)}")
+        return
+    runner.run(
+        ["omp", "config", "set", "extensions", json.dumps(merged, separators=(",", ":"))],
+        "Configure OMP extensions",
+    )
+
+
+def omp_extension_status(manifest: dict[str, Any], runner: Runner) -> tuple[bool, str]:
+    desired = manifest.get("ompExtensions", [])
+    if not desired:
+        return True, "no managed extensions"
+    current = configured_omp_extensions(runner)
+    if current is None:
+        return False, "unable to read global OMP configuration"
+    configured = {extension_identity(item) for item in current}
+    missing_config = [item for item in desired if extension_identity(item) not in configured]
+    missing_files = [item for item in desired if not expand_path(item).exists()]
+    if missing_config:
+        return False, f"not configured: {', '.join(missing_config)}"
+    if missing_files:
+        return False, f"source missing: {', '.join(missing_files)}"
+    return True, f"{len(desired)} managed extension(s) configured and available"
 
 
 def desired_mcp(manifest: dict[str, Any]) -> tuple[Path, dict[str, Any]]:
@@ -579,6 +645,11 @@ def print_status(manifest: dict[str, Any], runner: Runner) -> bool:
             healthy &= installed
             label = "OK" if installed else "MISSING"
             print(f"  {badge(label)} {plugin['id']}")
+    if manifest.get("ompExtensions"):
+        extensions_ok, detail = omp_extension_status(manifest, runner)
+        healthy &= extensions_ok
+        label = "OK" if extensions_ok else "MISSING"
+        print(f"{heading('OMP extensions:')}\n  {badge(label)} {detail}")
     mcp_ok, detail = mcp_status(manifest)
     healthy &= mcp_ok
     label = "OK" if mcp_ok else "DRIFT"
@@ -631,6 +702,7 @@ def save_state(manifest_path: Path, runner: Runner, operation: str) -> None:
 
 def reconcile(manifest: dict[str, Any], manifest_path: Path, runner: Runner, mode: str, force: bool = False) -> int:
     reconcile_packages(manifest, runner, mode, force)
+    reconcile_omp_extensions(manifest, runner)
     reconcile_skills(manifest, runner)
     reconcile_plugins(manifest, runner, mode)
     try:
@@ -849,6 +921,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "doctor":
         return 0 if doctor(manifest, runner) else 1
     if args.command == "sync":
+        reconcile_omp_extensions(manifest, runner)
         reconcile_skills(manifest, runner)
         reconcile_plugins(manifest, runner, "install")
         try:

@@ -40,6 +40,12 @@
         }
       }
     },
+    "ompExtensions": {
+      "type": "array",
+      "items": {"type": "string", "minLength": 1},
+      "uniqueItems": true,
+      "default": []
+    },
     "mcp": {
       "type": "object",
       "required": ["target", "servers"],
