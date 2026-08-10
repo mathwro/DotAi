@@ -103,6 +103,12 @@
       "agent": "pi",
       "skills": ["*"],
       "checkSkills": ["using-superpowers", "systematic-debugging"]
+    },
+    {
+      "source": "mattpocock/skills",
+      "agent": "pi",
+      "skills": ["grill-me", "grill-me-with-docs"],
+      "checkSkills": ["grill-me", "grill-me-with-docs"]
     }
   ],
   "marketplaces": [],
