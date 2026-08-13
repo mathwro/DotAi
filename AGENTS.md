@@ -29,6 +29,8 @@ Supported platforms:
 - Shared defaults belong in `stack.example.json`; never commit or overwrite the user-owned `stack.json`.
 - When the default `stack.json` is absent, initialize it once from `stack.example.json`. Existing local manifests must remain untouched, and missing explicitly selected custom manifests must still fail.
 - Keep `stack.schema.json`, manifest validation, CLI mutation commands, and `stack.example.json` aligned when changing the manifest format.
+- Packages marked with `updateGroup: "dependency"` must still install when missing, but normal updates must skip them unless `--include-dependencies` is supplied. Keep Node.js and `uv` in this group.
+- OMP updates must use its version-aware `omp update` command instead of rerunning the installer.
 - `ompExtensions` contains global OMP extension paths managed by DotAi. Reconciliation must append semantically missing paths through `omp config` without replacing unrelated user extensions, and status must verify both registration and source availability.
 - RTK integration requires version 0.43 or newer and must use `rtk init -g --agent pi` plus `~/.pi/agent/extensions/rtk.ts` in `ompExtensions`. Do not replace it with the Codex rules integration; Codex setup is independent and user-owned.
 - Preserve unmanaged user configuration. MCP reconciliation must retain unrelated servers and top-level values, create a timestamped backup before changing an existing file, and be idempotent.

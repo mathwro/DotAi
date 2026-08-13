@@ -17,6 +17,7 @@
     },
     {
       "name": "Node.js",
+      "updateGroup": "dependency",
       "check": ["node", "--version"],
       "install": {
         "windows": [["scoop", "install", "nodejs-lts"]],
@@ -42,7 +43,7 @@
       "update": {
         "windows": ["scoop update oh-my-pi; if ($LASTEXITCODE -ne 0) { scoop install oh-my-pi }"],
         "macos": ["brew upgrade can1357/tap/omp || brew install can1357/tap/omp"],
-        "linux": ["curl -fsSL https://omp.sh/install | sh"]
+        "linux": [["omp", "update"]]
       }
     },
     {
@@ -64,6 +65,7 @@
     },
     {
       "name": "uv",
+      "updateGroup": "dependency",
       "check": ["uv", "--version"],
       "install": {
         "windows": [["scoop", "install", "uv"]],

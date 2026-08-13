@@ -177,6 +177,11 @@ def load_manifest(path: Path) -> dict[str, Any]:
     for section in ("packages", "skills", "marketplaces", "plugins"):
         if not isinstance(data.get(section, []), list):
             raise DotAiError(f"Manifest '{section}' must be an array")
+    for package in data.get("packages", []):
+        if not isinstance(package, dict):
+            raise DotAiError("Manifest 'packages' entries must be objects")
+        if package.get("updateGroup", "core") not in {"core", "dependency"}:
+            raise DotAiError("Manifest package 'updateGroup' must be 'core' or 'dependency'")
     extensions = data.get("ompExtensions", [])
     if not isinstance(extensions, list) or any(not isinstance(item, str) or not item for item in extensions):
         raise DotAiError("Manifest 'ompExtensions' must be an array of non-empty strings")
@@ -312,11 +317,24 @@ def package_check(package: dict[str, Any], runner: Runner) -> bool:
     return bool(command) and runner.succeeds(command)
 
 
-def reconcile_packages(manifest: dict[str, Any], runner: Runner, mode: str, force: bool = False) -> None:
+def reconcile_packages(
+    manifest: dict[str, Any],
+    runner: Runner,
+    mode: str,
+    force: bool = False,
+    include_dependencies: bool = False,
+) -> None:
     for package in manifest["packages"]:
         name = package["name"]
         installed = package_check(package, runner)
-        if mode == "install" and installed and not force:
+        if (
+            mode == "update"
+            and installed
+            and package.get("updateGroup", "core") == "dependency"
+            and not include_dependencies
+        ):
+            print(f"{badge('OK')} {name}: dependency update skipped (use --include-dependencies)")
+        elif mode == "install" and installed and not force:
             print(f"{badge('OK')} {name}: already installed")
         else:
             operation = "install" if mode == "install" or not installed else "update"
@@ -328,7 +346,8 @@ def reconcile_packages(manifest: dict[str, Any], runner: Runner, mode: str, forc
                 print(f"{badge('FAIL')} {name}: unsupported platform {runner.platform}")
                 continue
             else:
-                run_steps(steps, runner, f"{operation.capitalize()} {name}")
+                label = f"Check/update {name}" if operation == "update" else f"Install {name}"
+                run_steps(steps, runner, label)
         if package.get("configure"):
             run_steps(selected(package["configure"], runner.platform), runner, f"Configure {name}")
         if not runner.dry_run and not package_check(package, runner):
@@ -700,8 +719,15 @@ def save_state(manifest_path: Path, runner: Runner, operation: str) -> None:
     target.write_text(json.dumps(value, indent=2) + "\n", encoding="utf-8")
 
 
-def reconcile(manifest: dict[str, Any], manifest_path: Path, runner: Runner, mode: str, force: bool = False) -> int:
-    reconcile_packages(manifest, runner, mode, force)
+def reconcile(
+    manifest: dict[str, Any],
+    manifest_path: Path,
+    runner: Runner,
+    mode: str,
+    force: bool = False,
+    include_dependencies: bool = False,
+) -> int:
+    reconcile_packages(manifest, runner, mode, force, include_dependencies)
     reconcile_omp_extensions(manifest, runner)
     reconcile_skills(manifest, runner)
     reconcile_plugins(manifest, runner, mode)
@@ -806,6 +832,8 @@ def add_integration(args: argparse.Namespace, manifest: dict[str, Any], path: Pa
         if not installs:
             raise DotAiError("At least one --install PLATFORM=COMMAND is required")
         value = {"name": args.name, "check": args.check_command, "install": installs}
+        if args.update_group != "core":
+            value["updateGroup"] = args.update_group
         updates = parse_platform_commands(args.update_commands, "--update")
         if updates:
             value["update"] = updates
@@ -835,8 +863,13 @@ def build_parser() -> argparse.ArgumentParser:
     install = sub.add_parser("install", help="Install missing components and synchronize configuration")
     install.add_argument("--force", action="store_true", help="Reinstall components already present")
     install.add_argument("--dry-run", action="store_true", help="Print actions without changing the machine")
-    update = sub.add_parser("update", help="Update all components and synchronize configuration")
+    update = sub.add_parser("update", help="Update core components and synchronize configuration")
     update.add_argument("--dry-run", action="store_true")
+    update.add_argument(
+        "--include-dependencies",
+        action="store_true",
+        help="Also update installed packages marked as dependencies",
+    )
     sync = sub.add_parser("sync", help="Synchronize skills, plugins, and MCP configuration")
     sync.add_argument("--dry-run", action="store_true")
     add = sub.add_parser("add", help="Add a tool, skill, marketplace, plugin, or MCP server to the manifest")
@@ -847,6 +880,12 @@ def build_parser() -> argparse.ArgumentParser:
     add_tool.add_argument("--check", dest="check_command", required=True, help="Command that exits zero when installed")
     add_tool.add_argument("--install", dest="install_commands", action="append", required=True, metavar="PLATFORM=COMMAND")
     add_tool.add_argument("--update", dest="update_commands", action="append", metavar="PLATFORM=COMMAND")
+    add_tool.add_argument(
+        "--update-group",
+        choices=["core", "dependency"],
+        default="core",
+        help="Whether normal updates include this tool (default: core)",
+    )
 
     add_skill = add_sub.add_parser("skill", help="Add or replace a skills.sh source")
     add_skill.add_argument("source")
@@ -930,7 +969,14 @@ def main(argv: list[str] | None = None) -> int:
             runner.failures.append(str(exc))
         save_state(args.manifest, runner, "sync")
         return 1 if runner.failures else 0
-    return reconcile(manifest, args.manifest, runner, args.command, getattr(args, "force", False))
+    return reconcile(
+        manifest,
+        args.manifest,
+        runner,
+        args.command,
+        getattr(args, "force", False),
+        getattr(args, "include_dependencies", False),
+    )
 
 
 if __name__ == "__main__":

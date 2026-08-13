@@ -228,6 +228,8 @@ class DotAiTests(unittest.TestCase):
                     "windows=scoop install example",
                     "--install",
                     "linux=curl https://example.test/install | sh",
+                    "--update-group",
+                    "dependency",
                 ],
             ]
             with contextlib.redirect_stdout(io.StringIO()):
@@ -239,6 +241,63 @@ class DotAiTests(unittest.TestCase):
             self.assertEqual(value["plugins"][0]["id"], "review@team")
             self.assertEqual(value["mcp"]["servers"]["local"]["args"], ["-y", "server-package"])
             self.assertEqual(value["packages"][0]["install"]["windows"], ["scoop install example"])
+            self.assertEqual(value["packages"][0]["updateGroup"], "dependency")
+
+    def test_update_skips_dependency_group_unless_explicitly_included(self) -> None:
+        manifest = self.minimal_manifest("~/.omp/agent/mcp.json")
+        manifest["packages"] = [
+            {
+                "name": "Core",
+                "check": ["core", "--version"],
+                "install": {"default": [["core", "install"]]},
+                "update": {"default": [["core", "update"]]},
+            },
+            {
+                "name": "Dependency",
+                "updateGroup": "dependency",
+                "check": ["dependency", "--version"],
+                "install": {"default": [["dependency", "install"]]},
+                "update": {"default": [["dependency", "update"]]},
+            },
+        ]
+        runner = DOTAI.Runner("linux", dry_run=True)
+        output = io.StringIO()
+        with (
+            mock.patch.object(DOTAI, "package_check", return_value=True),
+            contextlib.redirect_stdout(output),
+        ):
+            DOTAI.reconcile_packages(manifest, runner, "update")
+        plan = output.getvalue()
+        self.assertIn("Check/update Core", plan)
+        self.assertIn("Dependency: dependency update skipped", plan)
+        self.assertNotIn("Check/update Dependency", plan)
+
+        output = io.StringIO()
+        with (
+            mock.patch.object(
+                DOTAI,
+                "package_check",
+                side_effect=lambda package, _runner: package["name"] == "Core",
+            ),
+            contextlib.redirect_stdout(output),
+        ):
+            DOTAI.reconcile_packages(manifest, runner, "update")
+        self.assertIn("Install Dependency", output.getvalue())
+
+        output = io.StringIO()
+        with (
+            mock.patch.object(DOTAI, "package_check", return_value=True),
+            contextlib.redirect_stdout(output),
+        ):
+            DOTAI.reconcile_packages(manifest, runner, "update", include_dependencies=True)
+        self.assertIn("Check/update Dependency", output.getvalue())
+
+    def test_default_omp_update_uses_omp_updater_and_marks_dependencies(self) -> None:
+        manifest = DOTAI.load_manifest(ROOT / "stack.example.json")
+        packages = {package["name"]: package for package in manifest["packages"]}
+        self.assertEqual(DOTAI.selected(packages["Oh My Pi"]["update"], "wsl"), [["omp", "update"]])
+        self.assertEqual(packages["Node.js"]["updateGroup"], "dependency")
+        self.assertEqual(packages["uv"]["updateGroup"], "dependency")
 
     def test_add_mcp_supports_remote_headers_and_stdio_environment(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

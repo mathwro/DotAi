@@ -4,38 +4,9 @@ DotAi is a declarative, cross-platform manager for a personal AI development sta
 
 Repository defaults live in [`stack.example.json`](stack.example.json). On the first manifest-using command, DotAi copies that template to an ignored, user-owned `stack.json`; later runs install, update, synchronize, and extend the local manifest without overwriting it from the example.
 
-## Managed stack
+## Installation
 
-| Type | Components |
-| --- | --- |
-| Harness | [Oh My Pi](https://github.com/can1357/oh-my-pi) |
-| Tools | [RTK](https://github.com/rtk-ai/rtk), [Graphify](https://github.com/Graphify-Labs/graphify), Node.js, `uv`, `curl` |
-| Skills | [Ponytail](https://github.com/DietrichGebert/ponytail), [Superpowers](https://github.com/obra/superpowers), [Grill Me](https://github.com/mattpocock/skills) (`grill-me`, `grill-me-with-docs`), installed through [skills.sh](https://skills.sh/) |
-| MCP servers | [Context7](https://context7.com/), [Microsoft Learn](https://learn.microsoft.com/training/support/mcp) |
-
-### RTK integration
-
-DotAi uses RTK's native Pi extension rather than the Codex rules integration. RTK 0.43 or newer is required.
-
-During installation or update, DotAi runs:
-
-```sh
-rtk init -g --agent pi
-```
-
-This creates `~/.pi/agent/extensions/rtk.ts`. The manifest's `ompExtensions` entry then merges that path into OMP's global `extensions` setting without removing extensions the user already configured. OMP loads the Pi-compatible TypeScript extension directly and RTK rewrites supported Bash commands through the `tool_call` event; it no longer depends on the model following Codex instructions.
-
-Restart OMP after the first installation. `dotai status` verifies both that the extension is registered with OMP and that its source file exists. If RTK is older than 0.43, run `dotai update` before synchronization.
-
-Users who no longer need the separate Codex integration can remove it without affecting the Pi extension:
-
-```sh
-rtk init -g --codex --uninstall
-```
-
-Keep the Codex integration only when RTK should also be available in Codex itself.
-
-## Supported platforms
+Supported platforms:
 
 - Native Windows, using [Scoop](https://scoop.sh/)
 - Windows Subsystem for Linux with an Ubuntu-based distribution
@@ -44,8 +15,6 @@ Keep the Codex integration only when RTK should also be available in Codex itsel
 - macOS, using [Homebrew](https://brew.sh/)
 
 Python 3.10 or newer is required. The bootstrap scripts install it when possible. Native Windows uses Scoop for all managed package operations; Winget is intentionally not used.
-
-## Quick start
 
 ### Linux, WSL, or macOS
 
@@ -69,27 +38,13 @@ Set-Location DotAi
 
 The PowerShell bootstrap installs Python through Scoop when needed and then applies the stack.
 
-## Local stack configuration
-
-`stack.example.json` is the version-controlled baseline for new users. `stack.json` is created automatically from it when `install`, `update`, `sync`, `status`, `doctor`, `validate`, or `add` first needs the default manifest.
-
-The generated `stack.json` is ignored by Git. Pulling repository updates therefore cannot replace personal tools, skills, plugins, MCP servers, or credential references. Changes to `stack.example.json` affect new configurations only; existing users can merge desired template changes into their local file.
-
-To recreate the defaults, remove the local `stack.json` and run:
-
-```sh
-./dotai validate
-```
-
-DotAi never initializes or overwrites an explicitly selected custom `--manifest` path; that file must already exist.
-
-## Commands
+## How to use
 
 Use `./dotai` on Linux, WSL, and macOS, or `.\dotai.ps1` in PowerShell.
 
 ```sh
 ./dotai install          # Install missing components and synchronize configuration
-./dotai update           # Update managed components and synchronize configuration
+./dotai update           # Update core components and synchronize configuration
 ./dotai sync             # Synchronize skills, plugins, and MCP servers only
 ./dotai status           # Show installed, missing, inactive, or drifting components
 ./dotai doctor           # Check the stack plus platform prerequisites
@@ -110,6 +65,14 @@ Reinstall components that already pass their checks:
 ```sh
 ./dotai install --force
 ```
+
+Update dependency tools such as Node.js and `uv` explicitly:
+
+```sh
+./dotai update --include-dependencies
+```
+
+Dependency updates are skipped by default, but missing dependencies are still installed. OMP updates use `omp update`, so OMP performs its own version check and leaves an up-to-date installation unchanged.
 
 Use a different manifest:
 
@@ -140,6 +103,33 @@ Color is automatic for interactive terminals. It can be controlled explicitly:
 Automatic mode respects `NO_COLOR`, `FORCE_COLOR`, and `TERM=dumb`.
 
 `status` and `doctor` return a nonzero exit code when a declared component is missing, inactive, drifting, or otherwise unhealthy. This makes them suitable for scripts and machine health checks.
+
+## Managed stack
+
+| Type | Components |
+| --- | --- |
+| Harness | [Oh My Pi](https://github.com/can1357/oh-my-pi) |
+| Tools | [RTK](https://github.com/rtk-ai/rtk), [Graphify](https://github.com/Graphify-Labs/graphify), Node.js, `uv`, `curl` |
+| Skills | [Ponytail](https://github.com/DietrichGebert/ponytail), [Superpowers](https://github.com/obra/superpowers), [Grill Me](https://github.com/mattpocock/skills) (`grill-me`, `grill-me-with-docs`), installed through [skills.sh](https://skills.sh/) |
+| MCP servers | [Context7](https://context7.com/), [Microsoft Learn](https://learn.microsoft.com/training/support/mcp) |
+
+RTK 0.43 or newer is configured through `rtk init -g --agent pi`. This creates `~/.pi/agent/extensions/rtk.ts`, which DotAi adds to OMP's global extensions without removing user-configured entries. Restart OMP after the first installation; `dotai status` verifies both the registration and the extension source.
+
+The Pi extension is independent of RTK's optional Codex integration.
+
+## Local stack configuration
+
+`stack.example.json` is the version-controlled baseline for new users. `stack.json` is created automatically from it when `install`, `update`, `sync`, `status`, `doctor`, `validate`, or `add` first needs the default manifest.
+
+The generated `stack.json` is ignored by Git. Pulling repository updates therefore cannot replace personal tools, skills, plugins, MCP servers, or credential references. Changes to `stack.example.json` affect new configurations only; existing users can merge desired template changes into their local file.
+
+To recreate the defaults, remove the local `stack.json` and run:
+
+```sh
+./dotai validate
+```
+
+DotAi never initializes or overwrites an explicitly selected custom `--manifest` path; that file must already exist.
 
 ## Configuration safety
 
@@ -236,6 +226,8 @@ Plugin scope can be `user` or `project`.
 ```
 
 Add repeatable `--update PLATFORM=COMMAND` options when the tool has a separate update operation. Platform keys are `windows`, `wsl`, `ubuntu`, `arch`, `macos`, `linux`, and `default`.
+
+Use `--update-group dependency` for supporting tools that should be installed when missing but updated only by `dotai update --include-dependencies`.
 
 For more complex entries, edit the local `stack.json` directly and validate it against [`stack.schema.json`](stack.schema.json):
 
