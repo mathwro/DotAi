@@ -66,9 +66,9 @@
           "propertyNames": {"type": "string", "minLength": 1},
           "additionalProperties": {"type": "string", "minLength": 1}
         },
-        "usageReservePct": {"type": "integer", "minimum": 0, "maximum": 100},
-        "usageReservePolicy": {"enum": ["confirm", "auto", "fail-closed"]},
-        "fallbackRevertPolicy": {"enum": ["cooldown-expiry", "never"]}
+        "usageReservePct": {"type": "integer", "minimum": 0, "maximum": 100, "default": 10},
+        "usageReservePolicy": {"enum": ["confirm", "auto", "fail-closed"], "default": "auto"},
+        "fallbackRevertPolicy": {"enum": ["cooldown-expiry", "never"], "default": "cooldown-expiry"}
       }
     },
     "mcp": {

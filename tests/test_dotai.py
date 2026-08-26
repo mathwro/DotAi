@@ -59,6 +59,22 @@ class DotAiTests(unittest.TestCase):
         )
         self.assertEqual(DOTAI.validate_omp_routing(None), {})
 
+    def test_stack_schema_has_exact_omp_routing_defaults(self) -> None:
+        schema = json.loads((ROOT / "stack.schema.json").read_text(encoding="utf-8"))
+        properties = schema["properties"]["ompRouting"]["properties"]
+        self.assertEqual(
+            {
+                "usageReservePct": properties["usageReservePct"],
+                "usageReservePolicy": properties["usageReservePolicy"],
+                "fallbackRevertPolicy": properties["fallbackRevertPolicy"],
+            },
+            {
+                "usageReservePct": {"type": "integer", "minimum": 0, "maximum": 100, "default": 10},
+                "usageReservePolicy": {"enum": ["confirm", "auto", "fail-closed"], "default": "auto"},
+                "fallbackRevertPolicy": {"enum": ["cooldown-expiry", "never"], "default": "cooldown-expiry"},
+            },
+        )
+
     def test_validate_omp_routing_rejects_invalid_values(self) -> None:
         valid_roles = {"roles": {"default": ["openai-codex/gpt-5.6-sol"]}}
         invalid_values = [
