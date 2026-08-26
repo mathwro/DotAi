@@ -109,8 +109,8 @@
     {
       "source": "mattpocock/skills",
       "agent": "pi",
-      "skills": ["grill-me", "grill-me-with-docs"],
-      "checkSkills": ["grill-me", "grill-me-with-docs"]
+      "skills": ["grill-me", "grill-with-docs"],
+      "checkSkills": ["grill-me", "grill-with-docs"]
     }
   ],
   "marketplaces": [],

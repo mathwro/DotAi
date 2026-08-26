@@ -110,7 +110,7 @@ Automatic mode respects `NO_COLOR`, `FORCE_COLOR`, and `TERM=dumb`.
 | --- | --- |
 | Harness | [Oh My Pi](https://github.com/can1357/oh-my-pi) |
 | Tools | [RTK](https://github.com/rtk-ai/rtk), [Graphify](https://github.com/Graphify-Labs/graphify), Node.js, `uv`, `curl` |
-| Skills | [Ponytail](https://github.com/DietrichGebert/ponytail), [Superpowers](https://github.com/obra/superpowers), [Grill Me](https://github.com/mattpocock/skills) (`grill-me`, `grill-me-with-docs`), installed through [skills.sh](https://skills.sh/) |
+| Skills | [Ponytail](https://github.com/DietrichGebert/ponytail), [Superpowers](https://github.com/obra/superpowers), [Grill Me](https://github.com/mattpocock/skills) (`grill-me`, `grill-with-docs`), installed through [skills.sh](https://skills.sh/) |
 | MCP servers | [Context7](https://context7.com/), [Microsoft Learn](https://learn.microsoft.com/training/support/mcp) |
 
 RTK 0.43 or newer is configured through `rtk init -g --agent pi`. This creates `~/.pi/agent/extensions/rtk.ts`, which DotAi adds to OMP's global extensions without removing user-configured entries. Restart OMP after the first installation; `dotai status` verifies both the registration and the extension source.
