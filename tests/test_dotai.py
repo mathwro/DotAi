@@ -1223,13 +1223,13 @@ class DotAiTests(unittest.TestCase):
     def test_version_warns_when_newer_release_exists(self) -> None:
         response = mock.MagicMock()
         response.__enter__.return_value = response
-        response.read.return_value = b'{"tag_name": "v0.2.0"}'
+        response.read.return_value = b'{"tag_name": "v0.3.0"}'
         output = io.StringIO()
         with mock.patch("urllib.request.urlopen", return_value=response), contextlib.redirect_stdout(output):
             self.assertEqual(DOTAI.main(["version"]), 0)
         self.assertEqual(
             output.getvalue(),
-            "0.1.0\n[UPDATE] DotAi 0.2.0 is available (current: 0.1.0); pull the repository to update.\n",
+            "0.2.0\n[UPDATE] DotAi 0.3.0 is available (current: 0.2.0); pull the repository to update.\n",
         )
 
     def test_release_warning_is_checked_by_status_sync_and_install(self) -> None:
@@ -1241,7 +1241,7 @@ class DotAiTests(unittest.TestCase):
             for command in ("status", "sync", "install"):
                 response = mock.MagicMock()
                 response.__enter__.return_value = response
-                response.read.return_value = b'{"tag_name": "v0.2.0"}'
+                response.read.return_value = b'{"tag_name": "v0.3.0"}'
                 output = io.StringIO()
                 argv = ["--manifest", str(path), command]
                 if command != "status":
@@ -1257,22 +1257,22 @@ class DotAiTests(unittest.TestCase):
                     contextlib.redirect_stdout(output),
                 ):
                     self.assertEqual(DOTAI.main(argv), 0)
-                self.assertIn("[UPDATE] DotAi 0.2.0", output.getvalue())
+                self.assertIn("[UPDATE] DotAi 0.3.0", output.getvalue())
 
     def test_release_warning_is_silent_when_current_version_is_latest(self) -> None:
         response = mock.MagicMock()
         response.__enter__.return_value = response
-        response.read.return_value = b'{"tag_name": "0.1.0"}'
+        response.read.return_value = b'{"tag_name": "0.2.0"}'
         output = io.StringIO()
         with mock.patch("urllib.request.urlopen", return_value=response), contextlib.redirect_stdout(output):
             self.assertEqual(DOTAI.main(["version"]), 0)
-        self.assertEqual(output.getvalue(), "0.1.0\n")
+        self.assertEqual(output.getvalue(), "0.2.0\n")
 
     def test_release_check_failure_does_not_change_version_output(self) -> None:
         output = io.StringIO()
         with mock.patch("urllib.request.urlopen", side_effect=OSError("offline")), contextlib.redirect_stdout(output):
             self.assertEqual(DOTAI.main(["version"]), 0)
-        self.assertEqual(output.getvalue(), "0.1.0\n")
+        self.assertEqual(output.getvalue(), "0.2.0\n")
 
     def test_malformed_release_response_is_ignored(self) -> None:
         response = mock.MagicMock()
@@ -1289,7 +1289,7 @@ class DotAiTests(unittest.TestCase):
             check=False,
         )
         self.assertEqual(result.returncode, 0)
-        self.assertEqual(result.stdout, "0.1.0\n")
+        self.assertEqual(result.stdout, "0.2.0\n")
 
 
 
