@@ -314,7 +314,7 @@ class Runner:
 
     def _format(self, value: str) -> str:
         values = {"home": str(home_dir()), "repo": str(ROOT), "python": sys.executable}
-        return value.format_map(values)
+        return value.replace("{home}", values["home"]).replace("{repo}", values["repo"]).replace("{python}", values["python"])
 
     def argv(self, command: str | list[str]) -> list[str]:
         if isinstance(command, str):
