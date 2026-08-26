@@ -49,7 +49,9 @@ Use `./dotai` on Linux, WSL, and macOS, or `.\dotai.ps1` in PowerShell.
 ./dotai status           # Show installed, missing, inactive, or drifting components
 ./dotai doctor           # Check the stack plus platform prerequisites
 ./dotai validate         # Initialize when absent, then validate stack.json
-./dotai platform         # Print the detected platform
+./dotai --manifest path/to/new-stack.json init  # Generate a new manifest from the example
+./dotai version            # Print the version and warn about newer releases
+./dotai platform           # Print the detected platform
 ```
 
 Preview changes without modifying the machine:
@@ -79,6 +81,14 @@ Use a different manifest:
 ```sh
 ./dotai --manifest path/to/stack.json status
 ```
+
+Generate a new manifest from the repository example:
+
+```sh
+./dotai --manifest path/to/new-stack.json init
+```
+
+`init` creates only a missing manifest and refuses to overwrite an existing file.
 
 ### Status output
 
@@ -130,7 +140,7 @@ To recreate the defaults, remove the local `stack.json` and run:
 ./dotai validate
 ```
 
-DotAi never initializes or overwrites an explicitly selected custom `--manifest` path; that file must already exist.
+For a separate manifest, use `./dotai --manifest path/to/new-stack.json init`. Normal commands never initialize or overwrite an explicitly selected custom path, and `init` also refuses to overwrite an existing file.
 
 ## Configuration safety
 
@@ -142,6 +152,7 @@ DotAi updates configuration conservatively:
 - Repeated synchronization is idempotent and does not create another backup when nothing changes.
 - Managed `ompExtensions` are appended to OMP's global extension list; unrelated user extensions are retained.
 - Skill health is agent-scoped. A skill found only in a Codex plugin cache is reported as `INACTIVE` until installed for the configured OMP skill target.
+- Release checks run for `install`, `sync`, `status`, and `version`; an available newer release is shown as a warning, while network failures are ignored.
 - Dry runs do not modify files or machine state.
 
 Credentials belong in environment variables or a secret manager, not in `stack.json` or version control. The manifest may safely store the name of an environment variable for OMP to resolve at runtime.

@@ -5,6 +5,8 @@ import importlib.util
 import io
 import json
 import os
+import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -578,17 +580,26 @@ class DotAiTests(unittest.TestCase):
             ):
                 self.assertEqual(DOTAI.main(["validate"]), 0)
                 self.assertEqual(json.loads(target.read_text(encoding="utf-8")), template)
-                local = dict(template)
-                local["localOnly"] = True
-                target.write_text(json.dumps(local, indent=2) + "\n", encoding="utf-8")
+                default_local = dict(template)
+                default_local["localOnly"] = True
+                target.write_text(json.dumps(default_local, indent=2) + "\n", encoding="utf-8")
                 self.assertEqual(DOTAI.main(["validate"]), 0)
                 custom = root / "custom.json"
+                with contextlib.redirect_stdout(output):
+                    self.assertEqual(DOTAI.main(["--manifest", str(custom), "init"]), 0)
+                self.assertEqual(json.loads(custom.read_text(encoding="utf-8")), template)
+                custom_local = dict(template)
+                custom_local["localOnly"] = True
+                custom.write_text(json.dumps(custom_local, indent=2) + "\n", encoding="utf-8")
                 with contextlib.redirect_stderr(io.StringIO()):
-                    self.assertEqual(DOTAI.main(["--manifest", str(custom), "validate"]), 2)
-                self.assertFalse(custom.exists())
-
-            self.assertEqual(json.loads(target.read_text(encoding="utf-8")), local)
-            self.assertEqual(output.getvalue().count("Initialized"), 1)
+                    self.assertEqual(DOTAI.main(["--manifest", str(custom), "init"]), 2)
+                self.assertEqual(json.loads(custom.read_text(encoding="utf-8")), custom_local)
+                missing_custom = root / "missing.json"
+                with contextlib.redirect_stderr(io.StringIO()):
+                    self.assertEqual(DOTAI.main(["--manifest", str(missing_custom), "validate"]), 2)
+                self.assertFalse(missing_custom.exists())
+            self.assertEqual(json.loads(target.read_text(encoding="utf-8")), default_local)
+            self.assertEqual(output.getvalue().count("Initialized"), 2)
 
     def test_repository_example_manifest_has_no_winget_commands(self) -> None:
         manifest = DOTAI.load_manifest(ROOT / "stack.example.json")
@@ -609,6 +620,77 @@ class DotAiTests(unittest.TestCase):
         self.assertNotIn("--codex", serialized)
         self.assertIn("/stack.json", (ROOT / ".gitignore").read_text(encoding="utf-8").splitlines())
         self.assertEqual(DOTAI.detect_platform(), os.environ.get("DOTAI_PLATFORM", DOTAI.detect_platform()))
+
+    def test_version_warns_when_newer_release_exists(self) -> None:
+        response = mock.MagicMock()
+        response.__enter__.return_value = response
+        response.read.return_value = b'{"tag_name": "v0.2.0"}'
+        output = io.StringIO()
+        with mock.patch("urllib.request.urlopen", return_value=response), contextlib.redirect_stdout(output):
+            self.assertEqual(DOTAI.main(["version"]), 0)
+        self.assertEqual(
+            output.getvalue(),
+            "0.1.0\n[UPDATE] DotAi 0.2.0 is available (current: 0.1.0); pull the repository to update.\n",
+        )
+
+    def test_release_warning_is_checked_by_status_sync_and_install(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "stack.json"
+            manifest = self.minimal_manifest("~/.omp/agent/mcp.json")
+            manifest["mcp"]["servers"] = {}
+            path.write_text(json.dumps(manifest), encoding="utf-8")
+            for command in ("status", "sync", "install"):
+                response = mock.MagicMock()
+                response.__enter__.return_value = response
+                response.read.return_value = b'{"tag_name": "v0.2.0"}'
+                output = io.StringIO()
+                argv = ["--manifest", str(path), command]
+                if command != "status":
+                    argv.append("--dry-run")
+                with (
+                    mock.patch("urllib.request.urlopen", return_value=response),
+                    mock.patch.object(DOTAI, "print_status", return_value=True),
+                    mock.patch.object(DOTAI, "reconcile", return_value=0),
+                    mock.patch.object(DOTAI, "reconcile_omp_extensions"),
+                    mock.patch.object(DOTAI, "reconcile_skills"),
+                    mock.patch.object(DOTAI, "reconcile_plugins"),
+                    mock.patch.object(DOTAI, "sync_mcp", return_value=True),
+                    contextlib.redirect_stdout(output),
+                ):
+                    self.assertEqual(DOTAI.main(argv), 0)
+                self.assertIn("[UPDATE] DotAi 0.2.0", output.getvalue())
+
+    def test_release_warning_is_silent_when_current_version_is_latest(self) -> None:
+        response = mock.MagicMock()
+        response.__enter__.return_value = response
+        response.read.return_value = b'{"tag_name": "0.1.0"}'
+        output = io.StringIO()
+        with mock.patch("urllib.request.urlopen", return_value=response), contextlib.redirect_stdout(output):
+            self.assertEqual(DOTAI.main(["version"]), 0)
+        self.assertEqual(output.getvalue(), "0.1.0\n")
+
+    def test_release_check_failure_does_not_change_version_output(self) -> None:
+        output = io.StringIO()
+        with mock.patch("urllib.request.urlopen", side_effect=OSError("offline")), contextlib.redirect_stdout(output):
+            self.assertEqual(DOTAI.main(["version"]), 0)
+        self.assertEqual(output.getvalue(), "0.1.0\n")
+
+    def test_malformed_release_response_is_ignored(self) -> None:
+        response = mock.MagicMock()
+        response.__enter__.return_value = response
+        response.read.return_value = b"[]"
+        with mock.patch("urllib.request.urlopen", return_value=response):
+            self.assertIsNone(DOTAI.latest_release_version())
+
+    def test_version_command_prints_current_version(self) -> None:
+        result = subprocess.run(
+            [sys.executable, str(ROOT / "dotai.py"), "version"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual(result.stdout, "0.1.0\n")
 
 
 

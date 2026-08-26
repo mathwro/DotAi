@@ -64,6 +64,7 @@ For CLI behavior changes, exercise the affected command directly. Useful smoke c
 rtk python3 dotai.py status
 rtk python3 dotai.py doctor
 rtk python3 dotai.py sync --dry-run
+rtk python3 dotai.py version
 rtk python3 dotai.py fix --dry-run
 rtk python3 dotai.py --platform windows install --force --dry-run
 ```

@@ -15,13 +15,18 @@ import sys
 import tempfile
 from pathlib import Path
 from typing import Any
+from urllib import error as urlerror
+from urllib import request as urlrequest
 
+VERSION = "0.1.0"
 ROOT = Path(__file__).resolve().parent
 DEFAULT_MANIFEST = ROOT / "stack.json"
 EXAMPLE_MANIFEST = ROOT / "stack.example.json"
 SERVER_NAME = re.compile(r"^[a-zA-Z0-9_.-]{1,100}$")
 HEADER_NAME = re.compile(r"^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$")
 ENV_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+RELEASE_URL = "https://api.github.com/repos/mathwro/DotAi/releases/latest"
+VERSION_PATTERN = re.compile(r"^v?(\d+)\.(\d+)\.(\d+)$")
 
 _COLOR_ENABLED = False
 _ANSI = {
@@ -74,10 +79,39 @@ def badge(label: str) -> str:
         "RUN": "cyan",
         "INACTIVE": "yellow",
         "DRIFT": "yellow",
+        "UPDATE": "yellow",
         "MISSING": "red",
         "FAIL": "red",
     }.get(label, "blue")
     return styled(f"[{label}]", color, "bold")
+
+
+def latest_release_version() -> str | None:
+    try:
+        request = urlrequest.Request(
+            RELEASE_URL,
+            headers={"Accept": "application/vnd.github+json", "User-Agent": f"DotAi/{VERSION}"},
+        )
+        with urlrequest.urlopen(request, timeout=2) as response:
+            tag = json.loads(response.read().decode("utf-8")).get("tag_name")
+    except urlerror.HTTPError as exc:
+        exc.close()
+        return None
+    except (AttributeError, OSError, TypeError, ValueError, UnicodeError):
+        return None
+    if not isinstance(tag, str):
+        return None
+    match = VERSION_PATTERN.fullmatch(tag)
+    return ".".join(match.groups()) if match else None
+
+
+def print_release_notice() -> None:
+    latest = latest_release_version()
+    current = VERSION_PATTERN.fullmatch(VERSION)
+    available = VERSION_PATTERN.fullmatch(latest or "")
+    if not current or not available or tuple(map(int, available.groups())) <= tuple(map(int, current.groups())):
+        return
+    print(f"{badge('UPDATE')} DotAi {latest} is available (current: {VERSION}); pull the repository to update.")
 
 
 def heading(text: str) -> str:
@@ -142,8 +176,8 @@ def platform_keys(name: str) -> list[str]:
     return aliases.get(name, [name, "default"])
 
 
-def initialize_default_manifest(path: Path) -> bool:
-    if path.exists() or path.resolve() != DEFAULT_MANIFEST.resolve():
+def initialize_manifest(path: Path, *, allow_custom: bool = False) -> bool:
+    if path.exists() or (not allow_custom and path.resolve() != DEFAULT_MANIFEST.resolve()):
         return False
     try:
         payload = EXAMPLE_MANIFEST.read_text(encoding="utf-8")
@@ -164,6 +198,10 @@ def initialize_default_manifest(path: Path) -> bool:
         raise
     print(f"{badge('OK')} Initialized {path} from {EXAMPLE_MANIFEST.name}")
     return True
+
+
+def initialize_default_manifest(path: Path) -> bool:
+    return initialize_manifest(path)
 
 
 def load_manifest(path: Path) -> dict[str, Any]:
@@ -970,6 +1008,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     sync = sub.add_parser("sync", help="Synchronize skills, plugins, and MCP configuration")
     sync.add_argument("--dry-run", action="store_true")
+    sub.add_parser("version", help="Print the current DotAi version")
+    sub.add_parser("init", help="Generate a new manifest from stack.example.json")
     fix = sub.add_parser("fix", help="Review and migrate legacy Pi-targeted skills to OMP")
     fix.add_argument("--dry-run", action="store_true", help="Show the migration without changing files or machine state")
     add = sub.add_parser("add", help="Add a tool, skill, marketplace, plugin, or MCP server to the manifest")
@@ -1035,9 +1075,23 @@ def main(argv: list[str] | None = None) -> int:
     configure_color(args.color)
     if args.platform:
         os.environ["DOTAI_PLATFORM"] = args.platform
+    if args.command == "version":
+        print(VERSION)
+        print_release_notice()
+        return 0
     platform_name = detect_platform()
     if args.command == "platform":
         print(platform_name)
+        return 0
+    if args.command in {"install", "status", "sync"}:
+        print_release_notice()
+    if args.command == "init":
+        try:
+            if not initialize_manifest(args.manifest, allow_custom=True):
+                raise DotAiError(f"Manifest already exists: {args.manifest}")
+        except (OSError, DotAiError) as exc:
+            print(f"{styled('dotai:', 'red', 'bold')} {exc}", file=sys.stderr)
+            return 2
         return 0
     try:
         initialize_default_manifest(args.manifest)
