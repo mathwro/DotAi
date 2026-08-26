@@ -104,6 +104,25 @@ class DotAiTests(unittest.TestCase):
                 10,
             )
 
+    def test_loaded_null_omp_routing_is_unconfigured(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "stack.json"
+            manifest = self.minimal_manifest("~/.omp/agent/mcp.json")
+            manifest["ompRouting"] = None
+            path.write_text(json.dumps(manifest), encoding="utf-8")
+            loaded = DOTAI.load_manifest(path)
+
+        runner = DOTAI.Runner("ubuntu")
+        with mock.patch.object(runner, "output") as output, mock.patch.object(runner, "run") as run:
+            self.assertEqual(DOTAI.omp_routing_status(loaded, runner), ("OK", "not configured in manifest"))
+            report = io.StringIO()
+            with mock.patch.object(DOTAI, "mcp_status", return_value=(True, "managed")), contextlib.redirect_stdout(report):
+                self.assertTrue(DOTAI.print_status(loaded, runner))
+            self.assertEqual(DOTAI.configure_omp_routing(loaded, runner), 0)
+        output.assert_not_called()
+        run.assert_not_called()
+        self.assertNotIn("OMP routing:", report.getvalue())
+
     def test_mcp_merge_preserves_unmanaged_values_backs_up_and_is_idempotent(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             home = Path(directory)

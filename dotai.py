@@ -556,7 +556,7 @@ def omp_routing_scalar_values(routing: dict[str, Any]) -> dict[str, Any]:
 
 def configure_omp_routing(manifest: dict[str, Any], runner: Runner) -> int:
     routing = manifest.get("ompRouting")
-    if routing is None:
+    if not routing:
         print(f"{badge('INACTIVE')} OMP routing: not configured in manifest")
         return 0
 
@@ -870,7 +870,7 @@ def mcp_status(manifest: dict[str, Any]) -> tuple[bool, str]:
 
 def omp_routing_status(manifest: dict[str, Any], runner: Runner) -> tuple[str, str]:
     routing = manifest.get("ompRouting")
-    if routing is None:
+    if not routing:
         return "OK", "not configured in manifest"
 
     available = available_omp_models(runner)
@@ -949,7 +949,7 @@ def print_status(manifest: dict[str, Any], runner: Runner) -> bool:
         healthy &= extensions_ok
         label = "OK" if extensions_ok else "MISSING"
         print(f"{heading('OMP extensions:')}\n  {badge(label)} {detail}")
-    if "ompRouting" in manifest:
+    if manifest.get("ompRouting"):
         label, detail = omp_routing_status(manifest, runner)
         healthy &= label == "OK"
         print(f"{heading('OMP routing:')}\n  {badge(label)} {detail}")
