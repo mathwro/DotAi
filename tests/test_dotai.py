@@ -37,6 +37,73 @@ class DotAiTests(unittest.TestCase):
             },
         }
 
+    def test_validate_omp_routing_normalizes_valid_fixture(self) -> None:
+        routing = {
+            "roles": {"default": ["openai-codex/gpt-5.6-sol"]},
+            "agentModelOverrides": {"sonic": "@smol"},
+            "usageReservePct": 25,
+            "usageReservePolicy": "confirm",
+            "fallbackRevertPolicy": "never",
+        }
+
+        self.assertEqual(DOTAI.validate_omp_routing(routing), routing)
+        self.assertEqual(
+            DOTAI.validate_omp_routing({"roles": {"default": ["openai-codex/gpt-5.6-sol"]}}),
+            {
+                "roles": {"default": ["openai-codex/gpt-5.6-sol"]},
+                "agentModelOverrides": {},
+                "usageReservePct": 10,
+                "usageReservePolicy": "auto",
+                "fallbackRevertPolicy": "cooldown-expiry",
+            },
+        )
+        self.assertEqual(DOTAI.validate_omp_routing(None), {})
+
+    def test_validate_omp_routing_rejects_invalid_values(self) -> None:
+        valid_roles = {"roles": {"default": ["openai-codex/gpt-5.6-sol"]}}
+        invalid_values = [
+            [],
+            {"roles": {}},
+            {"roles": {"": ["openai-codex/gpt-5.6-sol"]}},
+            {"roles": {"default": []}},
+            {"roles": {"default": "openai-codex/gpt-5.6-sol"}},
+            {"roles": {"default": [""]}},
+            {"roles": {"default": [1]}},
+            {"roles": {1: ["openai-codex/gpt-5.6-sol"]}},
+            {**valid_roles, "agentModelOverrides": []},
+            {**valid_roles, "agentModelOverrides": {"": "@smol"}},
+            {**valid_roles, "agentModelOverrides": {"sonic": ""}},
+            {**valid_roles, "agentModelOverrides": {"sonic": 1}},
+            {**valid_roles, "usageReservePct": True},
+            {**valid_roles, "usageReservePct": 101},
+            {**valid_roles, "usageReservePct": -1},
+            {**valid_roles, "usageReservePct": 1.5},
+            {**valid_roles, "usageReservePolicy": "ask"},
+            {**valid_roles, "usageReservePolicy": []},
+            {**valid_roles, "fallbackRevertPolicy": "always"},
+            {**valid_roles, "fallbackRevertPolicy": []},
+            {**valid_roles, "unexpected": True},
+        ]
+
+        for value in invalid_values:
+            with self.subTest(value=value):
+                with self.assertRaises(DOTAI.DotAiError):
+                    DOTAI.validate_omp_routing(value)
+
+    def test_load_manifest_normalizes_present_omp_routing_only(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "stack.json"
+            manifest = self.minimal_manifest("~/.omp/agent/mcp.json")
+            path.write_text(json.dumps(manifest), encoding="utf-8")
+            self.assertNotIn("ompRouting", DOTAI.load_manifest(path))
+
+            manifest["ompRouting"] = {"roles": {"default": ["openai-codex/gpt-5.6-sol"]}}
+            path.write_text(json.dumps(manifest), encoding="utf-8")
+            self.assertEqual(
+                DOTAI.load_manifest(path)["ompRouting"]["usageReservePct"],
+                10,
+            )
+
     def test_mcp_merge_preserves_unmanaged_values_backs_up_and_is_idempotent(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             home = Path(directory)
@@ -611,6 +678,7 @@ class DotAiTests(unittest.TestCase):
             all(skill.get("agent") == "universal" for skill in manifest["skills"]),
         )
         self.assertEqual(manifest["ompExtensions"], ["~/.pi/agent/extensions/rtk.ts"])
+        self.assertEqual(manifest["ompRouting"]["roles"]["default"][0], "openai-codex/gpt-5.6-sol")
         grill_me = next(skill for skill in manifest["skills"] if skill["source"] == "mattpocock/skills")
         self.assertEqual(grill_me["skills"], ["grill-me", "grill-with-docs"])
         self.assertEqual(grill_me["checkSkills"], ["grill-me", "grill-with-docs"])

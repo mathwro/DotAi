@@ -125,6 +125,18 @@
   "marketplaces": [],
   "plugins": [],
   "ompExtensions": ["~/.pi/agent/extensions/rtk.ts"],
+  "ompRouting": {
+    "roles": {
+      "default": ["openai-codex/gpt-5.6-sol", "github-copilot/gpt-5.6-sol"],
+      "task": ["github-copilot/gpt-5.6-sol", "openai-codex/gpt-5.6-sol"],
+      "smol": ["github-copilot/gpt-5.4-mini", "openai-codex/gpt-5.4-mini"],
+      "slow": ["openai-codex/gpt-5.6-sol:high", "github-copilot/gpt-5.6-sol:high"]
+    },
+    "agentModelOverrides": {"sonic": "@smol", "task": "@task"},
+    "usageReservePct": 10,
+    "usageReservePolicy": "auto",
+    "fallbackRevertPolicy": "cooldown-expiry"
+  },
   "mcp": {
     "$schema": "https://raw.githubusercontent.com/can1357/oh-my-pi/main/packages/coding-agent/src/config/mcp-schema.json",
     "target": "~/.omp/agent/mcp.json",

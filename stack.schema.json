@@ -46,6 +46,31 @@
       "uniqueItems": true,
       "default": []
     },
+    "ompRouting": {
+      "type": "object",
+      "required": ["roles"],
+      "additionalProperties": false,
+      "properties": {
+        "roles": {
+          "type": "object",
+          "minProperties": 1,
+          "propertyNames": {"type": "string", "minLength": 1},
+          "additionalProperties": {
+            "type": "array",
+            "minItems": 1,
+            "items": {"type": "string", "minLength": 1}
+          }
+        },
+        "agentModelOverrides": {
+          "type": "object",
+          "propertyNames": {"type": "string", "minLength": 1},
+          "additionalProperties": {"type": "string", "minLength": 1}
+        },
+        "usageReservePct": {"type": "integer", "minimum": 0, "maximum": 100},
+        "usageReservePolicy": {"enum": ["confirm", "auto", "fail-closed"]},
+        "fallbackRevertPolicy": {"enum": ["cooldown-expiry", "never"]}
+      }
+    },
     "mcp": {
       "type": "object",
       "required": ["target", "servers"],

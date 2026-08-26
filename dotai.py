@@ -204,6 +204,57 @@ def initialize_default_manifest(path: Path) -> bool:
     return initialize_manifest(path)
 
 
+def validate_omp_routing(value: Any) -> dict[str, Any]:
+    if value is None:
+        return {}
+    if not isinstance(value, dict):
+        raise DotAiError("Manifest 'ompRouting' must be an object")
+    if set(value) - {
+        "roles",
+        "agentModelOverrides",
+        "usageReservePct",
+        "usageReservePolicy",
+        "fallbackRevertPolicy",
+    }:
+        raise DotAiError("Manifest 'ompRouting' has unsupported properties")
+
+    roles = value.get("roles")
+    if not isinstance(roles, dict) or not roles:
+        raise DotAiError("Manifest 'ompRouting.roles' must be a non-empty object")
+    for role, selectors in roles.items():
+        if not isinstance(role, str) or not role:
+            raise DotAiError("Manifest 'ompRouting' role names must be non-empty strings")
+        if not isinstance(selectors, list) or not selectors:
+            raise DotAiError("Manifest 'ompRouting' role selectors must be non-empty arrays")
+        if any(not isinstance(selector, str) or not selector for selector in selectors):
+            raise DotAiError("Manifest 'ompRouting' selectors must be non-empty strings")
+
+    overrides = value.get("agentModelOverrides", {})
+    if not isinstance(overrides, dict) or any(
+        not isinstance(agent, str) or not agent or not isinstance(model, str) or not model
+        for agent, model in overrides.items()
+    ):
+        raise DotAiError("Manifest 'ompRouting.agentModelOverrides' must map non-empty strings")
+
+    reserve = value.get("usageReservePct", 10)
+    if isinstance(reserve, bool) or not isinstance(reserve, int) or not 0 <= reserve <= 100:
+        raise DotAiError("Manifest 'ompRouting.usageReservePct' must be an integer from 0 to 100")
+    reserve_policy = value.get("usageReservePolicy", "auto")
+    if not isinstance(reserve_policy, str) or reserve_policy not in {"confirm", "auto", "fail-closed"}:
+        raise DotAiError("Manifest 'ompRouting.usageReservePolicy' is invalid")
+    revert_policy = value.get("fallbackRevertPolicy", "cooldown-expiry")
+    if not isinstance(revert_policy, str) or revert_policy not in {"cooldown-expiry", "never"}:
+        raise DotAiError("Manifest 'ompRouting.fallbackRevertPolicy' is invalid")
+
+    return {
+        "roles": roles,
+        "agentModelOverrides": overrides,
+        "usageReservePct": reserve,
+        "usageReservePolicy": reserve_policy,
+        "fallbackRevertPolicy": revert_policy,
+    }
+
+
 def load_manifest(path: Path) -> dict[str, Any]:
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
@@ -224,6 +275,8 @@ def load_manifest(path: Path) -> dict[str, Any]:
     extensions = data.get("ompExtensions", [])
     if not isinstance(extensions, list) or any(not isinstance(item, str) or not item for item in extensions):
         raise DotAiError("Manifest 'ompExtensions' must be an array of non-empty strings")
+    if "ompRouting" in data:
+        data["ompRouting"] = validate_omp_routing(data["ompRouting"])
     mcp = data.get("mcp", {})
     if not isinstance(mcp, dict) or not isinstance(mcp.get("servers", {}), dict):
         raise DotAiError("Manifest 'mcp.servers' must be an object")
