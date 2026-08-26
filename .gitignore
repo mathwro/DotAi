@@ -5,3 +5,4 @@ __pycache__/
 .pytest_cache/
 graphify-out/
 stack.json.bak.*
+.worktrees/
