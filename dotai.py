@@ -533,6 +533,83 @@ def resolve_omp_routing(
     return primaries, fallbacks, unavailable
 
 
+def configured_omp_value(runner: Runner, key: str) -> Any | None:
+    raw = runner.output(["omp", "config", "get", key, "--json"])
+    try:
+        configured = json.loads(raw)
+    except (TypeError, json.JSONDecodeError):
+        return None
+    if not isinstance(configured, dict) or "value" not in configured:
+        return None
+    return configured["value"]
+
+
+def configure_omp_routing(manifest: dict[str, Any], runner: Runner) -> int:
+    routing = manifest.get("ompRouting")
+    if routing is None:
+        print(f"{badge('INACTIVE')} OMP routing: not configured in manifest")
+        return 0
+
+    available = available_omp_models(runner)
+    if available is None:
+        print(f"{badge('FAIL')} OMP routing: unable to read OMP model catalog")
+        return 1
+    primaries, fallbacks, unavailable = resolve_omp_routing(routing, available)
+    if not primaries:
+        print(f"{badge('INACTIVE')} OMP routing: no configured model candidates are available")
+        print(f"  unavailable roles: {', '.join(unavailable)}")
+        return 1
+
+    providers = sorted({selector.partition("/")[0] for selector in available})
+    print(f"{heading('OMP routing:')}")
+    print(f"  discovered providers: {', '.join(providers)}")
+    print(f"  resolved primaries: {json.dumps(primaries, separators=(',', ':'))}")
+    print(f"  fallback chains: {json.dumps(fallbacks, separators=(',', ':'))}")
+    print(f"  unavailable roles: {', '.join(unavailable) or 'none'}")
+
+    record_keys = ("modelRoles", "retry.fallbackChains", "task.agentModelOverrides")
+    scalar_values: dict[str, Any] = {
+        "retry.modelFallback": True,
+        "retry.usageAwareFallback": True,
+        "retry.usageReservePct": routing["usageReservePct"],
+        "retry.usageReservePolicy": routing["usageReservePolicy"],
+        "retry.fallbackRevertPolicy": routing["fallbackRevertPolicy"],
+    }
+    current = {key: configured_omp_value(runner, key) for key in (*record_keys, *scalar_values)}
+    if any(
+        not isinstance(current[key], dict) or any(not isinstance(name, str) for name in current[key])
+        for key in record_keys
+    ) or any(current[key] is None for key in scalar_values):
+        print(f"{badge('FAIL')} OMP routing: unable to read required OMP configuration")
+        return 1
+
+    desired_records = {
+        "modelRoles": {**current["modelRoles"], **primaries},
+        "retry.fallbackChains": {**current["retry.fallbackChains"], **fallbacks},
+        "task.agentModelOverrides": {**current["task.agentModelOverrides"], **routing["agentModelOverrides"]},
+    }
+    writes: list[tuple[str, str]] = []
+    for key, value in desired_records.items():
+        if current[key] != value:
+            writes.append((key, json.dumps(value, separators=(",", ":"))))
+    for key, value in scalar_values.items():
+        if current[key] != value:
+            writes.append((key, str(value).lower() if isinstance(value, bool) else str(value)))
+
+    if not writes:
+        print(f"{badge('OK')} OMP routing: already configured")
+        return 0
+    if runner.dry_run:
+        for key, value in writes:
+            print(f"{badge('RUN')} Dry run: Configure OMP routing {key}: omp config set {key} {value}")
+        return 0
+
+    failures_before = len(runner.failures)
+    for key, value in writes:
+        runner.run(["omp", "config", "set", key, value], f"Configure OMP routing {key}")
+    return 1 if len(runner.failures) > failures_before else 0
+
+
 def configured_omp_extensions(runner: Runner) -> list[str] | None:
     raw = runner.output(["omp", "config", "get", "extensions", "--json"])
     if not raw:
@@ -1103,6 +1180,10 @@ def build_parser() -> argparse.ArgumentParser:
     )
     sync = sub.add_parser("sync", help="Synchronize skills, plugins, and MCP configuration")
     sync.add_argument("--dry-run", action="store_true")
+    configure = sub.add_parser("configure", help="Configure explicit post-authentication integrations")
+    configure_sub = configure.add_subparsers(dest="configure_target", required=True)
+    configure_routing = configure_sub.add_parser("omp-routing", help="Configure OMP multi-provider model routing")
+    configure_routing.add_argument("--dry-run", action="store_true")
     sub.add_parser("version", help="Print the current DotAi version")
     sub.add_parser("init", help="Generate a new manifest from stack.example.json")
     fix = sub.add_parser("fix", help="Review and migrate legacy Pi-targeted skills to OMP")
@@ -1204,6 +1285,8 @@ def main(argv: list[str] | None = None) -> int:
             print(f"{styled('dotai:', 'red', 'bold')} {exc}", file=sys.stderr)
             return 2
     runner = Runner(platform_name, getattr(args, "dry_run", False), args.verbose)
+    if args.command == "configure":
+        return configure_omp_routing(manifest, runner)
     if args.command == "fix":
         try:
             return fix_legacy_skills(manifest, args.manifest, runner)
