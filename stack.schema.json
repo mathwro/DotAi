@@ -129,7 +129,7 @@
       "additionalProperties": false,
       "properties": {
         "source": {"type": "string", "minLength": 1},
-        "agent": {"type": "string", "default": "pi"},
+        "agent": {"type": "string", "default": "universal"},
         "skills": {"type": "array", "items": {"type": "string"}, "default": ["*"]},
         "checkSkills": {"type": "array", "items": {"type": "string"}}
       }

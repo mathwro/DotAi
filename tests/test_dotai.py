@@ -181,6 +181,55 @@ class DotAiTests(unittest.TestCase):
                 installed, detail = DOTAI.skill_status(skill)
                 self.assertTrue(installed)
                 self.assertEqual(detail, "installed for pi")
+    def test_universal_skill_target_uses_omp_discovery_path(self) -> None:
+        skill = {"source": "owner/skills", "agent": "universal", "checkSkills": ["alpha"]}
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            path = home / ".agents" / "skills" / "alpha" / "SKILL.md"
+            path.parent.mkdir(parents=True)
+            path.write_text("---\nname: alpha\ndescription: test\n---\n", encoding="utf-8")
+            with mock.patch.dict(os.environ, {"DOTAI_HOME": str(home)}):
+                installed, detail = DOTAI.skill_status(skill)
+            self.assertTrue(installed)
+            self.assertEqual(detail, "installed for universal")
+        self.assertEqual(
+            DOTAI.skill_command(skill)[:9],
+            ["npx", "--yes", "skills@latest", "add", "owner/skills", "--global", "--agent", "universal", "--skill"],
+        )
+
+    def test_status_highlights_legacy_pi_skill_targets(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            skill_path = home / ".pi" / "agent" / "skills" / "legacy" / "SKILL.md"
+            skill_path.parent.mkdir(parents=True)
+            skill_path.write_text("# legacy\n", encoding="utf-8")
+            manifest = self.minimal_manifest("~/.omp/agent/mcp.json")
+            manifest["skills"] = [{"source": "owner/skills", "agent": "pi", "checkSkills": ["legacy"]}]
+            output = io.StringIO()
+            with mock.patch.dict(os.environ, {"DOTAI_HOME": str(home)}), contextlib.redirect_stdout(output):
+                healthy = DOTAI.print_status(manifest, DOTAI.Runner("ubuntu"))
+            self.assertFalse(healthy)
+            self.assertIn("[DRIFT] Legacy Pi skill targets", output.getvalue())
+            self.assertIn("Run 'dotai fix'", output.getvalue())
+
+    def test_update_highlights_legacy_pi_skill_targets(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "stack.json"
+            manifest = self.minimal_manifest("~/.omp/agent/mcp.json")
+            manifest["skills"] = [{"source": "owner/skills", "agent": "pi", "checkSkills": ["legacy"]}]
+            path.write_text(json.dumps(manifest), encoding="utf-8")
+            output = io.StringIO()
+            with (
+                mock.patch.object(DOTAI, "reconcile_packages"),
+                mock.patch.object(DOTAI, "reconcile_omp_extensions"),
+                mock.patch.object(DOTAI, "reconcile_skills"),
+                mock.patch.object(DOTAI, "reconcile_plugins"),
+                mock.patch.object(DOTAI, "sync_mcp", return_value=True),
+                contextlib.redirect_stdout(output),
+            ):
+                self.assertEqual(DOTAI.main(["--manifest", str(path), "update", "--dry-run"]), 0)
+            self.assertIn("[DRIFT] Legacy Pi skill targets", output.getvalue())
+            self.assertIn("Run 'dotai fix'", output.getvalue())
 
     def test_status_color_can_be_forced_or_disabled(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -208,6 +257,7 @@ class DotAiTests(unittest.TestCase):
                 )
             self.assertNotIn("\033[", plain.getvalue())
             self.assertIn("[OK]", plain.getvalue())
+            self.assertNotIn("Legacy Pi skill targets", plain.getvalue())
 
     def test_add_commands_extend_every_supported_integration_kind(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -237,11 +287,131 @@ class DotAiTests(unittest.TestCase):
                     self.assertEqual(DOTAI.main(["--manifest", str(path), *command]), 0)
             value = json.loads(path.read_text(encoding="utf-8"))
             self.assertEqual(value["skills"][0]["source"], "owner/skills")
+            self.assertEqual(value["skills"][0]["agent"], "universal")
             self.assertEqual(value["marketplaces"][0]["name"], "team")
             self.assertEqual(value["plugins"][0]["id"], "review@team")
             self.assertEqual(value["mcp"]["servers"]["local"]["args"], ["-y", "server-package"])
             self.assertEqual(value["packages"][0]["install"]["windows"], ["scoop install example"])
             self.assertEqual(value["packages"][0]["updateGroup"], "dependency")
+
+    def test_skill_migration_updates_one_source_and_preserves_other_entries(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "stack.json"
+            manifest = self.minimal_manifest("~/.omp/agent/mcp.json")
+            manifest["skills"] = [
+                {
+                    "source": "mattpocock/skills",
+                    "agent": "pi",
+                    "skills": ["grill-me", "grill-with-docs"],
+                    "checkSkills": ["grill-me", "grill-with-docs"],
+                },
+                {
+                    "source": "other/skills",
+                    "agent": "pi",
+                    "skills": ["other"],
+                    "checkSkills": ["other"],
+                },
+            ]
+            path.write_text(json.dumps(manifest), encoding="utf-8")
+            with contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(
+                    DOTAI.main(
+                        [
+                            "--manifest",
+                            str(path),
+                            "add",
+                            "skill",
+                            "mattpocock/skills",
+                            "--agent",
+                            "universal",
+                            "--skill",
+                            "grill-me",
+                            "--skill",
+                            "grill-with-docs",
+                            "--check-skill",
+                            "grill-me",
+                            "--check-skill",
+                            "grill-with-docs",
+                        ]
+                    ),
+                    0,
+                )
+            updated = json.loads(path.read_text(encoding="utf-8"))
+            self.assertEqual(updated["skills"][0]["agent"], "universal")
+            self.assertEqual(updated["skills"][1], manifest["skills"][1])
+
+    def test_sync_does_not_rewrite_existing_skill_agent_selection(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "stack.json"
+            manifest = self.minimal_manifest("~/.omp/agent/mcp.json")
+            manifest["skills"] = [
+                {
+                    "source": "mattpocock/skills",
+                    "agent": "pi",
+                    "skills": ["grill-me", "grill-with-docs"],
+                    "checkSkills": ["grill-me", "grill-with-docs"],
+                }
+            ]
+            path.write_text(json.dumps(manifest), encoding="utf-8")
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                self.assertEqual(
+                    DOTAI.main(["--manifest", str(path), "sync", "--dry-run"]),
+                    0,
+                )
+            self.assertEqual(json.loads(path.read_text(encoding="utf-8")), manifest)
+            self.assertIn("--agent pi", output.getvalue())
+
+    def test_fix_shows_diff_and_applies_after_confirmation_with_backup(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "stack.json"
+            manifest = self.minimal_manifest("~/.omp/agent/mcp.json")
+            manifest["skills"] = [
+                {
+                    "source": "mattpocock/skills",
+                    "agent": "pi",
+                    "skills": ["grill-me", "grill-with-docs"],
+                    "checkSkills": ["grill-me", "grill-with-docs"],
+                },
+                {
+                    "source": "custom/skills",
+                    "agent": "claude",
+                    "skills": ["custom"],
+                    "checkSkills": ["custom"],
+                },
+            ]
+            original = json.dumps(manifest)
+            path.write_text(original, encoding="utf-8")
+            output = io.StringIO()
+            with (
+                mock.patch("builtins.input", return_value="y"),
+                mock.patch.object(DOTAI, "reconcile_skills") as reconcile,
+                contextlib.redirect_stdout(output),
+            ):
+                self.assertEqual(DOTAI.main(["--manifest", str(path), "fix"]), 0)
+            updated = json.loads(path.read_text(encoding="utf-8"))
+            self.assertEqual(updated["skills"][0]["agent"], "universal")
+            self.assertEqual(updated["skills"][1], manifest["skills"][1])
+            self.assertEqual(len(list(path.parent.glob("stack.json.bak.*"))), 1)
+            self.assertEqual(json.loads(next(path.parent.glob("stack.json.bak.*")).read_text()), manifest)
+            self.assertIn('"agent": "pi"', output.getvalue())
+            self.assertIn('"agent": "universal"', output.getvalue())
+            reconcile.assert_called_once()
+
+    def test_fix_dry_run_shows_migration_without_writing(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "stack.json"
+            manifest = self.minimal_manifest("~/.omp/agent/mcp.json")
+            manifest["skills"] = [{"source": "owner/skills", "agent": "pi", "checkSkills": ["one"]}]
+            original = json.dumps(manifest)
+            path.write_text(original, encoding="utf-8")
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                self.assertEqual(DOTAI.main(["--manifest", str(path), "fix", "--dry-run"]), 0)
+            self.assertEqual(path.read_text(encoding="utf-8"), original)
+            self.assertFalse(list(path.parent.glob("stack.json.bak.*")))
+            self.assertIn('"agent": "universal"', output.getvalue())
+            self.assertIn("--agent universal", output.getvalue())
 
     def test_update_skips_dependency_group_unless_explicitly_included(self) -> None:
         manifest = self.minimal_manifest("~/.omp/agent/mcp.json")
@@ -426,6 +596,9 @@ class DotAiTests(unittest.TestCase):
         serialized = json.dumps(manifest)
         rtk = next(package for package in manifest["packages"] if package["name"] == "RTK")
         self.assertIn(["rtk", "init", "-g", "--agent", "pi"], rtk["configure"]["default"])
+        self.assertTrue(
+            all(skill.get("agent") == "universal" for skill in manifest["skills"]),
+        )
         self.assertEqual(manifest["ompExtensions"], ["~/.pi/agent/extensions/rtk.ts"])
         grill_me = next(skill for skill in manifest["skills"] if skill["source"] == "mattpocock/skills")
         self.assertEqual(grill_me["skills"], ["grill-me", "grill-with-docs"])

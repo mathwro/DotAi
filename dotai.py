@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import difflib
 import json
 import os
 import re
@@ -356,7 +357,16 @@ def reconcile_packages(
 
 
 def skill_command(skill: dict[str, Any]) -> list[str]:
-    command = ["npx", "--yes", "skills@latest", "add", skill["source"], "--global", "--agent", skill.get("agent", "pi")]
+    command = [
+        "npx",
+        "--yes",
+        "skills@latest",
+        "add",
+        skill["source"],
+        "--global",
+        "--agent",
+        skill.get("agent", "universal"),
+    ]
     wanted = skill.get("skills", ["*"])
     for name in wanted:
         command.extend(["--skill", name])
@@ -578,9 +588,25 @@ def sync_mcp(manifest: dict[str, Any], runner: Runner) -> bool:
     return True
 
 
+def legacy_skill_sources(manifest: dict[str, Any]) -> list[str]:
+    return [skill["source"] for skill in manifest["skills"] if skill.get("agent") == "pi"]
+
+
+def print_legacy_skill_notice(manifest: dict[str, Any]) -> bool:
+    sources = legacy_skill_sources(manifest)
+    if not sources:
+        return False
+    print(f"{badge('DRIFT')} Legacy Pi skill targets: {', '.join(sources)}")
+    print("  Run 'dotai fix' to review and migrate them to the OMP universal target.")
+    return True
+
+
 def skill_status(skill: dict[str, Any]) -> tuple[bool, str]:
-    agent = skill.get("agent", "pi")
-    roots = {"pi": home_dir() / ".pi" / "agent" / "skills", "universal": home_dir() / ".config" / "agents" / "skills"}
+    agent = skill.get("agent", "universal")
+    roots = {
+        "pi": home_dir() / ".pi" / "agent" / "skills",
+        "universal": home_dir() / ".agents" / "skills",
+    }
     root = roots.get(agent, home_dir() / f".{agent}" / "skills")
     checks = skill.get("checkSkills", [])
     if checks and all((root / name / "SKILL.md").is_file() for name in checks):
@@ -641,9 +667,12 @@ def print_status(manifest: dict[str, Any], runner: Runner) -> bool:
     print(heading("Skills:"))
     for skill in manifest["skills"]:
         installed, detail = skill_status(skill)
-        healthy &= installed
-        label = "OK" if installed else "INACTIVE" if detail.startswith("installed as") else "MISSING"
+        legacy = skill.get("agent") == "pi"
+        healthy &= installed and not legacy
+        label = "DRIFT" if legacy and installed else "OK" if installed else "INACTIVE" if detail.startswith("installed as") else "MISSING"
         print(f"  {badge(label)} {skill['source']}: {detail}")
+    if print_legacy_skill_notice(manifest):
+        healthy = False
     if manifest["marketplaces"]:
         print(heading("Marketplaces:"))
         registry = home_dir() / ".omp" / "marketplaces.json"
@@ -782,6 +811,75 @@ def upsert(items: list[dict[str, Any]], key: str, value: dict[str, Any]) -> None
     items.append(value)
 
 
+
+def legacy_skill_migration(manifest: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
+    updated = dict(manifest)
+    migrated: list[str] = []
+    skills = []
+    for skill in manifest["skills"]:
+        if skill.get("agent") == "pi":
+            migrated.append(skill["source"])
+            skills.append({**skill, "agent": "universal"})
+        else:
+            skills.append(skill)
+    updated["skills"] = skills
+    return updated, migrated
+
+
+def manifest_diff(before: dict[str, Any], after: dict[str, Any], path: Path) -> str:
+    old = json.dumps(before, indent=2).splitlines()
+    new = json.dumps(after, indent=2).splitlines()
+    return "\n".join(
+        difflib.unified_diff(
+            old,
+            new,
+            fromfile=str(path),
+            tofile=f"{path} (proposed)",
+            lineterm="",
+        )
+    )
+
+
+def backup_manifest(path: Path) -> Path:
+    stamp = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+    backup = path.with_name(f"{path.name}.bak.{stamp}")
+    shutil.copy2(path, backup)
+    return backup
+
+
+def fix_legacy_skills(manifest: dict[str, Any], path: Path, runner: Runner) -> int:
+    updated, migrated = legacy_skill_migration(manifest)
+    if not migrated:
+        print(f"{badge('OK')} No legacy Pi-targeted skills found in {path}.")
+        return 0
+
+    print(f"{heading('Proposed skill migration:')}")
+    print(manifest_diff(manifest, updated, path))
+    print(f"\nMigrates {len(migrated)} skill source(s) from Pi to the OMP universal target.")
+    if runner.dry_run:
+        print(f"{badge('RUN')} Dry run: no manifest changes applied.")
+        reconcile_skills(updated, runner)
+        return 1 if runner.failures else 0
+    try:
+        answer = input("Apply these changes and install the migrated skills? [y/N] ")
+    except (EOFError, KeyboardInterrupt):
+        answer = ""
+    if answer.strip().lower() not in {"y", "yes"}:
+        print(f"{badge('OK')} No changes applied.")
+        return 0
+
+    backup = backup_manifest(path)
+    write_manifest(path, updated)
+    print(f"{badge('OK')} Manifest backup written to {backup}")
+    reconcile_skills(updated, runner)
+    if runner.failures:
+        print(f"{styled('Skill migration failed:', 'red', 'bold')}")
+        for failure in runner.failures:
+            print(f"  - {failure}")
+        return 1
+    print(f"{styled('Skill migration complete.', 'green', 'bold')}")
+    return 0
+
 def write_manifest(path: Path, manifest: dict[str, Any]) -> None:
     payload = json.dumps(manifest, indent=2) + "\n"
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -872,6 +970,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     sync = sub.add_parser("sync", help="Synchronize skills, plugins, and MCP configuration")
     sync.add_argument("--dry-run", action="store_true")
+    fix = sub.add_parser("fix", help="Review and migrate legacy Pi-targeted skills to OMP")
+    fix.add_argument("--dry-run", action="store_true", help="Show the migration without changing files or machine state")
     add = sub.add_parser("add", help="Add a tool, skill, marketplace, plugin, or MCP server to the manifest")
     add_sub = add.add_subparsers(dest="kind", required=True)
 
@@ -889,7 +989,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     add_skill = add_sub.add_parser("skill", help="Add or replace a skills.sh source")
     add_skill.add_argument("source")
-    add_skill.add_argument("--agent", default="pi")
+    add_skill.add_argument("--agent", default="universal")
     add_skill.add_argument("--skill", dest="skills", action="append")
     add_skill.add_argument("--check-skill", dest="check_skills", action="append")
 
@@ -955,6 +1055,12 @@ def main(argv: list[str] | None = None) -> int:
             print(f"{styled('dotai:', 'red', 'bold')} {exc}", file=sys.stderr)
             return 2
     runner = Runner(platform_name, getattr(args, "dry_run", False), args.verbose)
+    if args.command == "fix":
+        try:
+            return fix_legacy_skills(manifest, args.manifest, runner)
+        except OSError as exc:
+            print(f"{styled('dotai:', 'red', 'bold')} {exc}", file=sys.stderr)
+            return 2
     if args.command == "status":
         return 0 if print_status(manifest, runner) else 1
     if args.command == "doctor":
@@ -969,6 +1075,8 @@ def main(argv: list[str] | None = None) -> int:
             runner.failures.append(str(exc))
         save_state(args.manifest, runner, "sync")
         return 1 if runner.failures else 0
+    if args.command == "update":
+        print_legacy_skill_notice(manifest)
     return reconcile(
         manifest,
         args.manifest,

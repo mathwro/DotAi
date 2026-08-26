@@ -141,7 +141,7 @@ DotAi updates configuration conservatively:
 - MCP servers are matched semantically across configurations OMP can discover, so aliases and provider-specific fields such as authentication headers do not create duplicates.
 - Repeated synchronization is idempotent and does not create another backup when nothing changes.
 - Managed `ompExtensions` are appended to OMP's global extension list; unrelated user extensions are retained.
-- Skill health is agent-scoped. A skill found only in a Codex plugin cache is reported as `INACTIVE` until installed for Pi/OMP.
+- Skill health is agent-scoped. A skill found only in a Codex plugin cache is reported as `INACTIVE` until installed for the configured OMP skill target.
 - Dry runs do not modify files or machine state.
 
 Credentials belong in environment variables or a secret manager, not in `stack.json` or version control. The manifest may safely store the name of an environment variable for OMP to resolve at runtime.
@@ -158,8 +158,18 @@ The `add` commands update `stack.json`. Run `dotai sync` or `dotai install` afte
   --check-skill review
 ```
 
-Skills default to the `pi` agent and are installed globally through skills.sh. Repeat `--skill` and `--check-skill` when a source provides multiple skills.
+Skills default to the `universal` agent target, which installs into `~/.agents/skills/`, the user-level location OMP discovers. Repeat `--skill` and `--check-skill` when a source provides multiple skills.
 After synchronization, restart OMP so it discovers newly installed skills. With OMP's default `skills.enableSkillCommands` setting, invoke them as `/skill:<name>` commands, for example `/skill:grill-me`, `/skill:grill-with-docs`, or `/skill:commit-and-document`; the shorter `/<name>` form is not the registered command syntax.
+
+Existing `stack.json` files are not rewritten by `sync`, so existing configurations remain safe. To migrate all legacy skill entries that still target Pi, run:
+
+```sh
+./dotai fix
+```
+
+DotAi shows the exact manifest diff and the skill installation commands, then waits for confirmation. Answer `y` to apply the changes. Use `./dotai fix --dry-run` to preview the diff and commands without modifying the manifest or machine. The command changes only `"agent": "pi"` skill entries to `"agent": "universal"`, creates a timestamped manifest backup, and leaves the old Pi-installed files in place.
+
+After the migration, future `dotai sync` runs use `~/.agents/skills/`, the user-level location OMP discovers. `sync` alone intentionally does not change an existing manifest's agent selections.
 
 ### Add a remote MCP server
 
