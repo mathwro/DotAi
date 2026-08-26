@@ -27,6 +27,7 @@ HEADER_NAME = re.compile(r"^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$")
 ENV_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 RELEASE_URL = "https://api.github.com/repos/mathwro/DotAi/releases/latest"
 VERSION_PATTERN = re.compile(r"^v?(\d+)\.(\d+)\.(\d+)$")
+THINKING_SUFFIXES = frozenset({"minimal", "low", "medium", "high", "xhigh", "max", "auto"})
 
 _COLOR_ENABLED = False
 _ANSI = {
@@ -489,6 +490,47 @@ def extension_identity(value: str) -> str:
     if value.startswith(("~/", "~\\")) or Path(value).is_absolute():
         return os.path.normcase(str(expand_path(value).resolve()))
     return value
+
+
+def selector_identity(selector: str) -> str:
+    base, separator, suffix = selector.rpartition(":")
+    return base if separator and suffix in THINKING_SUFFIXES else selector
+
+
+def available_omp_models(runner: Runner) -> set[str] | None:
+    raw = runner.output(["omp", "models", "--json"])
+    try:
+        catalog = json.loads(raw)
+    except (TypeError, json.JSONDecodeError):
+        return None
+    if not isinstance(catalog, dict) or not isinstance(catalog.get("models"), list):
+        return None
+    models = catalog["models"]
+    if any(not isinstance(model, dict) or not isinstance(model.get("selector"), str) or not model["selector"] for model in models):
+        return None
+    return {model["selector"] for model in models}
+
+
+def resolve_omp_routing(
+    routing: dict[str, Any], available: set[str]
+) -> tuple[dict[str, str], dict[str, list[str]], list[str]]:
+    available_identities = {selector_identity(selector) for selector in available}
+    primaries: dict[str, str] = {}
+    fallbacks: dict[str, list[str]] = {}
+    unavailable: list[str] = []
+    for role, candidates in routing["roles"].items():
+        retained: list[str] = []
+        seen: set[str] = set()
+        for candidate in candidates:
+            if candidate not in seen and selector_identity(candidate) in available_identities:
+                seen.add(candidate)
+                retained.append(candidate)
+        if retained:
+            primaries[role] = retained[0]
+            fallbacks[role] = retained
+        else:
+            unavailable.append(role)
+    return primaries, fallbacks, unavailable
 
 
 def configured_omp_extensions(runner: Runner) -> list[str] | None:

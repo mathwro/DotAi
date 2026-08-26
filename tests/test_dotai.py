@@ -177,6 +177,78 @@ class DotAiTests(unittest.TestCase):
                 self.assertFalse(DOTAI.sync_mcp(manifest, DOTAI.Runner("ubuntu")))
             self.assertEqual(target.read_text(encoding="utf-8"), original)
 
+    def test_selector_identity_removes_one_recognized_thinking_suffix(self) -> None:
+        self.assertEqual(DOTAI.selector_identity("openai-codex/gpt-5.6-sol:high"), "openai-codex/gpt-5.6-sol")
+        self.assertEqual(DOTAI.selector_identity("openai-codex/gpt-5.6-sol:high:auto"), "openai-codex/gpt-5.6-sol:high")
+        self.assertEqual(DOTAI.selector_identity("openai-codex/gpt-5.6-sol:custom"), "openai-codex/gpt-5.6-sol:custom")
+
+    def test_available_omp_models_parses_only_complete_catalogs(self) -> None:
+        runner = DOTAI.Runner("ubuntu")
+        catalog = json.dumps(
+            {
+                "models": [
+                    {"selector": "openai-codex/gpt-5.6-sol"},
+                    {"selector": "github-copilot/gpt-5.6-sol"},
+                    {"selector": "github-copilot/gpt-5.4-mini"},
+                ]
+            }
+        )
+
+        with mock.patch.object(runner, "output", return_value=catalog) as output:
+            self.assertEqual(
+                DOTAI.available_omp_models(runner),
+                {
+                    "openai-codex/gpt-5.6-sol",
+                    "github-copilot/gpt-5.6-sol",
+                    "github-copilot/gpt-5.4-mini",
+                },
+            )
+        output.assert_called_once_with(["omp", "models", "--json"])
+
+        for malformed in ("", "[]", "{", "{}", '{"models": {}}', '{"models": ["selector"]}', '{"models": [{}]}', '{"models": [{"selector": ""}]}'):
+            with self.subTest(malformed=malformed), mock.patch.object(runner, "output", return_value=malformed):
+                self.assertIsNone(DOTAI.available_omp_models(runner))
+
+        with mock.patch.object(runner, "output", return_value='{"models": []}'):
+            self.assertEqual(DOTAI.available_omp_models(runner), set())
+
+    def test_resolve_omp_routing_preserves_order_suffixes_and_unavailable_roles(self) -> None:
+        routing = {
+            "roles": {
+                "default": [
+                    "openai-codex/gpt-5.6-sol",
+                    "github-copilot/gpt-5.6-sol",
+                    "openai-codex/gpt-5.6-sol",
+                ],
+                "slow": ["openai-codex/gpt-5.6-sol:high", "github-copilot/gpt-5.6-sol:high"],
+                "smol": ["github-copilot/gpt-5.4-mini"],
+                "unavailable": ["openai-codex/gpt-5.4-mini"],
+            }
+        }
+        available = {
+            "openai-codex/gpt-5.6-sol",
+            "github-copilot/gpt-5.6-sol",
+            "github-copilot/gpt-5.4-mini",
+        }
+
+        primaries, fallbacks, unavailable = DOTAI.resolve_omp_routing(routing, available)
+
+        self.assertEqual(
+            primaries,
+            {
+                "default": "openai-codex/gpt-5.6-sol",
+                "slow": "openai-codex/gpt-5.6-sol:high",
+                "smol": "github-copilot/gpt-5.4-mini",
+            },
+        )
+        self.assertEqual(
+            fallbacks["default"], ["openai-codex/gpt-5.6-sol", "github-copilot/gpt-5.6-sol"]
+        )
+        self.assertEqual(
+            fallbacks["slow"], ["openai-codex/gpt-5.6-sol:high", "github-copilot/gpt-5.6-sol:high"]
+        )
+        self.assertEqual(unavailable, ["unavailable"])
+
     def test_omp_extension_reconciliation_preserves_existing_entries(self) -> None:
         manifest = self.minimal_manifest("~/.omp/agent/mcp.json")
         managed = "~/.pi/agent/extensions/rtk.ts"
