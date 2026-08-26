@@ -111,6 +111,12 @@
       "agent": "pi",
       "skills": ["grill-me", "grill-with-docs"],
       "checkSkills": ["grill-me", "grill-with-docs"]
+    },
+    {
+      "source": "mathwro/Skills",
+      "agent": "pi",
+      "skills": ["commit-and-document"],
+      "checkSkills": ["commit-and-document"]
     }
   ],
   "marketplaces": [],

@@ -110,7 +110,7 @@ Automatic mode respects `NO_COLOR`, `FORCE_COLOR`, and `TERM=dumb`.
 | --- | --- |
 | Harness | [Oh My Pi](https://github.com/can1357/oh-my-pi) |
 | Tools | [RTK](https://github.com/rtk-ai/rtk), [Graphify](https://github.com/Graphify-Labs/graphify), Node.js, `uv`, `curl` |
-| Skills | [Ponytail](https://github.com/DietrichGebert/ponytail), [Superpowers](https://github.com/obra/superpowers), [Grill Me](https://github.com/mattpocock/skills) (`grill-me`, `grill-with-docs`), installed through [skills.sh](https://skills.sh/) |
+| Skills | [Ponytail](https://github.com/DietrichGebert/ponytail), [Superpowers](https://github.com/obra/superpowers), [Grill Me](https://github.com/mattpocock/skills) (`grill-me`, `grill-with-docs`), [Commit and Document](https://github.com/mathwro/Skills) (`commit-and-document`), installed through [skills.sh](https://skills.sh/) |
 | MCP servers | [Context7](https://context7.com/), [Microsoft Learn](https://learn.microsoft.com/training/support/mcp) |
 
 RTK 0.43 or newer is configured through `rtk init -g --agent pi`. This creates `~/.pi/agent/extensions/rtk.ts`, which DotAi adds to OMP's global extensions without removing user-configured entries. Restart OMP after the first installation; `dotai status` verifies both the registration and the extension source.
@@ -158,6 +158,7 @@ The `add` commands update `stack.json`. Run `dotai sync` or `dotai install` afte
 ```
 
 Skills default to the `pi` agent and are installed globally through skills.sh. Repeat `--skill` and `--check-skill` when a source provides multiple skills.
+After synchronization, restart OMP so it discovers newly installed skills. With OMP's default `skills.enableSkillCommands` setting, invoke them as `/skill:<name>` commands, for example `/skill:grill-me`, `/skill:grill-with-docs`, or `/skill:commit-and-document`; the shorter `/<name>` form is not the registered command syntax.
 
 ### Add a remote MCP server
 
