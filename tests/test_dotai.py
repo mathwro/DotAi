@@ -1201,7 +1201,15 @@ class DotAiTests(unittest.TestCase):
             all(skill.get("agent") == "universal" for skill in manifest["skills"]),
         )
         self.assertEqual(manifest["ompExtensions"], ["~/.pi/agent/extensions/rtk.ts"])
-        self.assertEqual(manifest["ompRouting"]["roles"]["default"][0], "openai-codex/gpt-5.6-sol")
+        self.assertEqual(
+            manifest["ompRouting"]["roles"],
+            {
+                "default": ["openai-codex/gpt-5.6-sol", "github-copilot/gpt-5.6-terra"],
+                "task": ["github-copilot/gpt-5.6-terra", "github-copilot/gpt-5.6-luna", "openai-codex/gpt-5.6-sol"],
+                "smol": ["github-copilot/gpt-5.6-luna", "github-copilot/gpt-5.6-terra", "openai-codex/gpt-5.4-mini"],
+                "slow": ["openai-codex/gpt-5.6-sol:high", "github-copilot/gpt-5.6-terra:high", "github-copilot/gpt-5.6-luna:high"],
+            },
+        )
         grill_me = next(skill for skill in manifest["skills"] if skill["source"] == "mattpocock/skills")
         self.assertEqual(grill_me["skills"], ["grill-me", "grill-with-docs"])
         self.assertEqual(grill_me["checkSkills"], ["grill-me", "grill-with-docs"])
