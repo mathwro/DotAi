@@ -44,6 +44,9 @@
         "windows": ["scoop update oh-my-pi; if ($LASTEXITCODE -ne 0) { scoop install oh-my-pi }"],
         "macos": ["brew upgrade can1357/tap/omp || brew install can1357/tap/omp"],
         "linux": [["omp", "update"]]
+      },
+      "configure": {
+        "default": [["omp", "config", "set", "secrets.enabled", "true"]]
       }
     },
     {

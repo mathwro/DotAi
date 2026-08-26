@@ -296,6 +296,10 @@ class DotAiTests(unittest.TestCase):
         manifest = DOTAI.load_manifest(ROOT / "stack.example.json")
         packages = {package["name"]: package for package in manifest["packages"]}
         self.assertEqual(DOTAI.selected(packages["Oh My Pi"]["update"], "wsl"), [["omp", "update"]])
+        self.assertEqual(
+            packages["Oh My Pi"]["configure"]["default"],
+            [["omp", "config", "set", "secrets.enabled", "true"]],
+        )
         self.assertEqual(packages["Node.js"]["updateGroup"], "dependency")
         self.assertEqual(packages["uv"]["updateGroup"], "dependency")
 

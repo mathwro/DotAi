@@ -114,6 +114,7 @@ Automatic mode respects `NO_COLOR`, `FORCE_COLOR`, and `TERM=dumb`.
 | MCP servers | [Context7](https://context7.com/), [Microsoft Learn](https://learn.microsoft.com/training/support/mcp) |
 
 RTK 0.43 or newer is configured through `rtk init -g --agent pi`. This creates `~/.pi/agent/extensions/rtk.ts`, which DotAi adds to OMP's global extensions without removing user-configured entries. Restart OMP after the first installation; `dotai status` verifies both the registration and the extension source.
+DotAi enables OMP's **Hide Secrets** privacy setting (`secrets.enabled`) during installation and updates, so configured secrets are obfuscated before prompts are sent to providers.
 
 The Pi extension is independent of RTK's optional Codex integration.
 
