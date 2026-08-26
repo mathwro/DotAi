@@ -28,6 +28,7 @@ ENV_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 RELEASE_URL = "https://api.github.com/repos/mathwro/DotAi/releases/latest"
 VERSION_PATTERN = re.compile(r"^v?(\d+)\.(\d+)\.(\d+)$")
 THINKING_SUFFIXES = frozenset({"minimal", "low", "medium", "high", "xhigh", "max", "auto"})
+PLACEHOLDER = re.compile(r"\{(home|repo|python)\}")
 
 _COLOR_ENABLED = False
 _ANSI = {
@@ -314,7 +315,7 @@ class Runner:
 
     def _format(self, value: str) -> str:
         values = {"home": str(home_dir()), "repo": str(ROOT), "python": sys.executable}
-        return value.replace("{home}", values["home"]).replace("{repo}", values["repo"]).replace("{python}", values["python"])
+        return PLACEHOLDER.sub(lambda match: values[match.group(1)], value)
 
     def argv(self, command: str | list[str]) -> list[str]:
         if isinstance(command, str):

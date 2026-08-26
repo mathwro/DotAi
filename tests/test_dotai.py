@@ -388,6 +388,18 @@ class DotAiTests(unittest.TestCase):
             ],
         )
 
+    def test_runner_formats_only_original_supported_placeholders(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory) / "{python}"
+            literal_json = '{"literal":{"braces":true}}'
+            with mock.patch.dict(os.environ, {"DOTAI_HOME": str(home)}):
+                runner = DOTAI.Runner("ubuntu")
+                self.assertEqual(runner.argv(["tool", "{home}"]), ["tool", str(home)])
+                self.assertEqual(
+                    runner.argv(["{home}", "{repo}", "{python}", literal_json]),
+                    [str(home), str(DOTAI.ROOT), sys.executable, literal_json],
+                )
+
     def test_configure_omp_routing_is_idempotent_and_dry_run_only_prints_plan(self) -> None:
         manifest = self.minimal_manifest("~/.omp/agent/mcp.json")
         manifest["ompRouting"] = {
