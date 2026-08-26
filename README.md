@@ -155,6 +155,25 @@ DotAi updates configuration conservatively:
 - Release checks run for `install`, `sync`, `status`, and `version`; an available newer release is shown as a warning, while network failures are ignored.
 - Dry runs do not modify files or machine state.
 
+### Configure OMP provider routing
+
+`dotai install` does not authenticate providers or configure routing. To configure provider routing safely:
+
+1. Authenticate desired providers inside OMP first.
+2. Preview with:
+
+   ```sh
+   ./dotai configure omp-routing --dry-run
+   ```
+
+3. Apply with:
+
+   ```sh
+   ./dotai configure omp-routing
+   ```
+
+Default routing keeps Codex primary for interactive/slow work, Copilot primary for task/smol workers, enables usage-aware fallback, and preserves unrelated OMP settings. `dotai status` reports `OK`, `DRIFT`, `INACTIVE`, or `FAIL` and does not modify OMP. Do not put provider credentials in `stack.json`.
+
 Credentials belong in environment variables or a secret manager, not in `stack.json` or version control. The manifest may safely store the name of an environment variable for OMP to resolve at runtime.
 
 ## Extending the stack

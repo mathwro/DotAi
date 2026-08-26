@@ -544,6 +544,16 @@ def configured_omp_value(runner: Runner, key: str) -> Any | None:
     return configured["value"]
 
 
+def omp_routing_scalar_values(routing: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "retry.modelFallback": True,
+        "retry.usageAwareFallback": True,
+        "retry.usageReservePct": routing["usageReservePct"],
+        "retry.usageReservePolicy": routing["usageReservePolicy"],
+        "retry.fallbackRevertPolicy": routing["fallbackRevertPolicy"],
+    }
+
+
 def configure_omp_routing(manifest: dict[str, Any], runner: Runner) -> int:
     routing = manifest.get("ompRouting")
     if routing is None:
@@ -568,13 +578,7 @@ def configure_omp_routing(manifest: dict[str, Any], runner: Runner) -> int:
     print(f"  unavailable roles: {', '.join(unavailable) or 'none'}")
 
     record_keys = ("modelRoles", "retry.fallbackChains", "task.agentModelOverrides")
-    scalar_values: dict[str, Any] = {
-        "retry.modelFallback": True,
-        "retry.usageAwareFallback": True,
-        "retry.usageReservePct": routing["usageReservePct"],
-        "retry.usageReservePolicy": routing["usageReservePolicy"],
-        "retry.fallbackRevertPolicy": routing["fallbackRevertPolicy"],
-    }
+    scalar_values = omp_routing_scalar_values(routing)
     current = {key: configured_omp_value(runner, key) for key in (*record_keys, *scalar_values)}
     if any(
         not isinstance(current[key], dict) or any(not isinstance(name, str) for name in current[key])
@@ -864,6 +868,43 @@ def mcp_status(manifest: dict[str, Any]) -> tuple[bool, str]:
     return True, f"{len(mcp['servers'])} managed servers available across {len(sources)} discovered config(s)"
 
 
+def omp_routing_status(manifest: dict[str, Any], runner: Runner) -> tuple[str, str]:
+    routing = manifest.get("ompRouting")
+    if routing is None:
+        return "OK", "not configured in manifest"
+
+    available = available_omp_models(runner)
+    if available is None:
+        return "FAIL", "unable to read OMP model catalog"
+    primaries, fallbacks, unavailable = resolve_omp_routing(routing, available)
+    if not primaries:
+        return "INACTIVE", "no configured model candidates are available"
+
+    record_keys = ("modelRoles", "retry.fallbackChains", "task.agentModelOverrides")
+    scalar_values = omp_routing_scalar_values(routing)
+    current = {key: configured_omp_value(runner, key) for key in (*record_keys, *scalar_values)}
+    if any(
+        not isinstance(current[key], dict) or any(not isinstance(name, str) for name in current[key])
+        for key in record_keys
+    ) or any(current[key] is None for key in scalar_values):
+        return "FAIL", "unable to read required OMP configuration"
+    if unavailable:
+        return "DRIFT", f"unavailable roles: {', '.join(unavailable)}"
+    for role, primary in primaries.items():
+        if current["modelRoles"].get(role) != primary:
+            return "DRIFT", f"model role differs: {role}"
+    for role, chain in fallbacks.items():
+        if current["retry.fallbackChains"].get(role) != chain:
+            return "DRIFT", f"fallback chain differs: {role}"
+    for agent, model in routing["agentModelOverrides"].items():
+        if current["task.agentModelOverrides"].get(agent) != model:
+            return "DRIFT", f"agent override differs: {agent}"
+    for key, value in scalar_values.items():
+        if current[key] != value:
+            return "DRIFT", f"{key} differs"
+    return "OK", "configured roles match"
+
+
 def print_status(manifest: dict[str, Any], runner: Runner) -> bool:
     healthy = True
     print(f"{heading('Platform:')} {runner.platform}")
@@ -908,6 +949,10 @@ def print_status(manifest: dict[str, Any], runner: Runner) -> bool:
         healthy &= extensions_ok
         label = "OK" if extensions_ok else "MISSING"
         print(f"{heading('OMP extensions:')}\n  {badge(label)} {detail}")
+    if "ompRouting" in manifest:
+        label, detail = omp_routing_status(manifest, runner)
+        healthy &= label == "OK"
+        print(f"{heading('OMP routing:')}\n  {badge(label)} {detail}")
     mcp_ok, detail = mcp_status(manifest)
     healthy &= mcp_ok
     label = "OK" if mcp_ok else "DRIFT"
