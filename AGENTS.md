@@ -18,7 +18,6 @@ Supported platforms:
 - `stack.example.json` — tracked baseline stack definition copied for new users
 - `stack.json` — ignored, user-owned stack configuration generated on first use
 - `stack.schema.json` — JSON Schema for both manifests
-- `bootstrap.sh` / `bootstrap.ps1` — first-run installers
 - `dotai` / `dotai.ps1` — operational launchers
 - `tests/test_dotai.py` — behavioral tests
 - `README.md` — concise installation, usage, status, and managed-stack overview

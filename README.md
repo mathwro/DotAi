@@ -6,17 +6,15 @@ Repository defaults live in [`stack.example.json`](stack.example.json). On the f
 
 ## Installation
 
-Python 3.10 or newer is required. The bootstrap scripts install it when possible.
+Python 3.10 or newer must already be installed and available on `PATH`.
 
 ### Linux, WSL, or macOS
 
 ```sh
 git clone https://github.com/mathwro/DotAi.git
 cd DotAi
-./bootstrap.sh
+./dotai install
 ```
-
-The bootstrap script uses `apt`, `pacman`, or Homebrew when Python must be installed.
 
 ### Windows PowerShell
 
@@ -25,7 +23,7 @@ Install [Scoop](https://scoop.sh/) first, then run:
 ```powershell
 git clone https://github.com/mathwro/DotAi.git
 Set-Location DotAi
-.\bootstrap.ps1
+.\dotai.ps1 install
 ```
 
 Native Windows uses Scoop for all managed package operations; Winget is intentionally not used.
