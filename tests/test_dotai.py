@@ -66,6 +66,7 @@ class DotAiTests(unittest.TestCase):
             "anthropic/claude-opus-4-8",
             "anthropic/claude-haiku-4-5",
             "github-copilot/gpt-5.6-terra",
+            "github-copilot/gpt-5.6-sol",
         ]
         values = {
             "modelRoles": {
@@ -79,7 +80,7 @@ class DotAiTests(unittest.TestCase):
                 "custom": ["private/keep"],
                 "default": [
                     "anthropic/claude-opus-4-8",
-                    "github-copilot/gpt-5.6-terra",
+                    "github-copilot/gpt-5.6-sol",
                 ],
                 "task": [
                     "github-copilot/gpt-5.6-terra",
@@ -117,6 +118,10 @@ class DotAiTests(unittest.TestCase):
         self.assertEqual(
             recommendations["providers"]["anthropic"]["roles"]["smol"],
             ["anthropic/claude-haiku-4-5", "anthropic/claude-sonnet-4-6"],
+        )
+        self.assertEqual(
+            recommendations["providers"]["github-copilot"]["roles"]["default"][0],
+            "github-copilot/gpt-5.6-sol",
         )
         self.assertEqual(
             recommendations["providers"]["github-copilot"]["roles"]["task"][0],
@@ -499,7 +504,7 @@ class DotAiTests(unittest.TestCase):
             }
 
         copilot = {
-            "default": "github-copilot/gpt-5.6-terra",
+            "default": "github-copilot/gpt-5.6-sol",
             "task": "github-copilot/gpt-5.6-terra",
             "smol": "github-copilot/gpt-5.6-luna",
             "slow": "github-copilot/gpt-5.6-terra:high",
@@ -645,6 +650,7 @@ class DotAiTests(unittest.TestCase):
 
     def test_configure_omp_routing_persists_compact_intent_and_preserves_omp_values(self) -> None:
         selectors = [
+            "github-copilot/gpt-5.6-sol",
             "github-copilot/gpt-5.6-terra",
             "github-copilot/gpt-5.6-luna",
             "openai-codex/gpt-5.6-sol",
@@ -700,7 +706,7 @@ class DotAiTests(unittest.TestCase):
                 payloads["retry.fallbackChains"],
                 {
                     "custom": ["private/keep"],
-                    "default": ["openai-codex/gpt-5.6-sol", "github-copilot/gpt-5.6-terra"],
+                    "default": ["openai-codex/gpt-5.6-sol", "github-copilot/gpt-5.6-sol"],
                     "task": [
                         "github-copilot/gpt-5.6-terra",
                         "github-copilot/gpt-5.6-luna",
@@ -725,6 +731,7 @@ class DotAiTests(unittest.TestCase):
 
     def test_configure_omp_routing_dry_run_changes_nothing(self) -> None:
         selectors = [
+            "github-copilot/gpt-5.6-sol",
             "github-copilot/gpt-5.6-terra",
             "github-copilot/gpt-5.6-luna",
             "openai-codex/gpt-5.6-sol",
@@ -773,6 +780,7 @@ class DotAiTests(unittest.TestCase):
 
     def test_configure_omp_routing_is_idempotent(self) -> None:
         selectors = [
+            "github-copilot/gpt-5.6-sol",
             "github-copilot/gpt-5.6-terra",
             "github-copilot/gpt-5.6-luna",
             "openai-codex/gpt-5.6-sol",
@@ -789,7 +797,7 @@ class DotAiTests(unittest.TestCase):
             },
             "retry.fallbackChains": {
                 "custom": ["private/keep"],
-                "default": ["openai-codex/gpt-5.6-sol", "github-copilot/gpt-5.6-terra"],
+                "default": ["openai-codex/gpt-5.6-sol", "github-copilot/gpt-5.6-sol"],
                 "task": [
                     "github-copilot/gpt-5.6-terra",
                     "github-copilot/gpt-5.6-luna",
