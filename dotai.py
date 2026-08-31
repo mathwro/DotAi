@@ -1111,12 +1111,36 @@ def omp_routing_status(manifest: dict[str, Any], runner: Runner) -> tuple[str, s
     if not routing:
         return "OK", "not configured in manifest"
 
+    try:
+        recommendations = load_routing_recommendations()
+    except DotAiError:
+        return "FAIL", "unable to read routing recommendations"
     available = available_omp_models(runner)
     if available is None:
         return "FAIL", "unable to read OMP model catalog"
-    primaries, fallbacks, unavailable = resolve_omp_routing(routing, available)
-    if not primaries:
-        return "INACTIVE", "no configured model candidates are available"
+    try:
+        providers = detected_routing_providers(recommendations, available)
+    except DotAiError as exc:
+        return "FAIL", str(exc)
+
+    persisted_providers = set(routing["providers"])
+    detected_providers = set(providers)
+    if not persisted_providers & detected_providers:
+        return "INACTIVE", "configured providers are unavailable"
+    if persisted_providers != detected_providers:
+        return (
+            "DRIFT",
+            "authenticated providers changed; run 'dotai configure omp-routing'",
+        )
+
+    primaries, fallbacks, unavailable = resolve_omp_routing(
+        recommendations,
+        routing["providers"],
+        routing["primaryProvider"],
+        available,
+    )
+    if unavailable:
+        return "DRIFT", f"unavailable roles: {', '.join(unavailable)}"
 
     record_keys = ("modelRoles", "retry.fallbackChains", "task.agentModelOverrides")
     scalar_values = omp_routing_scalar_values(routing)
@@ -1126,8 +1150,6 @@ def omp_routing_status(manifest: dict[str, Any], runner: Runner) -> tuple[str, s
         for key in record_keys
     ) or any(current[key] is None for key in scalar_values):
         return "FAIL", "unable to read required OMP configuration"
-    if unavailable:
-        return "DRIFT", f"unavailable roles: {', '.join(unavailable)}"
     for role, primary in primaries.items():
         if current["modelRoles"].get(role) != primary:
             return "DRIFT", f"model role differs: {role}"

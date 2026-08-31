@@ -157,24 +157,28 @@ DotAi updates configuration conservatively:
 
 ### Configure OMP provider routing
 
-`dotai install` does not authenticate providers or configure routing. To configure provider routing safely:
+After installation, configure routing from the providers already authenticated in OMP:
 
-1. Authenticate desired providers inside OMP first.
-2. Preview with:
+1. Run `./dotai install`.
+2. Authenticate GitHub Copilot, OpenAI Codex, Anthropic, or any combination of them inside OMP.
+3. Preview the detected providers, resolved roles, manifest diff, and pending OMP commands:
 
    ```sh
    ./dotai configure omp-routing --dry-run
    ```
 
-3. Apply with:
+4. If both Anthropic and OpenAI Codex are authenticated, choose the interactive primary when prompted or pass `--primary anthropic` or `--primary openai-codex`. Use the same flag while previewing and applying when a non-interactive shell cannot prompt.
+5. Apply the routing:
 
    ```sh
    ./dotai configure omp-routing
    ```
 
-Default routing keeps Codex primary for interactive/slow work, Copilot primary for task/smol workers, enables usage-aware fallback, and preserves unrelated OMP settings. `dotai status` reports `OK`, `DRIFT`, `INACTIVE`, or `FAIL` and does not modify OMP. Do not put provider credentials in `stack.json`.
+The `default` and `slow` interactive roles prefer the selected premium primary, then the other available premium provider, then Copilot. The `task` and `smol` worker roles prefer Copilot, then Anthropic, then Codex. When no premium provider is available, Copilot serves as the primary.
 
-Credentials belong in environment variables or a secret manager, not in `stack.json` or version control. The manifest may safely store the name of an environment variable for OMP to resolve at runtime.
+DotAi stores only compact routing intent in `stack.json`: the detected provider set, selected primary, agent overrides, and usage/fallback policies. Expanded model routes stay in OMP. DotAi discovers availability from OMP without reading provider credentials, and it preserves unrelated OMP roles, fallback chains, agent overrides, extensions, and other settings.
+
+If an existing manifest still contains static `ompRouting.roles`, run `./dotai configure omp-routing` to perform the backed-up, one-way migration to compact intent. Provider authentication changes later appear as `DRIFT` in `dotai status`; rerun `./dotai configure omp-routing` to refresh the persisted intent and managed OMP routes. Status is observational and never prompts or writes.
 
 ## Extending the stack
 
