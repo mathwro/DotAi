@@ -714,6 +714,26 @@ def configured_omp_value(runner: Runner, key: str) -> Any | None:
     return configured["value"]
 
 
+def build_omp_routing_intent(
+    routing: dict[str, Any],
+    recommendations: dict[str, Any],
+    providers: list[str],
+    primary: str,
+) -> dict[str, Any]:
+    return {
+        "providers": sorted(providers),
+        "primaryProvider": primary,
+        "agentModelOverrides": routing.get(
+            "agentModelOverrides", recommendations["agentModelOverrides"]
+        ),
+        "usageReservePct": routing.get("usageReservePct", 10),
+        "usageReservePolicy": routing.get("usageReservePolicy", "auto"),
+        "fallbackRevertPolicy": routing.get(
+            "fallbackRevertPolicy", "cooldown-expiry"
+        ),
+    }
+
+
 def omp_routing_scalar_values(routing: dict[str, Any]) -> dict[str, Any]:
     return {
         "retry.modelFallback": True,
@@ -724,43 +744,62 @@ def omp_routing_scalar_values(routing: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def configure_omp_routing(manifest: dict[str, Any], runner: Runner) -> int:
-    routing = manifest.get("ompRouting")
-    if not routing:
-        print(f"{badge('INACTIVE')} OMP routing: not configured in manifest")
-        return 0
-
+def configure_omp_routing(
+    manifest: dict[str, Any],
+    path: Path,
+    runner: Runner,
+    requested_primary: str | None = None,
+) -> int:
+    routing = manifest.get("ompRouting") or {}
+    recommendations = load_routing_recommendations()
     available = available_omp_models(runner)
     if available is None:
         print(f"{badge('FAIL')} OMP routing: unable to read OMP model catalog")
         return 1
-    primaries, fallbacks, unavailable = resolve_omp_routing(routing, available)
-    if not primaries:
-        print(f"{badge('INACTIVE')} OMP routing: no configured model candidates are available")
-        print(f"  unavailable roles: {', '.join(unavailable)}")
+
+    providers = detected_routing_providers(recommendations, available)
+    persisted_primary = routing.get("primaryProvider")
+    primary = choose_primary_provider(providers, persisted_primary, requested_primary)
+    primaries, fallbacks, unavailable = resolve_omp_routing(
+        recommendations, providers, primary, available
+    )
+    if unavailable:
+        print(f"{badge('FAIL')} OMP routing: unavailable managed roles: {', '.join(unavailable)}")
         return 1
 
-    providers = sorted({selector.partition("/")[0] for selector in available})
-    print(f"{heading('OMP routing:')}")
-    print(f"  discovered providers: {', '.join(providers)}")
-    print(f"  resolved primaries: {json.dumps(primaries, separators=(',', ':'))}")
-    print(f"  fallback chains: {json.dumps(fallbacks, separators=(',', ':'))}")
-    print(f"  unavailable roles: {', '.join(unavailable) or 'none'}")
-
-    record_keys = ("modelRoles", "retry.fallbackChains", "task.agentModelOverrides")
-    scalar_values = omp_routing_scalar_values(routing)
-    current = {key: configured_omp_value(runner, key) for key in (*record_keys, *scalar_values)}
+    intent = build_omp_routing_intent(
+        routing, recommendations, providers, primary
+    )
+    record_keys = (
+        "modelRoles",
+        "retry.fallbackChains",
+        "task.agentModelOverrides",
+    )
+    scalar_values = omp_routing_scalar_values(intent)
+    current = {
+        key: configured_omp_value(runner, key)
+        for key in (*record_keys, *scalar_values)
+    }
     if any(
-        not isinstance(current[key], dict) or any(not isinstance(name, str) for name in current[key])
+        not isinstance(current[key], dict)
+        or any(not isinstance(name, str) for name in current[key])
         for key in record_keys
     ) or any(current[key] is None for key in scalar_values):
         print(f"{badge('FAIL')} OMP routing: unable to read required OMP configuration")
         return 1
 
+    updated = dict(manifest)
+    updated["ompRouting"] = intent
     desired_records = {
         "modelRoles": {**current["modelRoles"], **primaries},
-        "retry.fallbackChains": {**current["retry.fallbackChains"], **fallbacks},
-        "task.agentModelOverrides": {**current["task.agentModelOverrides"], **routing["agentModelOverrides"]},
+        "retry.fallbackChains": {
+            **current["retry.fallbackChains"],
+            **fallbacks,
+        },
+        "task.agentModelOverrides": {
+            **current["task.agentModelOverrides"],
+            **intent["agentModelOverrides"],
+        },
     }
     writes: list[tuple[str, str]] = []
     for key, value in desired_records.items():
@@ -768,19 +807,48 @@ def configure_omp_routing(manifest: dict[str, Any], runner: Runner) -> int:
             writes.append((key, json.dumps(value, separators=(",", ":"))))
     for key, value in scalar_values.items():
         if current[key] != value:
-            writes.append((key, str(value).lower() if isinstance(value, bool) else str(value)))
+            serialized = str(value).lower() if isinstance(value, bool) else str(value)
+            writes.append((key, serialized))
 
-    if not writes:
-        print(f"{badge('OK')} OMP routing: already configured")
-        return 0
-    if runner.dry_run:
+    print(f"{heading('OMP routing:')}")
+    print(f"  discovered providers: {', '.join(providers)}")
+    print(f"  interactive primary: {primary}")
+    print(
+        "  resolved role primaries: "
+        + json.dumps(primaries, separators=(",", ":"))
+    )
+    print(
+        "  fallback chains: "
+        + json.dumps(fallbacks, separators=(",", ":"))
+    )
+    print("  manifest changes:")
+    diff = manifest_diff(manifest, updated, path)
+    print(diff or "    none")
+    print("  pending OMP commands:")
+    if writes:
         for key, value in writes:
-            print(f"{badge('RUN')} Dry run: Configure OMP routing {key}: omp config set {key} {value}")
+            print(f"    omp config set {key} {value}")
+    else:
+        print("    none")
+
+    if runner.dry_run:
+        print(f"{badge('RUN')} Dry run: no manifest or OMP changes applied.")
         return 0
+
+    manifest_changed = manifest != updated
+    if manifest_changed:
+        backup = backup_manifest(path)
+        write_manifest(path, updated)
+        print(f"{badge('OK')} Manifest backup written to {backup}")
 
     failures_before = len(runner.failures)
     for key, value in writes:
-        runner.run(["omp", "config", "set", key, value], f"Configure OMP routing {key}")
+        runner.run(
+            ["omp", "config", "set", key, value],
+            f"Configure OMP routing {key}",
+        )
+    if not manifest_changed and not writes:
+        print(f"{badge('OK')} OMP routing: already configured")
     return 1 if len(runner.failures) > failures_before else 0
 
 
@@ -1399,6 +1467,11 @@ def build_parser() -> argparse.ArgumentParser:
     configure_sub = configure.add_subparsers(dest="configure_target", required=True)
     configure_routing = configure_sub.add_parser("omp-routing", help="Configure OMP multi-provider model routing")
     configure_routing.add_argument("--dry-run", action="store_true")
+    configure_routing.add_argument(
+        "--primary",
+        choices=["anthropic", "openai-codex"],
+        help="Interactive primary when both Anthropic and Codex are authenticated",
+    )
     sub.add_parser("version", help="Print the current DotAi version")
     sub.add_parser("init", help="Generate a new manifest from stack.example.json")
     fix = sub.add_parser("fix", help="Review and migrate legacy Pi-targeted skills to OMP")
@@ -1484,9 +1557,14 @@ def main(argv: list[str] | None = None) -> int:
             print(f"{styled('dotai:', 'red', 'bold')} {exc}", file=sys.stderr)
             return 2
         return 0
+    allow_legacy_routing = (
+        args.command == "configure" and args.configure_target == "omp-routing"
+    )
     try:
         initialize_default_manifest(args.manifest)
-        manifest = load_manifest(args.manifest)
+        manifest = load_manifest(
+            args.manifest, allow_legacy_routing=allow_legacy_routing
+        )
     except (OSError, DotAiError) as exc:
         print(f"{styled('dotai:', 'red', 'bold')} {exc}", file=sys.stderr)
         return 2
@@ -1501,7 +1579,13 @@ def main(argv: list[str] | None = None) -> int:
             return 2
     runner = Runner(platform_name, getattr(args, "dry_run", False), args.verbose)
     if args.command == "configure":
-        return configure_omp_routing(manifest, runner)
+        try:
+            return configure_omp_routing(
+                manifest, args.manifest, runner, args.primary
+            )
+        except (OSError, DotAiError) as exc:
+            print(f"{styled('dotai:', 'red', 'bold')} {exc}", file=sys.stderr)
+            return 2
     if args.command == "fix":
         try:
             return fix_legacy_skills(manifest, args.manifest, runner)

@@ -47,6 +47,17 @@ class DotAiTests(unittest.TestCase):
             "fallbackRevertPolicy": "cooldown-expiry",
         }
 
+    def omp_output(self, selectors: list[str], values: dict[str, object]):
+        catalog = json.dumps({"models": [{"selector": selector} for selector in selectors]})
+
+        def output(command: list[str]) -> str:
+            if command == ["omp", "models", "--json"]:
+                return catalog
+            return json.dumps({"key": command[3], "value": values[command[3]]})
+
+        return output
+
+
     def test_routing_recommendation_catalog_is_exact_and_valid(self) -> None:
         recommendations = DOTAI.load_routing_recommendations()
         self.assertEqual(recommendations["version"], 1)
@@ -184,7 +195,6 @@ class DotAiTests(unittest.TestCase):
             report = io.StringIO()
             with mock.patch.object(DOTAI, "mcp_status", return_value=(True, "managed")), contextlib.redirect_stdout(report):
                 self.assertTrue(DOTAI.print_status(loaded, runner))
-            self.assertEqual(DOTAI.configure_omp_routing(loaded, runner), 0)
         output.assert_not_called()
         run.assert_not_called()
         self.assertNotIn("OMP routing:", report.getvalue())
@@ -551,125 +561,361 @@ class DotAiTests(unittest.TestCase):
         self.assertEqual(fallbacks["slow"], ["anthropic/model:high"])
         self.assertEqual(unavailable, ["smol"])
 
-    def test_configure_omp_routing_merges_managed_values_and_writes_scalars(self) -> None:
-        manifest = self.minimal_manifest("~/.omp/agent/mcp.json")
-        manifest["ompRouting"] = {
-            "roles": {
-                "default": ["openai-codex/gpt-5.6-sol", "github-copilot/gpt-5.6-sol"],
-                "fast": ["github-copilot/gpt-5.4-mini"],
-                "unavailable": ["anthropic/claude-test"],
-            },
-            "agentModelOverrides": {"sonic": "@smol"},
-            "usageReservePct": 10,
-            "usageReservePolicy": "auto",
-            "fallbackRevertPolicy": "cooldown-expiry",
-        }
+    def test_configure_omp_routing_persists_compact_intent_and_preserves_omp_values(self) -> None:
+        selectors = [
+            "github-copilot/gpt-5.6-terra",
+            "github-copilot/gpt-5.6-luna",
+            "openai-codex/gpt-5.6-sol",
+            "openai-codex/gpt-5.4-mini",
+        ]
         values = {
             "modelRoles": {"custom": "private/keep", "default": "old/model"},
             "retry.fallbackChains": {"custom": ["private/keep"], "default": ["old/model"]},
-            "task.agentModelOverrides": {"reviewer": "@fast", "sonic": "old"},
-            "retry.modelFallback": False,
-            "retry.usageAwareFallback": False,
-            "retry.usageReservePct": 5,
-            "retry.usageReservePolicy": "confirm",
-            "retry.fallbackRevertPolicy": "never",
-        }
-        runner = DOTAI.Runner("ubuntu")
-        catalog = json.dumps(
-            {
-                "models": [
-                    {"selector": "openai-codex/gpt-5.6-sol"},
-                    {"selector": "github-copilot/gpt-5.6-sol"},
-                    {"selector": "github-copilot/gpt-5.4-mini"},
-                ]
-            }
-        )
-
-        def output(command: list[str]) -> str:
-            if command[1] == "models":
-                return catalog
-            return json.dumps({"key": command[3], "value": values[command[3]]})
-
-        report = io.StringIO()
-        with (
-            mock.patch.object(runner, "output", side_effect=output),
-            mock.patch.object(runner, "run") as run,
-            contextlib.redirect_stdout(report),
-        ):
-            self.assertEqual(DOTAI.configure_omp_routing(manifest, runner), 0)
-
-        commands = [call.args[0] for call in run.call_args_list]
-        payloads = {command[3]: command[4] for command in commands}
-        self.assertEqual(json.loads(payloads["modelRoles"]), {
-            "custom": "private/keep",
-            "default": "openai-codex/gpt-5.6-sol",
-            "fast": "github-copilot/gpt-5.4-mini",
-        })
-        self.assertEqual(json.loads(payloads["retry.fallbackChains"]), {
-            "custom": ["private/keep"],
-            "default": ["openai-codex/gpt-5.6-sol", "github-copilot/gpt-5.6-sol"],
-            "fast": ["github-copilot/gpt-5.4-mini"],
-        })
-        self.assertEqual(json.loads(payloads["task.agentModelOverrides"]), {"reviewer": "@fast", "sonic": "@smol"})
-        self.assertEqual(
-            {key: payloads[key] for key in (
-                "retry.modelFallback",
-                "retry.usageAwareFallback",
-                "retry.usageReservePct",
-                "retry.usageReservePolicy",
-                "retry.fallbackRevertPolicy",
-            )},
-            {
-                "retry.modelFallback": "true",
-                "retry.usageAwareFallback": "true",
-                "retry.usageReservePct": "10",
-                "retry.usageReservePolicy": "auto",
-                "retry.fallbackRevertPolicy": "cooldown-expiry",
-            },
-        )
-        self.assertIn("github-copilot", report.getvalue())
-        self.assertIn("unavailable", report.getvalue())
-    def test_configure_omp_routing_passes_object_payload_through_runner(self) -> None:
-        manifest = self.minimal_manifest("~/.omp/agent/mcp.json")
-        manifest["ompRouting"] = DOTAI.validate_omp_routing(
-            {"roles": {"default": ["openai-codex/gpt-5.6-sol"]}}
-        )
-        current = {
-            "modelRoles": {},
-            "retry.fallbackChains": {"default": ["openai-codex/gpt-5.6-sol"]},
-            "task.agentModelOverrides": {},
+            "task.agentModelOverrides": {"reviewer": "@slow"},
             "retry.modelFallback": True,
             "retry.usageAwareFallback": True,
             "retry.usageReservePct": 10,
             "retry.usageReservePolicy": "auto",
             "retry.fallbackRevertPolicy": "cooldown-expiry",
         }
-        runner = DOTAI.Runner("ubuntu")
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "stack.json"
+            manifest = self.minimal_manifest("~/.omp/agent/mcp.json")
+            manifest["ompRouting"] = None
+            path.write_text(json.dumps(manifest), encoding="utf-8")
+            runner = DOTAI.Runner("ubuntu")
 
-        def output(command: list[str]) -> str:
-            if command == ["omp", "models", "--json"]:
-                return json.dumps({"models": [{"selector": "openai-codex/gpt-5.6-sol"}]})
-            return json.dumps({"key": command[3], "value": current[command[3]]})
+            def persisted_before_omp(_command: list[str], _label: str) -> None:
+                saved = json.loads(path.read_text(encoding="utf-8"))["ompRouting"]
+                self.assertEqual(saved["primaryProvider"], "openai-codex")
 
-        with (
-            mock.patch.object(runner, "output", side_effect=output),
-            mock.patch.object(
-                DOTAI.subprocess, "run", return_value=subprocess.CompletedProcess([], 0)
-            ) as run,
-            contextlib.redirect_stdout(io.StringIO()),
-        ):
-            self.assertEqual(DOTAI.configure_omp_routing(manifest, runner), 0)
+            with (
+                mock.patch.object(runner, "output", side_effect=self.omp_output(selectors, values)),
+                mock.patch.object(runner, "run", side_effect=persisted_before_omp) as run,
+                contextlib.redirect_stdout(io.StringIO()),
+            ):
+                self.assertEqual(DOTAI.configure_omp_routing(manifest, path, runner), 0)
 
-        self.assertEqual(
-            run.call_args.args[0],
-            [
-                "omp",
-                "config",
-                "set",
-                "modelRoles",
-                '{"default":"openai-codex/gpt-5.6-sol"}',
-            ],
+            saved = json.loads(path.read_text(encoding="utf-8"))
+            self.assertEqual(saved["ompRouting"]["providers"], ["github-copilot", "openai-codex"])
+            self.assertEqual(saved["ompRouting"]["primaryProvider"], "openai-codex")
+            self.assertNotIn("roles", saved["ompRouting"])
+            self.assertEqual(saved["ompRouting"]["agentModelOverrides"], {"sonic": "@smol", "task": "@task"})
+            self.assertEqual(len(list(path.parent.glob("stack.json.bak.*"))), 1)
+
+            payloads = {call.args[0][3]: json.loads(call.args[0][4]) for call in run.call_args_list}
+            self.assertEqual(
+                payloads["modelRoles"],
+                {
+                    "custom": "private/keep",
+                    "default": "openai-codex/gpt-5.6-sol",
+                    "task": "github-copilot/gpt-5.6-terra",
+                    "smol": "github-copilot/gpt-5.6-luna",
+                    "slow": "openai-codex/gpt-5.6-sol:high",
+                },
+            )
+            self.assertEqual(
+                payloads["retry.fallbackChains"],
+                {
+                    "custom": ["private/keep"],
+                    "default": ["openai-codex/gpt-5.6-sol", "github-copilot/gpt-5.6-terra"],
+                    "task": [
+                        "github-copilot/gpt-5.6-terra",
+                        "github-copilot/gpt-5.6-luna",
+                        "openai-codex/gpt-5.6-sol",
+                    ],
+                    "smol": [
+                        "github-copilot/gpt-5.6-luna",
+                        "github-copilot/gpt-5.6-terra",
+                        "openai-codex/gpt-5.4-mini",
+                    ],
+                    "slow": [
+                        "openai-codex/gpt-5.6-sol:high",
+                        "github-copilot/gpt-5.6-terra:high",
+                        "github-copilot/gpt-5.6-luna:high",
+                    ],
+                },
+            )
+            self.assertEqual(
+                payloads["task.agentModelOverrides"],
+                {"reviewer": "@slow", "sonic": "@smol", "task": "@task"},
+            )
+
+    def test_configure_omp_routing_dry_run_changes_nothing(self) -> None:
+        selectors = [
+            "github-copilot/gpt-5.6-terra",
+            "github-copilot/gpt-5.6-luna",
+            "openai-codex/gpt-5.6-sol",
+            "openai-codex/gpt-5.4-mini",
+        ]
+        values = {
+            "modelRoles": {},
+            "retry.fallbackChains": {},
+            "task.agentModelOverrides": {},
+            "retry.modelFallback": False,
+            "retry.usageAwareFallback": False,
+            "retry.usageReservePct": 0,
+            "retry.usageReservePolicy": "confirm",
+            "retry.fallbackRevertPolicy": "never",
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "stack.json"
+            manifest = self.minimal_manifest("~/.omp/agent/mcp.json")
+            manifest["ompRouting"] = None
+            path.write_text(json.dumps(manifest), encoding="utf-8")
+            before = path.read_bytes()
+            runner = DOTAI.Runner("ubuntu", dry_run=True)
+            report = io.StringIO()
+            with (
+                mock.patch.object(runner, "output", side_effect=self.omp_output(selectors, values)),
+                mock.patch.object(runner, "run") as run,
+                contextlib.redirect_stdout(report),
+            ):
+                self.assertEqual(DOTAI.configure_omp_routing(manifest, path, runner), 0)
+
+            self.assertEqual(path.read_bytes(), before)
+            self.assertEqual(list(path.parent.glob("stack.json.bak.*")), [])
+            run.assert_not_called()
+            preview = report.getvalue()
+            for expected in (
+                "stack.json (proposed)",
+                "discovered providers: github-copilot, openai-codex",
+                "interactive primary: openai-codex",
+                "resolved role primaries:",
+                "fallback chains:",
+                "pending OMP commands:",
+                "omp config set modelRoles",
+                "Dry run: no manifest or OMP changes applied",
+            ):
+                self.assertIn(expected, preview)
+
+    def test_configure_omp_routing_is_idempotent(self) -> None:
+        selectors = [
+            "github-copilot/gpt-5.6-terra",
+            "github-copilot/gpt-5.6-luna",
+            "openai-codex/gpt-5.6-sol",
+            "openai-codex/gpt-5.4-mini",
+        ]
+        routing = self.compact_routing(["github-copilot", "openai-codex"], "openai-codex")
+        values = {
+            "modelRoles": {
+                "custom": "private/keep",
+                "default": "openai-codex/gpt-5.6-sol",
+                "task": "github-copilot/gpt-5.6-terra",
+                "smol": "github-copilot/gpt-5.6-luna",
+                "slow": "openai-codex/gpt-5.6-sol:high",
+            },
+            "retry.fallbackChains": {
+                "custom": ["private/keep"],
+                "default": ["openai-codex/gpt-5.6-sol", "github-copilot/gpt-5.6-terra"],
+                "task": [
+                    "github-copilot/gpt-5.6-terra",
+                    "github-copilot/gpt-5.6-luna",
+                    "openai-codex/gpt-5.6-sol",
+                ],
+                "smol": [
+                    "github-copilot/gpt-5.6-luna",
+                    "github-copilot/gpt-5.6-terra",
+                    "openai-codex/gpt-5.4-mini",
+                ],
+                "slow": [
+                    "openai-codex/gpt-5.6-sol:high",
+                    "github-copilot/gpt-5.6-terra:high",
+                    "github-copilot/gpt-5.6-luna:high",
+                ],
+            },
+            "task.agentModelOverrides": {"reviewer": "@slow", **routing["agentModelOverrides"]},
+            "retry.modelFallback": True,
+            "retry.usageAwareFallback": True,
+            "retry.usageReservePct": 10,
+            "retry.usageReservePolicy": "auto",
+            "retry.fallbackRevertPolicy": "cooldown-expiry",
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "stack.json"
+            manifest = self.minimal_manifest("~/.omp/agent/mcp.json")
+            manifest["ompRouting"] = routing
+            path.write_text(json.dumps(manifest), encoding="utf-8")
+            before = path.read_bytes()
+            runner = DOTAI.Runner("ubuntu")
+            with (
+                mock.patch.object(runner, "output", side_effect=self.omp_output(selectors, values)),
+                mock.patch.object(runner, "run") as run,
+                contextlib.redirect_stdout(io.StringIO()),
+            ):
+                self.assertEqual(DOTAI.configure_omp_routing(manifest, path, runner), 0)
+            self.assertEqual(path.read_bytes(), before)
+            self.assertEqual(list(path.parent.glob("stack.json.bak.*")), [])
+            run.assert_not_called()
+
+    def test_configure_omp_routing_migrates_static_roles(self) -> None:
+        selectors = ["openai-codex/gpt-5.6-sol", "openai-codex/gpt-5.4-mini"]
+        values = {
+            "modelRoles": {
+                "default": "openai-codex/gpt-5.6-sol",
+                "task": "openai-codex/gpt-5.6-sol",
+                "smol": "openai-codex/gpt-5.4-mini",
+                "slow": "openai-codex/gpt-5.6-sol:high",
+            },
+            "retry.fallbackChains": {
+                "default": ["openai-codex/gpt-5.6-sol"],
+                "task": ["openai-codex/gpt-5.6-sol"],
+                "smol": ["openai-codex/gpt-5.4-mini"],
+                "slow": ["openai-codex/gpt-5.6-sol:high"],
+            },
+            "task.agentModelOverrides": {"sonic": "@slow", "reviewer": "@task"},
+            "retry.modelFallback": True,
+            "retry.usageAwareFallback": True,
+            "retry.usageReservePct": 23,
+            "retry.usageReservePolicy": "fail-closed",
+            "retry.fallbackRevertPolicy": "never",
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "stack.json"
+            raw = self.minimal_manifest("~/.omp/agent/mcp.json")
+            raw["ompRouting"] = {
+                "roles": {"default": ["old/exact-model"]},
+                "agentModelOverrides": {"sonic": "@slow", "reviewer": "@task"},
+                "usageReservePct": 23,
+                "usageReservePolicy": "fail-closed",
+                "fallbackRevertPolicy": "never",
+            }
+            path.write_text(json.dumps(raw), encoding="utf-8")
+            manifest = DOTAI.load_manifest(path, allow_legacy_routing=True)
+            runner = DOTAI.Runner("ubuntu")
+            with (
+                mock.patch.object(runner, "output", side_effect=self.omp_output(selectors, values)),
+                mock.patch.object(runner, "run") as run,
+                contextlib.redirect_stdout(io.StringIO()),
+            ):
+                self.assertEqual(DOTAI.configure_omp_routing(manifest, path, runner), 0)
+
+            run.assert_not_called()
+            backups = list(path.parent.glob("stack.json.bak.*"))
+            self.assertEqual(len(backups), 1)
+            self.assertIn("roles", json.loads(backups[0].read_text(encoding="utf-8"))["ompRouting"])
+            routing = json.loads(path.read_text(encoding="utf-8"))["ompRouting"]
+            self.assertEqual(routing["providers"], ["openai-codex"])
+            self.assertEqual(routing["primaryProvider"], "openai-codex")
+            self.assertNotIn("roles", routing)
+            self.assertEqual(routing["agentModelOverrides"], {"sonic": "@slow", "reviewer": "@task"})
+            self.assertEqual(
+                (routing["usageReservePct"], routing["usageReservePolicy"], routing["fallbackRevertPolicy"]),
+                (23, "fail-closed", "never"),
+            )
+
+    def test_configure_omp_routing_preflight_failures_change_nothing(self) -> None:
+        valid_codex = json.dumps(
+            {
+                "models": [
+                    {"selector": "openai-codex/gpt-5.6-sol"},
+                    {"selector": "openai-codex/gpt-5.4-mini"},
+                ]
+            }
         )
+        cases = [
+            ("malformed recommendations", lambda _command: "", None, DOTAI.DotAiError("bad catalog"), True),
+            ("malformed model catalog", lambda _command: "{", None, None, False),
+            (
+                "no supported provider",
+                lambda _command: json.dumps({"models": [{"selector": "private/model"}]}),
+                None,
+                None,
+                True,
+            ),
+            (
+                "stale recommendations",
+                lambda _command: json.dumps({"models": [{"selector": "anthropic/claude-unknown"}]}),
+                None,
+                None,
+                True,
+            ),
+            (
+                "unavailable managed role",
+                lambda _command: json.dumps({"models": [{"selector": "openai-codex/gpt-5.6-sol"}]}),
+                None,
+                None,
+                False,
+            ),
+            (
+                "malformed OMP configuration",
+                lambda command: valid_codex if command == ["omp", "models", "--json"] else "{",
+                None,
+                None,
+                False,
+            ),
+            ("unavailable primary choice", lambda _command: valid_codex, "anthropic", None, True),
+        ]
+        for name, output, requested, catalog_error, raises in cases:
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as directory:
+                path = Path(directory) / "stack.json"
+                manifest = self.minimal_manifest("~/.omp/agent/mcp.json")
+                manifest["ompRouting"] = None
+                path.write_text(json.dumps(manifest), encoding="utf-8")
+                before = path.read_bytes()
+                runner = DOTAI.Runner("ubuntu")
+                loader = (
+                    mock.patch.object(DOTAI, "load_routing_recommendations", side_effect=catalog_error)
+                    if catalog_error
+                    else contextlib.nullcontext()
+                )
+                with (
+                    loader,
+                    mock.patch.object(runner, "output", side_effect=output),
+                    mock.patch.object(runner, "run") as run,
+                    contextlib.redirect_stdout(io.StringIO()),
+                ):
+                    if raises:
+                        with self.assertRaises(DOTAI.DotAiError):
+                            DOTAI.configure_omp_routing(manifest, path, runner, requested)
+                    else:
+                        self.assertEqual(DOTAI.configure_omp_routing(manifest, path, runner, requested), 1)
+                self.assertEqual(path.read_bytes(), before)
+                self.assertEqual(list(path.parent.glob("stack.json.bak.*")), [])
+                run.assert_not_called()
+
+    def test_configured_omp_value_requires_a_json_value_object(self) -> None:
+        runner = DOTAI.Runner("ubuntu")
+        with mock.patch.object(runner, "output", return_value=json.dumps({"key": "modelRoles", "value": {"default": "model"}})):
+            self.assertEqual(DOTAI.configured_omp_value(runner, "modelRoles"), {"default": "model"})
+        for output in ("", "[]", "{", json.dumps({}), json.dumps({"value": None})):
+            with self.subTest(output=output), mock.patch.object(runner, "output", return_value=output):
+                self.assertIsNone(DOTAI.configured_omp_value(runner, "modelRoles"))
+
+    def test_configure_omp_routing_returns_failure_after_manifest_persistence(self) -> None:
+        selectors = ["openai-codex/gpt-5.6-sol", "openai-codex/gpt-5.4-mini"]
+        values = {
+            "modelRoles": {},
+            "retry.fallbackChains": {},
+            "task.agentModelOverrides": {},
+            "retry.modelFallback": False,
+            "retry.usageAwareFallback": False,
+            "retry.usageReservePct": 0,
+            "retry.usageReservePolicy": "confirm",
+            "retry.fallbackRevertPolicy": "never",
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "stack.json"
+            manifest = self.minimal_manifest("~/.omp/agent/mcp.json")
+            manifest["ompRouting"] = None
+            path.write_text(json.dumps(manifest), encoding="utf-8")
+            runner = DOTAI.Runner("ubuntu")
+
+            def fail_first_write(_command: list[str], label: str) -> None:
+                if not runner.failures:
+                    runner.failures.append(label)
+
+            with (
+                mock.patch.object(runner, "output", side_effect=self.omp_output(selectors, values)),
+                mock.patch.object(runner, "run", side_effect=fail_first_write),
+                contextlib.redirect_stdout(io.StringIO()),
+            ):
+                self.assertEqual(DOTAI.configure_omp_routing(manifest, path, runner), 1)
+
+            saved = json.loads(path.read_text(encoding="utf-8"))["ompRouting"]
+            self.assertEqual(saved["providers"], ["openai-codex"])
+            self.assertNotIn("roles", saved)
+            self.assertEqual(len(list(path.parent.glob("stack.json.bak.*"))), 1)
 
     def test_runner_formats_only_original_supported_placeholders(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -683,120 +929,14 @@ class DotAiTests(unittest.TestCase):
                     [str(home), str(DOTAI.ROOT), sys.executable, literal_json],
                 )
 
-    def test_configure_omp_routing_is_idempotent_and_dry_run_only_prints_plan(self) -> None:
-        manifest = self.minimal_manifest("~/.omp/agent/mcp.json")
-        manifest["ompRouting"] = {
-            "roles": {"default": ["openai-codex/gpt-5.6-sol"]},
-            "agentModelOverrides": {"sonic": "@smol"},
-            "usageReservePct": 10,
-            "usageReservePolicy": "auto",
-            "fallbackRevertPolicy": "cooldown-expiry",
-        }
-        catalog = json.dumps({"models": [{"selector": "openai-codex/gpt-5.6-sol"}]})
-        current = {
-            "modelRoles": {"custom": "private/keep", "default": "openai-codex/gpt-5.6-sol"},
-            "retry.fallbackChains": {"custom": ["private/keep"], "default": ["openai-codex/gpt-5.6-sol"]},
-            "task.agentModelOverrides": {"reviewer": "@fast", "sonic": "@smol"},
-            "retry.modelFallback": True,
-            "retry.usageAwareFallback": True,
-            "retry.usageReservePct": 10,
-            "retry.usageReservePolicy": "auto",
-            "retry.fallbackRevertPolicy": "cooldown-expiry",
-        }
-
-        def output(command: list[str]) -> str:
-            return catalog if command[1] == "models" else json.dumps({"value": current[command[3]]})
-
-        runner = DOTAI.Runner("ubuntu")
-        with mock.patch.object(runner, "output", side_effect=output), mock.patch.object(runner, "run") as run:
-            self.assertEqual(DOTAI.configure_omp_routing(manifest, runner), 0)
-        run.assert_not_called()
-
-        dry_runner = DOTAI.Runner("ubuntu", dry_run=True)
-        changed = {**current, "retry.usageReservePct": 5}
-        report = io.StringIO()
-        with (
-            mock.patch.object(
-                dry_runner,
-                "output",
-                side_effect=lambda command: catalog if command[1] == "models" else json.dumps({"value": changed[command[3]]}),
-            ),
-            mock.patch.object(dry_runner, "run") as run,
-            contextlib.redirect_stdout(report),
-        ):
-            self.assertEqual(DOTAI.configure_omp_routing(manifest, dry_runner), 0)
-        run.assert_not_called()
-        self.assertIn("Dry run", report.getvalue())
-        self.assertIn("retry.usageReservePct", report.getvalue())
-
-    def test_configure_omp_routing_rejects_unreadable_catalog_or_configuration(self) -> None:
-        manifest = self.minimal_manifest("~/.omp/agent/mcp.json")
-        manifest["ompRouting"] = DOTAI.validate_omp_routing({"roles": {"default": ["openai-codex/gpt-5.6-sol"]}})
-        runner = DOTAI.Runner("ubuntu")
-        with mock.patch.object(runner, "output", return_value="{"), mock.patch.object(runner, "run") as run:
-            self.assertEqual(DOTAI.configure_omp_routing(manifest, runner), 1)
-        run.assert_not_called()
-
-        catalog = json.dumps({"models": [{"selector": "openai-codex/gpt-5.6-sol"}]})
-        with (
-            mock.patch.object(
-                runner,
-                "output",
-                side_effect=lambda command: catalog if command[1] == "models" else json.dumps({"value": [] if command[3] == "modelRoles" else None}),
-            ),
-            mock.patch.object(runner, "run") as run,
-        ):
-            self.assertEqual(DOTAI.configure_omp_routing(manifest, runner), 1)
-        run.assert_not_called()
-
-        with (
-            mock.patch.object(runner, "output", return_value=json.dumps({"models": []})),
-            mock.patch.object(runner, "run") as run,
-        ):
-            self.assertEqual(DOTAI.configure_omp_routing(manifest, runner), 1)
-        run.assert_not_called()
-
-    def test_configured_omp_value_requires_a_json_value_object(self) -> None:
-        runner = DOTAI.Runner("ubuntu")
-        with mock.patch.object(runner, "output", return_value=json.dumps({"key": "modelRoles", "value": {"default": "model"}})):
-            self.assertEqual(DOTAI.configured_omp_value(runner, "modelRoles"), {"default": "model"})
-        for output in ("", "[]", "{", json.dumps({}), json.dumps({"value": None})):
-            with self.subTest(output=output), mock.patch.object(runner, "output", return_value=output):
-                self.assertIsNone(DOTAI.configured_omp_value(runner, "modelRoles"))
-
-    def test_configure_omp_routing_returns_failure_when_a_write_fails(self) -> None:
-        manifest = self.minimal_manifest("~/.omp/agent/mcp.json")
-        manifest["ompRouting"] = DOTAI.validate_omp_routing({"roles": {"default": ["openai-codex/gpt-5.6-sol"]}})
-        values = {
-            "modelRoles": {},
-            "retry.fallbackChains": {},
-            "task.agentModelOverrides": {},
-            "retry.modelFallback": False,
-            "retry.usageAwareFallback": False,
-            "retry.usageReservePct": 0,
-            "retry.usageReservePolicy": "confirm",
-            "retry.fallbackRevertPolicy": "never",
-        }
-        runner = DOTAI.Runner("ubuntu")
-        catalog = json.dumps({"models": [{"selector": "openai-codex/gpt-5.6-sol"}]})
-
-        def failed_write(_command: list[str], label: str) -> None:
-            runner.failures.append(label)
-
-        with (
-            mock.patch.object(
-                runner,
-                "output",
-                side_effect=lambda command: catalog if command[1] == "models" else json.dumps({"value": values[command[3]]}),
-            ),
-            mock.patch.object(runner, "run", side_effect=failed_write) as run,
-        ):
-            self.assertEqual(DOTAI.configure_omp_routing(manifest, runner), 1)
-        self.assertTrue(run.called)
-
     def test_configure_omp_routing_parser_and_lifecycle_are_explicit(self) -> None:
-        args = DOTAI.build_parser().parse_args(["configure", "omp-routing", "--dry-run"])
-        self.assertEqual((args.command, args.configure_target, args.dry_run), ("configure", "omp-routing", True))
+        args = DOTAI.build_parser().parse_args(
+            ["configure", "omp-routing", "--primary", "anthropic", "--dry-run"]
+        )
+        self.assertEqual(
+            (args.configure_target, args.primary, args.dry_run),
+            ("omp-routing", "anthropic", True),
+        )
 
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "stack.json"
@@ -804,15 +944,70 @@ class DotAiTests(unittest.TestCase):
             manifest["ompRouting"] = {"roles": {"default": ["openai-codex/gpt-5.6-sol"]}}
             path.write_text(json.dumps(manifest), encoding="utf-8")
             with mock.patch.object(DOTAI, "configure_omp_routing", return_value=7) as configure:
-                self.assertEqual(DOTAI.main(["--manifest", str(path), "configure", "omp-routing", "--dry-run"]), 7)
-            configure.assert_called_once()
+                self.assertEqual(
+                    DOTAI.main(
+                        [
+                            "--manifest",
+                            str(path),
+                            "configure",
+                            "omp-routing",
+                            "--primary",
+                            "anthropic",
+                            "--dry-run",
+                        ]
+                    ),
+                    7,
+                )
+            called_manifest, called_path, called_runner, called_primary = configure.call_args.args
+            self.assertIn("roles", called_manifest["ompRouting"])
+            self.assertEqual(called_path, path)
+            self.assertTrue(called_runner.dry_run)
+            self.assertEqual(called_primary, "anthropic")
+
+            error = io.StringIO()
+            with (
+                mock.patch.object(
+                    DOTAI,
+                    "configure_omp_routing",
+                    side_effect=DOTAI.DotAiError("Primary selection cancelled"),
+                ),
+                contextlib.redirect_stderr(error),
+            ):
+                self.assertEqual(
+                    DOTAI.main(["--manifest", str(path), "configure", "omp-routing"]),
+                    2,
+                )
+            self.assertIn("Primary selection cancelled", error.getvalue())
+
+            commands = {
+                "validate": ["validate"],
+                "status": ["status"],
+                "install": ["install", "--dry-run"],
+                "update": ["update", "--dry-run"],
+                "sync": ["sync", "--dry-run"],
+            }
+            for name, command in commands.items():
+                error = io.StringIO()
+                with self.subTest(command=name):
+                    with (
+                        mock.patch.object(DOTAI, "print_release_notice"),
+                        mock.patch.object(DOTAI, "available_omp_models", side_effect=AssertionError(name)),
+                        contextlib.redirect_stderr(error),
+                    ):
+                        self.assertEqual(DOTAI.main(["--manifest", str(path), *command]), 2)
+                self.assertIn("configure omp-routing", error.getvalue())
+
+            manifest["ompRouting"] = None
+            path.write_text(json.dumps(manifest), encoding="utf-8")
             for command in ("install", "update", "sync"):
-                with (
-                    mock.patch.object(DOTAI, "available_omp_models", side_effect=AssertionError(command)),
-                    mock.patch.object(DOTAI, "sync_mcp", return_value=False),
-                    contextlib.redirect_stdout(io.StringIO()),
-                ):
-                    self.assertEqual(DOTAI.main(["--manifest", str(path), command, "--dry-run"]), 0)
+                with self.subTest(isolated_command=command):
+                    with (
+                        mock.patch.object(DOTAI, "print_release_notice"),
+                        mock.patch.object(DOTAI, "available_omp_models", side_effect=AssertionError(command)),
+                        mock.patch.object(DOTAI, "sync_mcp", return_value=False),
+                        contextlib.redirect_stdout(io.StringIO()),
+                    ):
+                        self.assertEqual(DOTAI.main(["--manifest", str(path), command, "--dry-run"]), 0)
 
     def test_omp_routing_status_reports_ok_without_mutating_omp(self) -> None:
         manifest = self.minimal_manifest("~/.omp/agent/mcp.json")
