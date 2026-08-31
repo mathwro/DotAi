@@ -21,6 +21,10 @@ Supported platforms:
 - `bootstrap.sh` / `bootstrap.ps1` — first-run installers
 - `dotai` / `dotai.ps1` — operational launchers
 - `tests/test_dotai.py` — behavioral tests
+- `README.md` — concise installation, usage, status, and managed-stack overview
+- `docs/configuration.md` — manifest lifecycle, safety guarantees, and OMP routing
+- `docs/extending.md` — commands for adding skills, MCP servers, plugins, and tools
+- `docs/development.md` — repository layout and contributor verification
 
 ## Development rules
 
