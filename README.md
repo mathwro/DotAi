@@ -46,6 +46,7 @@ Use `./dotai` on Linux, WSL, and macOS, or `.\dotai.ps1` in PowerShell.
 ./dotai install          # Install missing components and synchronize configuration
 ./dotai update           # Update core components and synchronize configuration
 ./dotai sync             # Synchronize skills, plugins, and MCP servers only
+./dotai sync --recommended-skills  # Review and apply repository skill recommendations
 ./dotai status           # Show installed, missing, inactive, or drifting components
 ./dotai doctor           # Check the stack plus platform prerequisites
 ./dotai validate         # Initialize when absent, then validate stack.json
@@ -132,7 +133,7 @@ The Pi extension is independent of RTK's optional Codex integration.
 
 `stack.example.json` is the version-controlled baseline for new users. `stack.json` is created automatically from it when `install`, `update`, `sync`, `status`, `doctor`, `validate`, or `add` first needs the default manifest.
 
-The generated `stack.json` is ignored by Git. Pulling repository updates therefore cannot replace personal tools, skills, plugins, MCP servers, or credential references. Changes to `stack.example.json` affect new configurations only; existing users can merge desired template changes into their local file.
+The generated `stack.json` is ignored by Git. Pulling repository updates therefore cannot replace personal tools, skills, plugins, MCP servers, or credential references. Changes to `stack.example.json` affect new configurations automatically; existing users can opt into recommended skill changes with `./dotai sync --recommended-skills`.
 
 To recreate the defaults, remove the local `stack.json` and run:
 
@@ -152,6 +153,7 @@ DotAi updates configuration conservatively:
 - Repeated synchronization is idempotent and does not create another backup when nothing changes.
 - Managed `ompExtensions` are appended to OMP's global extension list; unrelated user extensions are retained.
 - Skill health is agent-scoped. A skill found only in a Codex plugin cache is reported as `INACTIVE` until installed for the configured OMP skill target.
+- Recommended skill synchronization preserves user-added and locally modified sources, backs up `stack.json`, and removes installed files only for accepted retirements.
 - Release checks run for `install`, `sync`, `status`, and `version`; an available newer release is shown as a warning, while network failures are ignored.
 - Dry runs do not modify files or machine state.
 
@@ -191,7 +193,17 @@ The `add` commands update `stack.json`. Run `dotai sync` or `dotai install` afte
 Skills default to the `universal` agent target, which installs into `~/.agents/skills/`, the user-level location OMP discovers. Repeat `--skill` and `--check-skill` when a source provides multiple skills.
 After synchronization, restart OMP so it discovers newly installed skills. With OMP's default `skills.enableSkillCommands` setting, invoke them as `/skill:<name>` commands, for example `/skill:grill-me`, `/skill:grill-with-docs`, or `/skill:commit-and-document`; the shorter `/<name>` form is not the registered command syntax.
 
-Existing `stack.json` files are not rewritten by `sync`, so existing configurations remain safe. To migrate all legacy skill entries that still target Pi, run:
+To review skill recommendations added, changed, or removed from `stack.example.json`, run:
+
+```sh
+./dotai sync --recommended-skills
+```
+
+DotAi prints the proposed manifest diff, then lets you accept all changes, review each change, or cancel. Accepted removals also uninstall the retired skills so OMP no longer discovers them; rejected changes are offered again later. User-added sources and locally modified recommended entries are preserved. Use `./dotai sync --recommended-skills --dry-run` to print the diff and planned actions without changing files or machine state.
+
+The first run on an existing installation establishes recommendation ownership conservatively from exact matches in the current example. Entries DotAi cannot prove it previously recommended remain user-owned and are not removed.
+
+Normal `sync` runs do not rewrite existing `stack.json` skill entries. To migrate all legacy skill entries that still target Pi, run:
 
 ```sh
 ./dotai fix
