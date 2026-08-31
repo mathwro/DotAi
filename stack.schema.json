@@ -47,29 +47,31 @@
       "default": []
     },
     "ompRouting": {
-      "type": "object",
-      "required": ["roles"],
-      "additionalProperties": false,
-      "properties": {
-        "roles": {
+      "oneOf": [
+        {"type": "null"},
+        {
           "type": "object",
-          "minProperties": 1,
-          "propertyNames": {"type": "string", "minLength": 1},
-          "additionalProperties": {
-            "type": "array",
-            "minItems": 1,
-            "items": {"type": "string", "minLength": 1}
+          "required": ["providers", "primaryProvider"],
+          "additionalProperties": false,
+          "properties": {
+            "providers": {
+              "type": "array",
+              "minItems": 1,
+              "uniqueItems": true,
+              "items": {"enum": ["github-copilot", "openai-codex", "anthropic"]}
+            },
+            "primaryProvider": {"enum": ["github-copilot", "openai-codex", "anthropic"]},
+            "agentModelOverrides": {
+              "type": "object",
+              "propertyNames": {"type": "string", "minLength": 1},
+              "additionalProperties": {"type": "string", "minLength": 1}
+            },
+            "usageReservePct": {"type": "integer", "minimum": 0, "maximum": 100, "default": 10},
+            "usageReservePolicy": {"enum": ["confirm", "auto", "fail-closed"], "default": "auto"},
+            "fallbackRevertPolicy": {"enum": ["cooldown-expiry", "never"], "default": "cooldown-expiry"}
           }
-        },
-        "agentModelOverrides": {
-          "type": "object",
-          "propertyNames": {"type": "string", "minLength": 1},
-          "additionalProperties": {"type": "string", "minLength": 1}
-        },
-        "usageReservePct": {"type": "integer", "minimum": 0, "maximum": 100, "default": 10},
-        "usageReservePolicy": {"enum": ["confirm", "auto", "fail-closed"], "default": "auto"},
-        "fallbackRevertPolicy": {"enum": ["cooldown-expiry", "never"], "default": "cooldown-expiry"}
-      }
+        }
+      ]
     },
     "mcp": {
       "type": "object",

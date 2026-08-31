@@ -37,31 +37,40 @@ class DotAiTests(unittest.TestCase):
             },
         }
 
-    def test_validate_omp_routing_normalizes_valid_fixture(self) -> None:
-        routing = {
-            "roles": {"default": ["openai-codex/gpt-5.6-sol"]},
-            "agentModelOverrides": {"sonic": "@smol"},
-            "usageReservePct": 25,
-            "usageReservePolicy": "confirm",
-            "fallbackRevertPolicy": "never",
+    def compact_routing(self, providers: list[str], primary: str) -> dict:
+        return {
+            "providers": providers,
+            "primaryProvider": primary,
+            "agentModelOverrides": {"sonic": "@smol", "task": "@task"},
+            "usageReservePct": 10,
+            "usageReservePolicy": "auto",
+            "fallbackRevertPolicy": "cooldown-expiry",
         }
 
-        self.assertEqual(DOTAI.validate_omp_routing(routing), routing)
+    def test_routing_recommendation_catalog_is_exact_and_valid(self) -> None:
+        recommendations = DOTAI.load_routing_recommendations()
+        self.assertEqual(recommendations["version"], 1)
         self.assertEqual(
-            DOTAI.validate_omp_routing({"roles": {"default": ["openai-codex/gpt-5.6-sol"]}}),
-            {
-                "roles": {"default": ["openai-codex/gpt-5.6-sol"]},
-                "agentModelOverrides": {},
-                "usageReservePct": 10,
-                "usageReservePolicy": "auto",
-                "fallbackRevertPolicy": "cooldown-expiry",
-            },
+            set(recommendations["providers"]),
+            {"github-copilot", "openai-codex", "anthropic"},
         )
+        self.assertEqual(
+            recommendations["providers"]["anthropic"]["roles"]["smol"],
+            ["anthropic/claude-haiku-4-5", "anthropic/claude-sonnet-4-6"],
+        )
+        self.assertEqual(
+            recommendations["providers"]["github-copilot"]["roles"]["task"][0],
+            "github-copilot/gpt-5.6-terra",
+        )
+
+    def test_validate_omp_routing_accepts_compact_intent_and_null(self) -> None:
+        routing = self.compact_routing(["anthropic", "github-copilot"], "anthropic")
+        self.assertEqual(DOTAI.validate_omp_routing(routing), routing)
         self.assertEqual(DOTAI.validate_omp_routing(None), {})
 
     def test_stack_schema_has_exact_omp_routing_defaults(self) -> None:
         schema = json.loads((ROOT / "stack.schema.json").read_text(encoding="utf-8"))
-        properties = schema["properties"]["ompRouting"]["properties"]
+        properties = schema["properties"]["ompRouting"]["oneOf"][1]["properties"]
         self.assertEqual(
             {
                 "usageReservePct": properties["usageReservePct"],
@@ -75,36 +84,62 @@ class DotAiTests(unittest.TestCase):
             },
         )
 
-    def test_validate_omp_routing_rejects_invalid_values(self) -> None:
-        valid_roles = {"roles": {"default": ["openai-codex/gpt-5.6-sol"]}}
-        invalid_values = [
+    def test_validate_omp_routing_rejects_invalid_compact_intent(self) -> None:
+        valid = self.compact_routing(["anthropic"], "anthropic")
+        invalid = [
             [],
-            {"roles": {}},
-            {"roles": {"": ["openai-codex/gpt-5.6-sol"]}},
-            {"roles": {"default": []}},
-            {"roles": {"default": "openai-codex/gpt-5.6-sol"}},
-            {"roles": {"default": [""]}},
-            {"roles": {"default": [1]}},
-            {"roles": {1: ["openai-codex/gpt-5.6-sol"]}},
-            {**valid_roles, "agentModelOverrides": []},
-            {**valid_roles, "agentModelOverrides": {"": "@smol"}},
-            {**valid_roles, "agentModelOverrides": {"sonic": ""}},
-            {**valid_roles, "agentModelOverrides": {"sonic": 1}},
-            {**valid_roles, "usageReservePct": True},
-            {**valid_roles, "usageReservePct": 101},
-            {**valid_roles, "usageReservePct": -1},
-            {**valid_roles, "usageReservePct": 1.5},
-            {**valid_roles, "usageReservePolicy": "ask"},
-            {**valid_roles, "usageReservePolicy": []},
-            {**valid_roles, "fallbackRevertPolicy": "always"},
-            {**valid_roles, "fallbackRevertPolicy": []},
-            {**valid_roles, "unexpected": True},
+            {**valid, "providers": []},
+            {**valid, "providers": ["anthropic", "anthropic"]},
+            {**valid, "providers": [1]},
+            {**valid, "providers": ["unknown"]},
+            {**valid, "primaryProvider": "openai-codex"},
+            {**valid, "agentModelOverrides": []},
+            {**valid, "usageReservePct": True},
+            {**valid, "usageReservePct": 101},
+            {**valid, "usageReservePolicy": "ask"},
+            {**valid, "fallbackRevertPolicy": "always"},
+            {**valid, "unexpected": True},
         ]
+        for value in invalid:
+            with self.subTest(value=value), self.assertRaises(DOTAI.DotAiError):
+                DOTAI.validate_omp_routing(value)
 
-        for value in invalid_values:
-            with self.subTest(value=value):
-                with self.assertRaises(DOTAI.DotAiError):
-                    DOTAI.validate_omp_routing(value)
+    def test_validate_routing_recommendations_rejects_malformed_data(self) -> None:
+        valid = DOTAI.load_routing_recommendations()
+        missing_role = json.loads(json.dumps(valid))
+        del missing_role["providers"]["anthropic"]["roles"]["smol"]
+        empty_role = json.loads(json.dumps(valid))
+        empty_role["providers"]["anthropic"]["roles"]["smol"] = []
+        cross_provider = json.loads(json.dumps(valid))
+        cross_provider["providers"]["anthropic"]["roles"]["smol"] = [
+            "openai-codex/gpt-5.4-mini"
+        ]
+        invalid = [
+            {**valid, "version": 2},
+            {"version": 1, "agentModelOverrides": {}},
+            missing_role,
+            empty_role,
+            cross_provider,
+            {**valid, "agentModelOverrides": []},
+        ]
+        for value in invalid:
+            with self.subTest(value=value), self.assertRaises(DOTAI.DotAiError):
+                DOTAI.validate_routing_recommendations(value)
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "routing-recommendations.json"
+            path.write_text("{", encoding="utf-8")
+            with self.assertRaises(DOTAI.DotAiError):
+                DOTAI.load_routing_recommendations(path)
+
+    def test_static_routing_is_only_accepted_for_configure_migration(self) -> None:
+        legacy = {"roles": {"default": ["openai-codex/gpt-5.6-sol"]}}
+        with self.assertRaisesRegex(DOTAI.DotAiError, "configure omp-routing"):
+            DOTAI.validate_omp_routing(legacy)
+        self.assertEqual(
+            DOTAI.validate_omp_routing(legacy, allow_legacy=True)["roles"],
+            legacy["roles"],
+        )
 
     def test_load_manifest_normalizes_present_omp_routing_only(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -113,12 +148,27 @@ class DotAiTests(unittest.TestCase):
             path.write_text(json.dumps(manifest), encoding="utf-8")
             self.assertNotIn("ompRouting", DOTAI.load_manifest(path))
 
-            manifest["ompRouting"] = {"roles": {"default": ["openai-codex/gpt-5.6-sol"]}}
+            manifest["ompRouting"] = {
+                "providers": ["anthropic"],
+                "primaryProvider": "anthropic",
+            }
             path.write_text(json.dumps(manifest), encoding="utf-8")
             self.assertEqual(
-                DOTAI.load_manifest(path)["ompRouting"]["usageReservePct"],
-                10,
+                DOTAI.load_manifest(path)["ompRouting"],
+                {
+                    "providers": ["anthropic"],
+                    "primaryProvider": "anthropic",
+                    "agentModelOverrides": {},
+                    "usageReservePct": 10,
+                    "usageReservePolicy": "auto",
+                    "fallbackRevertPolicy": "cooldown-expiry",
+                },
             )
+
+    def test_repository_example_starts_with_unconfigured_routing(self) -> None:
+        raw = json.loads((ROOT / "stack.example.json").read_text(encoding="utf-8"))
+        self.assertIsNone(raw["ompRouting"])
+        self.assertEqual(DOTAI.load_manifest(ROOT / "stack.example.json")["ompRouting"], {})
 
     def test_loaded_null_omp_routing_is_unconfigured(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -1201,15 +1251,6 @@ class DotAiTests(unittest.TestCase):
             all(skill.get("agent") == "universal" for skill in manifest["skills"]),
         )
         self.assertEqual(manifest["ompExtensions"], ["~/.pi/agent/extensions/rtk.ts"])
-        self.assertEqual(
-            manifest["ompRouting"]["roles"],
-            {
-                "default": ["openai-codex/gpt-5.6-sol", "github-copilot/gpt-5.6-terra"],
-                "task": ["github-copilot/gpt-5.6-terra", "github-copilot/gpt-5.6-luna", "openai-codex/gpt-5.6-sol"],
-                "smol": ["github-copilot/gpt-5.6-luna", "github-copilot/gpt-5.6-terra", "openai-codex/gpt-5.4-mini"],
-                "slow": ["openai-codex/gpt-5.6-sol:high", "github-copilot/gpt-5.6-terra:high", "github-copilot/gpt-5.6-luna:high"],
-            },
-        )
         grill_me = next(skill for skill in manifest["skills"] if skill["source"] == "mattpocock/skills")
         self.assertEqual(grill_me["skills"], ["grill-me", "grill-with-docs"])
         self.assertEqual(grill_me["checkSkills"], ["grill-me", "grill-with-docs"])

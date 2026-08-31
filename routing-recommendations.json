@@ -1,0 +1,30 @@
+{
+  "version": 1,
+  "agentModelOverrides": {"sonic": "@smol", "task": "@task"},
+  "providers": {
+    "github-copilot": {
+      "roles": {
+        "default": ["github-copilot/gpt-5.6-terra"],
+        "task": ["github-copilot/gpt-5.6-terra", "github-copilot/gpt-5.6-luna"],
+        "smol": ["github-copilot/gpt-5.6-luna", "github-copilot/gpt-5.6-terra"],
+        "slow": ["github-copilot/gpt-5.6-terra:high", "github-copilot/gpt-5.6-luna:high"]
+      }
+    },
+    "openai-codex": {
+      "roles": {
+        "default": ["openai-codex/gpt-5.6-sol"],
+        "task": ["openai-codex/gpt-5.6-sol"],
+        "smol": ["openai-codex/gpt-5.4-mini"],
+        "slow": ["openai-codex/gpt-5.6-sol:high"]
+      }
+    },
+    "anthropic": {
+      "roles": {
+        "default": ["anthropic/claude-opus-4-8", "anthropic/claude-opus-4-7", "anthropic/claude-opus-4-6"],
+        "task": ["anthropic/claude-sonnet-4-6", "anthropic/claude-opus-4-8"],
+        "smol": ["anthropic/claude-haiku-4-5", "anthropic/claude-sonnet-4-6"],
+        "slow": ["anthropic/claude-opus-4-8:high", "anthropic/claude-opus-4-7:high", "anthropic/claude-opus-4-6:high"]
+      }
+    }
+  }
+}

@@ -22,6 +22,8 @@ VERSION = "0.2.0"
 ROOT = Path(__file__).resolve().parent
 DEFAULT_MANIFEST = ROOT / "stack.json"
 EXAMPLE_MANIFEST = ROOT / "stack.example.json"
+ROUTING_RECOMMENDATIONS = ROOT / "routing-recommendations.json"
+ROUTING_ROLES = ("default", "task", "smol", "slow")
 SERVER_NAME = re.compile(r"^[a-zA-Z0-9_.-]{1,100}$")
 HEADER_NAME = re.compile(r"^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$")
 ENV_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
@@ -206,30 +208,109 @@ def initialize_default_manifest(path: Path) -> bool:
     return initialize_manifest(path)
 
 
-def validate_omp_routing(value: Any) -> dict[str, Any]:
+def validate_routing_recommendations(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict) or set(value) != {"version", "agentModelOverrides", "providers"}:
+        raise DotAiError("Routing recommendations must have exactly version, agentModelOverrides, and providers")
+    if isinstance(value["version"], bool) or value["version"] != 1:
+        raise DotAiError("Routing recommendations 'version' must be 1")
+
+    overrides = value["agentModelOverrides"]
+    if not isinstance(overrides, dict) or any(
+        not isinstance(agent, str) or not agent or not isinstance(model, str) or not model
+        for agent, model in overrides.items()
+    ):
+        raise DotAiError("Routing recommendation agentModelOverrides must map non-empty strings")
+
+    providers = value["providers"]
+    if not isinstance(providers, dict) or not providers:
+        raise DotAiError("Routing recommendations 'providers' must be a non-empty object")
+    for provider, settings in providers.items():
+        if not isinstance(provider, str) or not provider:
+            raise DotAiError("Routing recommendation provider names must be non-empty strings")
+        if not isinstance(settings, dict) or set(settings) != {"roles"}:
+            raise DotAiError("Routing recommendation providers must contain exactly roles")
+        roles = settings["roles"]
+        if not isinstance(roles, dict) or set(roles) != set(ROUTING_ROLES):
+            raise DotAiError("Routing recommendation providers must define exactly the managed roles")
+        for selectors in roles.values():
+            if not isinstance(selectors, list) or not selectors:
+                raise DotAiError("Routing recommendation roles must be non-empty arrays")
+            if any(
+                not isinstance(selector, str)
+                or not selector
+                or not selector.startswith(f"{provider}/")
+                for selector in selectors
+            ):
+                raise DotAiError("Routing recommendation selectors must be non-empty and match their provider")
+    return value
+
+
+def load_routing_recommendations(
+    path: Path = ROUTING_RECOMMENDATIONS,
+) -> dict[str, Any]:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except OSError as exc:
+        raise DotAiError(f"Unable to read routing recommendations from {path}: {exc}") from exc
+    except json.JSONDecodeError as exc:
+        raise DotAiError(f"Invalid JSON in {path}: {exc}") from exc
+    return validate_routing_recommendations(value)
+
+
+def validate_omp_routing(value: Any, *, allow_legacy: bool = False) -> dict[str, Any]:
     if value is None:
         return {}
     if not isinstance(value, dict):
         raise DotAiError("Manifest 'ompRouting' must be an object")
-    if set(value) - {
-        "roles",
-        "agentModelOverrides",
-        "usageReservePct",
-        "usageReservePolicy",
-        "fallbackRevertPolicy",
-    }:
-        raise DotAiError("Manifest 'ompRouting' has unsupported properties")
 
-    roles = value.get("roles")
-    if not isinstance(roles, dict) or not roles:
-        raise DotAiError("Manifest 'ompRouting.roles' must be a non-empty object")
-    for role, selectors in roles.items():
-        if not isinstance(role, str) or not role:
-            raise DotAiError("Manifest 'ompRouting' role names must be non-empty strings")
-        if not isinstance(selectors, list) or not selectors:
-            raise DotAiError("Manifest 'ompRouting' role selectors must be non-empty arrays")
-        if any(not isinstance(selector, str) or not selector for selector in selectors):
-            raise DotAiError("Manifest 'ompRouting' selectors must be non-empty strings")
+    if "roles" in value:
+        if not allow_legacy:
+            raise DotAiError("Manifest 'ompRouting.roles' is obsolete; run 'dotai configure omp-routing' to migrate")
+        allowed = {
+            "roles",
+            "agentModelOverrides",
+            "usageReservePct",
+            "usageReservePolicy",
+            "fallbackRevertPolicy",
+        }
+        if set(value) - allowed:
+            raise DotAiError("Manifest 'ompRouting' has unsupported properties")
+        roles = value["roles"]
+        if not isinstance(roles, dict) or not roles:
+            raise DotAiError("Manifest 'ompRouting.roles' must be a non-empty object")
+        for role, selectors in roles.items():
+            if not isinstance(role, str) or not role:
+                raise DotAiError("Manifest 'ompRouting' role names must be non-empty strings")
+            if not isinstance(selectors, list) or not selectors:
+                raise DotAiError("Manifest 'ompRouting' role selectors must be non-empty arrays")
+            if any(not isinstance(selector, str) or not selector for selector in selectors):
+                raise DotAiError("Manifest 'ompRouting' selectors must be non-empty strings")
+        normalized = {"roles": roles}
+    else:
+        allowed = {
+            "providers",
+            "primaryProvider",
+            "agentModelOverrides",
+            "usageReservePct",
+            "usageReservePolicy",
+            "fallbackRevertPolicy",
+        }
+        if set(value) - allowed:
+            raise DotAiError("Manifest 'ompRouting' has unsupported properties")
+        providers = value.get("providers")
+        if not isinstance(providers, list) or not providers:
+            raise DotAiError("Manifest 'ompRouting.providers' must be a non-empty array")
+        if any(not isinstance(provider, str) or not provider for provider in providers):
+            raise DotAiError("Manifest 'ompRouting.providers' entries must be non-empty strings")
+        if len(providers) != len(set(providers)):
+            raise DotAiError("Manifest 'ompRouting.providers' entries must be unique")
+        supported = load_routing_recommendations()["providers"]
+        if any(provider not in supported for provider in providers):
+            raise DotAiError("Manifest 'ompRouting.providers' contains an unsupported provider")
+        primary = value.get("primaryProvider")
+        if primary not in providers:
+            raise DotAiError("Manifest 'ompRouting.primaryProvider' must be present in providers")
+        normalized = {"providers": providers, "primaryProvider": primary}
 
     overrides = value.get("agentModelOverrides", {})
     if not isinstance(overrides, dict) or any(
@@ -249,7 +330,7 @@ def validate_omp_routing(value: Any) -> dict[str, Any]:
         raise DotAiError("Manifest 'ompRouting.fallbackRevertPolicy' is invalid")
 
     return {
-        "roles": roles,
+        **normalized,
         "agentModelOverrides": overrides,
         "usageReservePct": reserve,
         "usageReservePolicy": reserve_policy,
@@ -257,7 +338,7 @@ def validate_omp_routing(value: Any) -> dict[str, Any]:
     }
 
 
-def load_manifest(path: Path) -> dict[str, Any]:
+def load_manifest(path: Path, *, allow_legacy_routing: bool = False) -> dict[str, Any]:
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except FileNotFoundError as exc:
@@ -278,7 +359,9 @@ def load_manifest(path: Path) -> dict[str, Any]:
     if not isinstance(extensions, list) or any(not isinstance(item, str) or not item for item in extensions):
         raise DotAiError("Manifest 'ompExtensions' must be an array of non-empty strings")
     if "ompRouting" in data:
-        data["ompRouting"] = validate_omp_routing(data["ompRouting"])
+        data["ompRouting"] = validate_omp_routing(
+            data["ompRouting"], allow_legacy=allow_legacy_routing
+        )
     mcp = data.get("mcp", {})
     if not isinstance(mcp, dict) or not isinstance(mcp.get("servers", {}), dict):
         raise DotAiError("Manifest 'mcp.servers' must be an object")
