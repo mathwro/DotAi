@@ -471,6 +471,274 @@ def reconcile_skills(manifest: dict[str, Any], runner: Runner) -> None:
     for skill in manifest["skills"]:
         runner.run(skill_command(skill), f"Reconcile skills from {skill['source']}")
 
+def read_state(manifest_path: Path) -> dict[str, Any]:
+    try:
+        value = json.loads((state_dir() / "state.json").read_text(encoding="utf-8"))
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        return {}
+    if not isinstance(value, dict) or value.get("manifest") != str(manifest_path.resolve()):
+        return {}
+    return value
+
+def valid_skill_list(value: Any) -> bool:
+    return isinstance(value, list) and all(
+        isinstance(skill, dict) and isinstance(skill.get("source"), str) for skill in value
+    )
+
+
+def managed_recommendations(manifest_path: Path) -> list[dict[str, Any]] | None:
+    key = os.path.normcase(str(manifest_path.resolve()))
+    try:
+        values = json.loads((state_dir() / "recommended-skills.json").read_text(encoding="utf-8"))
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        values = {}
+    stored = values.get(key) if isinstance(values, dict) else None
+    if valid_skill_list(stored):
+        return list(stored)
+    legacy = read_state(manifest_path).get("managedRecommendedSkills")
+    return list(legacy) if valid_skill_list(legacy) else None
+
+
+def save_managed_recommendations(manifest_path: Path, skills: list[dict[str, Any]]) -> None:
+    directory = state_dir()
+    directory.mkdir(parents=True, exist_ok=True)
+    target = directory / "recommended-skills.json"
+    try:
+        values = json.loads(target.read_text(encoding="utf-8"))
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        values = {}
+    if not isinstance(values, dict):
+        values = {}
+    values[os.path.normcase(str(manifest_path.resolve()))] = skills
+    payload = json.dumps(values, indent=2) + "\n"
+    with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=directory, delete=False) as handle:
+        handle.write(payload)
+        temp_path = Path(handle.name)
+    os.replace(temp_path, target)
+
+
+def replace_skill(skills: list[dict[str, Any]], source: str, value: dict[str, Any] | None) -> None:
+    for index, skill in enumerate(skills):
+        if skill.get("source") == source:
+            if value is None:
+                skills.pop(index)
+            else:
+                skills[index] = value
+            return
+    if value is not None:
+        skills.append(value)
+
+
+def recommended_skill_plan(
+    manifest: dict[str, Any], manifest_path: Path
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[str]]:
+    desired = load_manifest(EXAMPLE_MANIFEST)["skills"]
+    stored = managed_recommendations(manifest_path)
+    if stored is not None:
+        managed = stored
+    else:
+        managed = [skill for skill in desired if skill in manifest["skills"]]
+
+    local = {skill["source"]: skill for skill in manifest["skills"]}
+    wanted = {skill["source"]: skill for skill in desired}
+    accepted_baseline = list(managed)
+    changes: list[dict[str, Any]] = []
+    conflicts: list[str] = []
+
+    for before in managed:
+        source = before["source"]
+        after = wanted.get(source)
+        current = local.get(source)
+        if after is None:
+            if current is None or current == before:
+                changes.append({"kind": "remove", "source": source, "before": before, "after": None})
+            else:
+                conflicts.append(source)
+        elif after != before:
+            if current == before:
+                changes.append({"kind": "update", "source": source, "before": before, "after": after})
+            elif current == after:
+                replace_skill(accepted_baseline, source, after)
+            else:
+                conflicts.append(source)
+        elif current != before:
+            conflicts.append(source)
+
+    managed_sources = {skill["source"] for skill in managed}
+    for after in desired:
+        source = after["source"]
+        if source in managed_sources:
+            continue
+        current = local.get(source)
+        if current is None:
+            changes.append({"kind": "add", "source": source, "before": None, "after": after})
+        elif current == after:
+            replace_skill(accepted_baseline, source, after)
+        else:
+            conflicts.append(source)
+
+    return accepted_baseline, changes, conflicts
+
+
+def apply_recommended_skill_changes(
+    manifest: dict[str, Any],
+    managed: list[dict[str, Any]],
+    changes: list[dict[str, Any]],
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    updated = dict(manifest)
+    updated["skills"] = list(manifest["skills"])
+    accepted = list(managed)
+    for change in changes:
+        replace_skill(updated["skills"], change["source"], change["after"])
+        replace_skill(accepted, change["source"], change["after"])
+    return updated, accepted
+
+
+def agent_display_matches(agent: str, display: Any) -> bool:
+    if not isinstance(display, str):
+        return False
+    expected = re.sub(r"[^a-z0-9]", "", agent.lower())
+    actual = re.sub(r"[^a-z0-9]", "", display.lower())
+    return actual == expected or (
+        len(expected) >= 3 and (actual.startswith(expected) or actual.endswith(expected))
+    )
+
+
+def installed_skill_names(agent: str, runner: Runner, source: str | None = None) -> set[str] | None:
+    raw = runner.output(
+        ["npx", "--yes", "skills@latest", "list", "--global", "--agent", agent, "--json"]
+    )
+    try:
+        installed = json.loads(raw)
+    except (TypeError, json.JSONDecodeError):
+        return None
+    if not isinstance(installed, list) or any(not isinstance(skill, dict) for skill in installed):
+        return None
+    return {
+        skill["name"]
+        for skill in installed
+        if isinstance(skill.get("name"), str)
+        and isinstance(skill.get("agents"), list)
+        and any(agent_display_matches(agent, display) for display in skill["agents"])
+        and (source is None or skill.get("source") == source)
+    }
+
+
+def remove_retired_skills(changes: list[dict[str, Any]], runner: Runner) -> None:
+    for change in changes:
+        before = change["before"]
+        after = change["after"]
+        if before is None:
+            continue
+        wanted_before = before.get("skills", ["*"])
+        wanted_after = after.get("skills", ["*"]) if after else []
+        same_agent = after is not None and (
+            before.get("agent", "universal") == after.get("agent", "universal")
+        )
+        if same_agent and "*" in wanted_after:
+            continue
+        if runner.dry_run:
+            if "*" in wanted_before:
+                print(
+                    f"{badge('RUN')} Remove retired skills from {before['source']}: "
+                    "installed names resolved when applied"
+                )
+                continue
+            names = set(wanted_before) - set(wanted_after) if same_agent else set(wanted_before)
+        else:
+            agent = before.get("agent", "universal")
+            installed = installed_skill_names(agent, runner, before["source"])
+            if installed is None:
+                runner.failures.append(f"Unable to list installed skills from {before['source']}")
+                print(f"{badge('FAIL')} Unable to identify installed skills from {before['source']}")
+                continue
+            names = installed if "*" in wanted_before else installed.intersection(wanted_before)
+            if same_agent:
+                names -= set(wanted_after)
+        if names:
+            command = [
+                "npx",
+                "--yes",
+                "skills@latest",
+                "remove",
+                *sorted(names),
+                "--global",
+                "--agent",
+                before.get("agent", "universal"),
+                "--yes",
+            ]
+            failure_count = len(runner.failures)
+            runner.run(command, f"Remove retired skills from {before['source']}")
+            if len(runner.failures) != failure_count:
+                continue
+            agent = before.get("agent", "universal")
+            remaining = installed_skill_names(agent, runner)
+            if remaining is None:
+                runner.failures.append(f"Unable to verify retired skills from {before['source']}")
+                print(f"{badge('FAIL')} Unable to verify retired skills from {before['source']}")
+                continue
+            leftover = names.intersection(remaining)
+            if leftover:
+                detail = f"Retired skills still installed for {agent}: {', '.join(sorted(leftover))}"
+                runner.failures.append(detail)
+                print(f"{badge('FAIL')} {detail}")
+
+
+def review_recommended_skills(
+    manifest: dict[str, Any], manifest_path: Path, runner: Runner
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    managed, changes, conflicts = recommended_skill_plan(manifest, manifest_path)
+    for source in conflicts:
+        print(f"{badge('DRIFT')} Recommended source {source}: local entry was modified; preserving it")
+    if not changes:
+        print(f"{badge('OK')} Recommended skills: no changes available")
+        return manifest, managed
+
+    proposed, _ = apply_recommended_skill_changes(manifest, managed, changes)
+    print(f"{heading('Proposed recommended skill changes:')}")
+    print(manifest_diff(manifest, proposed, manifest_path))
+    if runner.dry_run:
+        selected = changes
+        print(f"{badge('RUN')} Dry run: no manifest or skill changes applied.")
+    else:
+        try:
+            answer = input("Apply [a]ll, review [e]ach, or [n]one? ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            answer = ""
+        if answer in {"a", "all"}:
+            selected = changes
+        elif answer in {"e", "each", "r", "review"}:
+            selected = []
+            for change in changes:
+                try:
+                    answer = input(f"Apply {change['kind']} for {change['source']}? [y/N] ")
+                except (EOFError, KeyboardInterrupt):
+                    answer = ""
+                if answer.strip().lower() in {"y", "yes"}:
+                    selected.append(change)
+        else:
+            selected = []
+
+    if not selected:
+        print(f"{badge('OK')} No recommended skill changes applied.")
+        return manifest, managed
+
+    updated, accepted = apply_recommended_skill_changes(manifest, managed, selected)
+    backup = None
+    if not runner.dry_run:
+        backup = backup_manifest(manifest_path)
+        print(f"{badge('OK')} Manifest backup written to {backup}")
+        write_manifest(manifest_path, updated)
+    remove_retired_skills(selected, runner)
+    if runner.failures:
+        if backup is not None:
+            shutil.copy2(backup, manifest_path)
+            print(f"{badge('OK')} Restored {manifest_path} after skill removal failure")
+        return manifest, managed
+    if not runner.dry_run:
+        save_managed_recommendations(manifest_path, accepted)
+    return updated, accepted
+
 
 def reconcile_plugins(manifest: dict[str, Any], runner: Runner, mode: str) -> None:
     for marketplace in manifest["marketplaces"]:
@@ -989,9 +1257,24 @@ def doctor(manifest: dict[str, Any], runner: Runner) -> bool:
     return healthy
 
 
-def save_state(manifest_path: Path, runner: Runner, operation: str) -> None:
+def save_state(
+    manifest_path: Path,
+    runner: Runner,
+    operation: str,
+    managed_skills: list[dict[str, Any]] | None = None,
+) -> None:
     if runner.dry_run or runner.failures:
         return
+    if managed_skills is None:
+        stored = managed_recommendations(manifest_path)
+        if stored is not None:
+            managed_skills = stored
+        else:
+            local_skills = load_manifest(manifest_path)["skills"]
+            managed_skills = [
+                skill for skill in load_manifest(EXAMPLE_MANIFEST)["skills"] if skill in local_skills
+            ]
+    save_managed_recommendations(manifest_path, managed_skills)
     directory = state_dir()
     directory.mkdir(parents=True, exist_ok=True)
     value = {
@@ -1226,6 +1509,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     sync = sub.add_parser("sync", help="Synchronize skills, plugins, and MCP configuration")
     sync.add_argument("--dry-run", action="store_true")
+    sync.add_argument(
+        "--recommended-skills",
+        action="store_true",
+        help="Review repository-recommended skill additions, updates, and removals",
+    )
     configure = sub.add_parser("configure", help="Configure explicit post-authentication integrations")
     configure_sub = configure.add_subparsers(dest="configure_target", required=True)
     configure_routing = configure_sub.add_parser("omp-routing", help="Configure OMP multi-provider model routing")
@@ -1344,6 +1632,13 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "doctor":
         return 0 if doctor(manifest, runner) else 1
     if args.command == "sync":
+        managed_skills = None
+        if args.recommended_skills:
+            try:
+                manifest, managed_skills = review_recommended_skills(manifest, args.manifest, runner)
+            except (OSError, DotAiError) as exc:
+                print(f"{styled('dotai:', 'red', 'bold')} {exc}", file=sys.stderr)
+                return 2
         reconcile_omp_extensions(manifest, runner)
         reconcile_skills(manifest, runner)
         reconcile_plugins(manifest, runner, "install")
@@ -1351,7 +1646,7 @@ def main(argv: list[str] | None = None) -> int:
             sync_mcp(manifest, runner)
         except (OSError, DotAiError) as exc:
             runner.failures.append(str(exc))
-        save_state(args.manifest, runner, "sync")
+        save_state(args.manifest, runner, "sync", managed_skills)
         return 1 if runner.failures else 0
     if args.command == "update":
         print_legacy_skill_notice(manifest)
