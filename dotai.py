@@ -24,6 +24,8 @@ DEFAULT_MANIFEST = ROOT / "stack.json"
 EXAMPLE_MANIFEST = ROOT / "stack.example.json"
 ROUTING_RECOMMENDATIONS = ROOT / "routing-recommendations.json"
 ROUTING_ROLES = ("default", "task", "smol", "slow")
+SUPPORTED_ROUTING_PROVIDERS = frozenset({"github-copilot", "openai-codex", "anthropic"})
+DEFAULT_AGENT_MODEL_OVERRIDES = {"sonic": "@smol", "task": "@task"}
 SERVER_NAME = re.compile(r"^[a-zA-Z0-9_.-]{1,100}$")
 HEADER_NAME = re.compile(r"^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$")
 ENV_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
@@ -215,15 +217,12 @@ def validate_routing_recommendations(value: Any) -> dict[str, Any]:
         raise DotAiError("Routing recommendations 'version' must be 1")
 
     overrides = value["agentModelOverrides"]
-    if not isinstance(overrides, dict) or any(
-        not isinstance(agent, str) or not agent or not isinstance(model, str) or not model
-        for agent, model in overrides.items()
-    ):
-        raise DotAiError("Routing recommendation agentModelOverrides must map non-empty strings")
+    if overrides != DEFAULT_AGENT_MODEL_OVERRIDES:
+        raise DotAiError("Routing recommendation agentModelOverrides must match the managed defaults")
 
     providers = value["providers"]
-    if not isinstance(providers, dict) or not providers:
-        raise DotAiError("Routing recommendations 'providers' must be a non-empty object")
+    if not isinstance(providers, dict) or set(providers) != SUPPORTED_ROUTING_PROVIDERS:
+        raise DotAiError("Routing recommendations must define exactly the supported providers")
     for provider, settings in providers.items():
         if not isinstance(provider, str) or not provider:
             raise DotAiError("Routing recommendation provider names must be non-empty strings")
@@ -304,8 +303,7 @@ def validate_omp_routing(value: Any, *, allow_legacy: bool = False) -> dict[str,
             raise DotAiError("Manifest 'ompRouting.providers' entries must be non-empty strings")
         if len(providers) != len(set(providers)):
             raise DotAiError("Manifest 'ompRouting.providers' entries must be unique")
-        supported = load_routing_recommendations()["providers"]
-        if any(provider not in supported for provider in providers):
+        if any(provider not in SUPPORTED_ROUTING_PROVIDERS for provider in providers):
             raise DotAiError("Manifest 'ompRouting.providers' contains an unsupported provider")
         primary = value.get("primaryProvider")
         if primary not in providers:

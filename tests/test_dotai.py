@@ -164,6 +164,27 @@ class DotAiTests(unittest.TestCase):
             with self.subTest(value=value), self.assertRaises(DOTAI.DotAiError):
                 DOTAI.validate_omp_routing(value)
 
+
+    def test_compact_manifest_loads_without_routing_recommendations(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "stack.json"
+            manifest = self.minimal_manifest("~/.omp/agent/mcp.json")
+            manifest["ompRouting"] = {
+                "providers": ["anthropic"],
+                "primaryProvider": "anthropic",
+            }
+            path.write_text(json.dumps(manifest), encoding="utf-8")
+            error = DOTAI.DotAiError("missing recommendations")
+            with mock.patch.object(
+                DOTAI, "load_routing_recommendations", side_effect=error
+            ):
+                loaded = DOTAI.load_manifest(path)
+                self.assertEqual(loaded["ompRouting"]["providers"], ["anthropic"])
+                self.assertEqual(
+                    DOTAI.omp_routing_status(loaded, DOTAI.Runner("ubuntu")),
+                    ("FAIL", "unable to read routing recommendations"),
+                )
+
     def test_validate_routing_recommendations_rejects_malformed_data(self) -> None:
         valid = DOTAI.load_routing_recommendations()
         missing_role = json.loads(json.dumps(valid))
@@ -174,6 +195,14 @@ class DotAiTests(unittest.TestCase):
         cross_provider["providers"]["anthropic"]["roles"]["smol"] = [
             "openai-codex/gpt-5.4-mini"
         ]
+        missing_provider = json.loads(json.dumps(valid))
+        del missing_provider["providers"]["anthropic"]
+        extra_provider = json.loads(json.dumps(valid))
+        extra_provider["providers"]["other"] = extra_provider["providers"]["anthropic"]
+        altered_overrides = json.loads(json.dumps(valid))
+        altered_overrides["agentModelOverrides"]["sonic"] = "@task"
+        missing_override = json.loads(json.dumps(valid))
+        del missing_override["agentModelOverrides"]["task"]
         invalid = [
             {**valid, "version": 2},
             {"version": 1, "agentModelOverrides": {}},
@@ -181,6 +210,10 @@ class DotAiTests(unittest.TestCase):
             empty_role,
             cross_provider,
             {**valid, "agentModelOverrides": []},
+            missing_provider,
+            extra_provider,
+            altered_overrides,
+            missing_override,
         ]
         for value in invalid:
             with self.subTest(value=value), self.assertRaises(DOTAI.DotAiError):
