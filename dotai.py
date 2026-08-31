@@ -595,18 +595,104 @@ def available_omp_models(runner: Runner) -> set[str] | None:
     return {model["selector"] for model in models}
 
 
+def detected_routing_providers(
+    recommendations: dict[str, Any], available: set[str]
+) -> list[str]:
+    available_identities = {selector_identity(selector) for selector in available}
+    supported = recommendations["providers"]
+    providers = sorted(
+        {selector.partition("/")[0] for selector in available} & set(supported)
+    )
+    for provider in providers:
+        recommended = supported[provider]["roles"].values()
+        if not any(
+            selector_identity(selector) in available_identities
+            for selectors in recommended
+            for selector in selectors
+        ):
+            raise DotAiError(f"Provider {provider} has no recommended models available")
+    return providers
+
+
+def choose_primary_provider(
+    providers: list[str], current: str | None, requested: str | None
+) -> str:
+    premium = [
+        provider for provider in ("anthropic", "openai-codex") if provider in providers
+    ]
+    if requested is not None and requested not in premium:
+        raise DotAiError(f"Requested --primary {requested} is not available")
+    if not premium:
+        if "github-copilot" in providers:
+            return "github-copilot"
+        raise DotAiError("No supported routing providers are available")
+    if len(premium) == 1:
+        return premium[0]
+    if requested is not None:
+        return requested
+    if current in premium:
+        return current
+    if not sys.stdin.isatty():
+        raise DotAiError(
+            "Both Anthropic and OpenAI Codex are available; pass --primary"
+        )
+    try:
+        response = input(
+            "Choose interactive primary: [1] Anthropic [2] OpenAI Codex: "
+        )
+    except (EOFError, KeyboardInterrupt) as exc:
+        raise DotAiError("Primary selection cancelled") from exc
+    if response == "1":
+        return "anthropic"
+    if response == "2":
+        return "openai-codex"
+    raise DotAiError("Invalid primary selection; enter 1 or 2")
+
+
 def resolve_omp_routing(
-    routing: dict[str, Any], available: set[str]
+    recommendations: dict[str, Any],
+    providers: list[str],
+    primary: str,
+    available: set[str],
 ) -> tuple[dict[str, str], dict[str, list[str]], list[str]]:
+    interactive_order = [
+        primary,
+        *(
+            provider
+            for provider in ("anthropic", "openai-codex")
+            if provider in providers and provider != primary
+        ),
+        *(
+            provider
+            for provider in ("github-copilot",)
+            if provider in providers and provider != primary
+        ),
+    ]
+    worker_order = [
+        provider
+        for provider in ("github-copilot", "anthropic", "openai-codex")
+        if provider in providers
+    ]
     available_identities = {selector_identity(selector) for selector in available}
     primaries: dict[str, str] = {}
     fallbacks: dict[str, list[str]] = {}
     unavailable: list[str] = []
-    for role, candidates in routing["roles"].items():
+    for role in ROUTING_ROLES:
+        provider_order = (
+            interactive_order if role in ("default", "slow") else worker_order
+        )
+        candidates = (
+            selector
+            for provider in provider_order
+            for selector in recommendations["providers"][provider]["roles"][role]
+        )
         retained: list[str] = []
         seen: set[str] = set()
         for candidate in candidates:
-            if candidate not in seen and selector_identity(candidate) in available_identities:
+            if (
+                candidate not in seen
+                and selector_identity(candidate) in available_identities
+            ):
                 seen.add(candidate)
                 retained.append(candidate)
         if retained:

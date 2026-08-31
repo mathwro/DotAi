@@ -297,42 +297,259 @@ class DotAiTests(unittest.TestCase):
         with mock.patch.object(runner, "output", return_value='{"models": []}'):
             self.assertEqual(DOTAI.available_omp_models(runner), set())
 
-    def test_resolve_omp_routing_preserves_order_suffixes_and_unavailable_roles(self) -> None:
-        routing = {
-            "roles": {
-                "default": [
-                    "openai-codex/gpt-5.6-sol",
-                    "github-copilot/gpt-5.6-sol",
-                    "openai-codex/gpt-5.6-sol",
+    def test_detected_routing_providers_require_supported_recommendations(self) -> None:
+        recommendations = DOTAI.load_routing_recommendations()
+        available = {
+            "github-copilot/gpt-5.6-terra",
+            "openai-codex/gpt-5.6-sol",
+            "private/model",
+        }
+        self.assertEqual(
+            DOTAI.detected_routing_providers(recommendations, available),
+            ["github-copilot", "openai-codex"],
+        )
+        with self.assertRaisesRegex(DOTAI.DotAiError, "no recommended models"):
+            DOTAI.detected_routing_providers(
+                recommendations,
+                {"anthropic/claude-unknown"},
+            )
+        self.assertEqual(
+            DOTAI.detected_routing_providers(recommendations, {"private/model"}),
+            [],
+        )
+
+    def test_choose_primary_provider_applies_subscription_rules(self) -> None:
+        cases = [
+            (["github-copilot"], None, None, "github-copilot"),
+            (["anthropic"], None, None, "anthropic"),
+            (["openai-codex"], None, None, "openai-codex"),
+            (["anthropic", "github-copilot"], None, None, "anthropic"),
+            (["github-copilot", "openai-codex"], None, None, "openai-codex"),
+            (["anthropic", "openai-codex"], "anthropic", None, "anthropic"),
+            (["anthropic", "openai-codex"], "openai-codex", None, "openai-codex"),
+            (["anthropic", "openai-codex"], None, "anthropic", "anthropic"),
+        ]
+        for providers, current, requested, expected in cases:
+            with self.subTest(providers=providers, current=current, requested=requested):
+                self.assertEqual(
+                    DOTAI.choose_primary_provider(providers, current, requested),
+                    expected,
+                )
+
+        for response, expected in (("1", "anthropic"), ("2", "openai-codex")):
+            with (
+                self.subTest(response=response),
+                mock.patch.object(sys.stdin, "isatty", return_value=True),
+                mock.patch("builtins.input", return_value=response) as prompt,
+            ):
+                self.assertEqual(
+                    DOTAI.choose_primary_provider(
+                        ["anthropic", "openai-codex"], None, None
+                    ),
+                    expected,
+                )
+                prompt.assert_called_once_with(
+                    "Choose interactive primary: [1] Anthropic [2] OpenAI Codex: "
+                )
+
+        with (
+            mock.patch.object(sys.stdin, "isatty", return_value=False),
+            self.assertRaisesRegex(DOTAI.DotAiError, "--primary"),
+        ):
+            DOTAI.choose_primary_provider(["anthropic", "openai-codex"], None, None)
+
+        with self.assertRaisesRegex(DOTAI.DotAiError, "--primary.*not available"):
+            DOTAI.choose_primary_provider(["anthropic"], None, "openai-codex")
+
+        for providers, requested in (
+            (["github-copilot"], "anthropic"),
+            (["anthropic"], "github-copilot"),
+            (["anthropic", "openai-codex"], "github-copilot"),
+            (["anthropic", "openai-codex"], "private"),
+        ):
+            with (
+                self.subTest(providers=providers, requested=requested),
+                self.assertRaisesRegex(DOTAI.DotAiError, "--primary.*not available"),
+            ):
+                DOTAI.choose_primary_provider(providers, None, requested)
+
+        with (
+            mock.patch.object(sys.stdin, "isatty", return_value=True),
+            mock.patch("builtins.input", return_value="3") as prompt,
+            self.assertRaisesRegex(DOTAI.DotAiError, "Invalid primary selection"),
+        ):
+            DOTAI.choose_primary_provider(["anthropic", "openai-codex"], None, None)
+        prompt.assert_called_once()
+
+        cancellation_errors = []
+        for interruption in (EOFError, KeyboardInterrupt):
+            with (
+                self.subTest(interruption=interruption.__name__),
+                mock.patch.object(sys.stdin, "isatty", return_value=True),
+                mock.patch("builtins.input", side_effect=interruption),
+                self.assertRaises(DOTAI.DotAiError) as raised,
+            ):
+                DOTAI.choose_primary_provider(
+                    ["anthropic", "openai-codex"], None, None
+                )
+            cancellation_errors.append(str(raised.exception))
+        self.assertEqual(cancellation_errors, ["Primary selection cancelled"] * 2)
+
+    def test_resolve_omp_routing_handles_provider_combinations(self) -> None:
+        recommendations = DOTAI.load_routing_recommendations()
+        provider_roles = recommendations["providers"]
+
+        def available_for(providers: list[str]) -> set[str]:
+            return {
+                DOTAI.selector_identity(provider_roles[provider]["roles"][role][0])
+                for provider in providers
+                for role in DOTAI.ROUTING_ROLES
+            }
+
+        copilot = {
+            "default": "github-copilot/gpt-5.6-terra",
+            "task": "github-copilot/gpt-5.6-terra",
+            "smol": "github-copilot/gpt-5.6-luna",
+            "slow": "github-copilot/gpt-5.6-terra:high",
+        }
+        anthropic = {
+            "default": "anthropic/claude-opus-4-8",
+            "task": "anthropic/claude-sonnet-4-6",
+            "smol": "anthropic/claude-haiku-4-5",
+            "slow": "anthropic/claude-opus-4-8:high",
+        }
+        codex = {
+            "default": "openai-codex/gpt-5.6-sol",
+            "task": "openai-codex/gpt-5.6-sol",
+            "smol": "openai-codex/gpt-5.4-mini",
+            "slow": "openai-codex/gpt-5.6-sol:high",
+        }
+        cases = [
+            (["github-copilot"], "github-copilot", copilot),
+            (["anthropic"], "anthropic", anthropic),
+            (["openai-codex"], "openai-codex", codex),
+            (
+                ["github-copilot", "openai-codex"],
+                "openai-codex",
+                {"default": codex["default"], "task": copilot["task"], "smol": copilot["smol"], "slow": codex["slow"]},
+            ),
+            (
+                ["anthropic", "github-copilot"],
+                "anthropic",
+                {"default": anthropic["default"], "task": copilot["task"], "smol": copilot["smol"], "slow": anthropic["slow"]},
+            ),
+            (
+                ["anthropic", "openai-codex"],
+                "anthropic",
+                {"default": anthropic["default"], "task": anthropic["task"], "smol": anthropic["smol"], "slow": anthropic["slow"]},
+            ),
+            (
+                ["anthropic", "openai-codex"],
+                "openai-codex",
+                {"default": codex["default"], "task": anthropic["task"], "smol": anthropic["smol"], "slow": codex["slow"]},
+            ),
+            (
+                ["anthropic", "github-copilot", "openai-codex"],
+                "anthropic",
+                {"default": anthropic["default"], "task": copilot["task"], "smol": copilot["smol"], "slow": anthropic["slow"]},
+            ),
+            (
+                ["anthropic", "github-copilot", "openai-codex"],
+                "openai-codex",
+                {"default": codex["default"], "task": copilot["task"], "smol": copilot["smol"], "slow": codex["slow"]},
+            ),
+        ]
+        worker_order = ["github-copilot", "anthropic", "openai-codex"]
+        expected_candidates = {
+            "github-copilot": {
+                "default": [copilot["default"]],
+                "task": [copilot["task"], copilot["smol"]],
+                "smol": [copilot["smol"], copilot["task"]],
+                "slow": [
+                    copilot["slow"],
+                    "github-copilot/gpt-5.6-luna:high",
                 ],
-                "slow": ["openai-codex/gpt-5.6-sol:high", "github-copilot/gpt-5.6-sol:high"],
-                "smol": ["github-copilot/gpt-5.4-mini"],
-                "unavailable": ["openai-codex/gpt-5.4-mini"],
+            },
+            "anthropic": {
+                "default": [anthropic["default"]],
+                "task": [anthropic["task"], anthropic["default"]],
+                "smol": [anthropic["smol"], anthropic["task"]],
+                "slow": [anthropic["slow"]],
+            },
+            "openai-codex": {
+                role: [selector] for role, selector in codex.items()
+            },
+        }
+
+        for providers, primary, expected_primaries in cases:
+            with self.subTest(providers=providers, primary=primary):
+                primaries, fallbacks, unavailable = DOTAI.resolve_omp_routing(
+                    recommendations, providers, primary, available_for(providers)
+                )
+                self.assertEqual(primaries, expected_primaries)
+                self.assertEqual(unavailable, [])
+                premium_order = [
+                    primary,
+                    *(
+                        provider
+                        for provider in ("anthropic", "openai-codex")
+                        if provider in providers and provider != primary
+                    ),
+                    *(
+                        provider
+                        for provider in ("github-copilot",)
+                        if provider in providers and provider != primary
+                    ),
+                ]
+                for role in ("default", "slow"):
+                    self.assertEqual(
+                        fallbacks[role],
+                        [
+                            selector
+                            for provider in premium_order
+                            for selector in expected_candidates[provider][role]
+                        ],
+                    )
+                for role in ("task", "smol"):
+                    self.assertEqual(
+                        fallbacks[role],
+                        [
+                            selector
+                            for provider in worker_order
+                            if provider in providers
+                            for selector in expected_candidates[provider][role]
+                        ],
+                    )
+
+        duplicate_recommendations = {
+            "providers": {
+                "anthropic": {
+                    "roles": {
+                        "default": ["anthropic/model", "anthropic/model"],
+                        "task": ["anthropic/task"],
+                        "smol": ["anthropic/missing"],
+                        "slow": ["anthropic/model:high", "anthropic/model:high"],
+                    }
+                }
             }
         }
-        available = {
-            "openai-codex/gpt-5.6-sol",
-            "github-copilot/gpt-5.6-sol",
-            "github-copilot/gpt-5.4-mini",
-        }
-
-        primaries, fallbacks, unavailable = DOTAI.resolve_omp_routing(routing, available)
-
+        primaries, fallbacks, unavailable = DOTAI.resolve_omp_routing(
+            duplicate_recommendations,
+            ["anthropic"],
+            "anthropic",
+            {"anthropic/model", "anthropic/task"},
+        )
         self.assertEqual(
             primaries,
             {
-                "default": "openai-codex/gpt-5.6-sol",
-                "slow": "openai-codex/gpt-5.6-sol:high",
-                "smol": "github-copilot/gpt-5.4-mini",
+                "default": "anthropic/model",
+                "task": "anthropic/task",
+                "slow": "anthropic/model:high",
             },
         )
-        self.assertEqual(
-            fallbacks["default"], ["openai-codex/gpt-5.6-sol", "github-copilot/gpt-5.6-sol"]
-        )
-        self.assertEqual(
-            fallbacks["slow"], ["openai-codex/gpt-5.6-sol:high", "github-copilot/gpt-5.6-sol:high"]
-        )
-        self.assertEqual(unavailable, ["unavailable"])
+        self.assertEqual(fallbacks["default"], ["anthropic/model"])
+        self.assertEqual(fallbacks["slow"], ["anthropic/model:high"])
+        self.assertEqual(unavailable, ["smol"])
 
     def test_configure_omp_routing_merges_managed_values_and_writes_scalars(self) -> None:
         manifest = self.minimal_manifest("~/.omp/agent/mcp.json")
