@@ -22,6 +22,10 @@ VERSION = "0.2.0"
 ROOT = Path(__file__).resolve().parent
 DEFAULT_MANIFEST = ROOT / "stack.json"
 EXAMPLE_MANIFEST = ROOT / "stack.example.json"
+ROUTING_RECOMMENDATIONS = ROOT / "routing-recommendations.json"
+ROUTING_ROLES = ("default", "task", "smol", "slow")
+SUPPORTED_ROUTING_PROVIDERS = frozenset({"github-copilot", "openai-codex", "anthropic"})
+DEFAULT_AGENT_MODEL_OVERRIDES = {"sonic": "@smol", "task": "@task"}
 SERVER_NAME = re.compile(r"^[a-zA-Z0-9_.-]{1,100}$")
 HEADER_NAME = re.compile(r"^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$")
 ENV_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
@@ -206,30 +210,105 @@ def initialize_default_manifest(path: Path) -> bool:
     return initialize_manifest(path)
 
 
-def validate_omp_routing(value: Any) -> dict[str, Any]:
+def validate_routing_recommendations(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict) or set(value) != {"version", "agentModelOverrides", "providers"}:
+        raise DotAiError("Routing recommendations must have exactly version, agentModelOverrides, and providers")
+    if isinstance(value["version"], bool) or value["version"] != 1:
+        raise DotAiError("Routing recommendations 'version' must be 1")
+
+    overrides = value["agentModelOverrides"]
+    if overrides != DEFAULT_AGENT_MODEL_OVERRIDES:
+        raise DotAiError("Routing recommendation agentModelOverrides must match the managed defaults")
+
+    providers = value["providers"]
+    if not isinstance(providers, dict) or set(providers) != SUPPORTED_ROUTING_PROVIDERS:
+        raise DotAiError("Routing recommendations must define exactly the supported providers")
+    for provider, settings in providers.items():
+        if not isinstance(provider, str) or not provider:
+            raise DotAiError("Routing recommendation provider names must be non-empty strings")
+        if not isinstance(settings, dict) or set(settings) != {"roles"}:
+            raise DotAiError("Routing recommendation providers must contain exactly roles")
+        roles = settings["roles"]
+        if not isinstance(roles, dict) or set(roles) != set(ROUTING_ROLES):
+            raise DotAiError("Routing recommendation providers must define exactly the managed roles")
+        for selectors in roles.values():
+            if not isinstance(selectors, list) or not selectors:
+                raise DotAiError("Routing recommendation roles must be non-empty arrays")
+            if any(
+                not isinstance(selector, str)
+                or not selector
+                or not selector.startswith(f"{provider}/")
+                for selector in selectors
+            ):
+                raise DotAiError("Routing recommendation selectors must be non-empty and match their provider")
+    return value
+
+
+def load_routing_recommendations(
+    path: Path = ROUTING_RECOMMENDATIONS,
+) -> dict[str, Any]:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except OSError as exc:
+        raise DotAiError(f"Unable to read routing recommendations from {path}: {exc}") from exc
+    except json.JSONDecodeError as exc:
+        raise DotAiError(f"Invalid JSON in {path}: {exc}") from exc
+    return validate_routing_recommendations(value)
+
+
+def validate_omp_routing(value: Any, *, allow_legacy: bool = False) -> dict[str, Any]:
     if value is None:
         return {}
     if not isinstance(value, dict):
         raise DotAiError("Manifest 'ompRouting' must be an object")
-    if set(value) - {
-        "roles",
-        "agentModelOverrides",
-        "usageReservePct",
-        "usageReservePolicy",
-        "fallbackRevertPolicy",
-    }:
-        raise DotAiError("Manifest 'ompRouting' has unsupported properties")
 
-    roles = value.get("roles")
-    if not isinstance(roles, dict) or not roles:
-        raise DotAiError("Manifest 'ompRouting.roles' must be a non-empty object")
-    for role, selectors in roles.items():
-        if not isinstance(role, str) or not role:
-            raise DotAiError("Manifest 'ompRouting' role names must be non-empty strings")
-        if not isinstance(selectors, list) or not selectors:
-            raise DotAiError("Manifest 'ompRouting' role selectors must be non-empty arrays")
-        if any(not isinstance(selector, str) or not selector for selector in selectors):
-            raise DotAiError("Manifest 'ompRouting' selectors must be non-empty strings")
+    if "roles" in value:
+        if not allow_legacy:
+            raise DotAiError("Manifest 'ompRouting.roles' is obsolete; run 'dotai configure omp-routing' to migrate")
+        allowed = {
+            "roles",
+            "agentModelOverrides",
+            "usageReservePct",
+            "usageReservePolicy",
+            "fallbackRevertPolicy",
+        }
+        if set(value) - allowed:
+            raise DotAiError("Manifest 'ompRouting' has unsupported properties")
+        roles = value["roles"]
+        if not isinstance(roles, dict) or not roles:
+            raise DotAiError("Manifest 'ompRouting.roles' must be a non-empty object")
+        for role, selectors in roles.items():
+            if not isinstance(role, str) or not role:
+                raise DotAiError("Manifest 'ompRouting' role names must be non-empty strings")
+            if not isinstance(selectors, list) or not selectors:
+                raise DotAiError("Manifest 'ompRouting' role selectors must be non-empty arrays")
+            if any(not isinstance(selector, str) or not selector for selector in selectors):
+                raise DotAiError("Manifest 'ompRouting' selectors must be non-empty strings")
+        normalized = {"roles": roles}
+    else:
+        allowed = {
+            "providers",
+            "primaryProvider",
+            "agentModelOverrides",
+            "usageReservePct",
+            "usageReservePolicy",
+            "fallbackRevertPolicy",
+        }
+        if set(value) - allowed:
+            raise DotAiError("Manifest 'ompRouting' has unsupported properties")
+        providers = value.get("providers")
+        if not isinstance(providers, list) or not providers:
+            raise DotAiError("Manifest 'ompRouting.providers' must be a non-empty array")
+        if any(not isinstance(provider, str) or not provider for provider in providers):
+            raise DotAiError("Manifest 'ompRouting.providers' entries must be non-empty strings")
+        if len(providers) != len(set(providers)):
+            raise DotAiError("Manifest 'ompRouting.providers' entries must be unique")
+        if any(provider not in SUPPORTED_ROUTING_PROVIDERS for provider in providers):
+            raise DotAiError("Manifest 'ompRouting.providers' contains an unsupported provider")
+        primary = value.get("primaryProvider")
+        if primary not in providers:
+            raise DotAiError("Manifest 'ompRouting.primaryProvider' must be present in providers")
+        normalized = {"providers": providers, "primaryProvider": primary}
 
     overrides = value.get("agentModelOverrides", {})
     if not isinstance(overrides, dict) or any(
@@ -249,7 +328,7 @@ def validate_omp_routing(value: Any) -> dict[str, Any]:
         raise DotAiError("Manifest 'ompRouting.fallbackRevertPolicy' is invalid")
 
     return {
-        "roles": roles,
+        **normalized,
         "agentModelOverrides": overrides,
         "usageReservePct": reserve,
         "usageReservePolicy": reserve_policy,
@@ -257,7 +336,7 @@ def validate_omp_routing(value: Any) -> dict[str, Any]:
     }
 
 
-def load_manifest(path: Path) -> dict[str, Any]:
+def load_manifest(path: Path, *, allow_legacy_routing: bool = False) -> dict[str, Any]:
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except FileNotFoundError as exc:
@@ -278,7 +357,9 @@ def load_manifest(path: Path) -> dict[str, Any]:
     if not isinstance(extensions, list) or any(not isinstance(item, str) or not item for item in extensions):
         raise DotAiError("Manifest 'ompExtensions' must be an array of non-empty strings")
     if "ompRouting" in data:
-        data["ompRouting"] = validate_omp_routing(data["ompRouting"])
+        data["ompRouting"] = validate_omp_routing(
+            data["ompRouting"], allow_legacy=allow_legacy_routing
+        )
     mcp = data.get("mcp", {})
     if not isinstance(mcp, dict) or not isinstance(mcp.get("servers", {}), dict):
         raise DotAiError("Manifest 'mcp.servers' must be an object")
@@ -780,18 +861,104 @@ def available_omp_models(runner: Runner) -> set[str] | None:
     return {model["selector"] for model in models}
 
 
+def detected_routing_providers(
+    recommendations: dict[str, Any], available: set[str]
+) -> list[str]:
+    available_identities = {selector_identity(selector) for selector in available}
+    supported = recommendations["providers"]
+    providers = sorted(
+        {selector.partition("/")[0] for selector in available} & set(supported)
+    )
+    for provider in providers:
+        recommended = supported[provider]["roles"].values()
+        if not any(
+            selector_identity(selector) in available_identities
+            for selectors in recommended
+            for selector in selectors
+        ):
+            raise DotAiError(f"Provider {provider} has no recommended models available")
+    return providers
+
+
+def choose_primary_provider(
+    providers: list[str], current: str | None, requested: str | None
+) -> str:
+    premium = [
+        provider for provider in ("anthropic", "openai-codex") if provider in providers
+    ]
+    if requested is not None and requested not in premium:
+        raise DotAiError(f"Requested --primary {requested} is not available")
+    if not premium:
+        if "github-copilot" in providers:
+            return "github-copilot"
+        raise DotAiError("No supported routing providers are available")
+    if len(premium) == 1:
+        return premium[0]
+    if requested is not None:
+        return requested
+    if current in premium:
+        return current
+    if not sys.stdin.isatty():
+        raise DotAiError(
+            "Both Anthropic and OpenAI Codex are available; pass --primary"
+        )
+    try:
+        response = input(
+            "Choose interactive primary: [1] Anthropic [2] OpenAI Codex: "
+        )
+    except (EOFError, KeyboardInterrupt) as exc:
+        raise DotAiError("Primary selection cancelled") from exc
+    if response == "1":
+        return "anthropic"
+    if response == "2":
+        return "openai-codex"
+    raise DotAiError("Invalid primary selection; enter 1 or 2")
+
+
 def resolve_omp_routing(
-    routing: dict[str, Any], available: set[str]
+    recommendations: dict[str, Any],
+    providers: list[str],
+    primary: str,
+    available: set[str],
 ) -> tuple[dict[str, str], dict[str, list[str]], list[str]]:
+    interactive_order = [
+        primary,
+        *(
+            provider
+            for provider in ("anthropic", "openai-codex")
+            if provider in providers and provider != primary
+        ),
+        *(
+            provider
+            for provider in ("github-copilot",)
+            if provider in providers and provider != primary
+        ),
+    ]
+    worker_order = [
+        provider
+        for provider in ("github-copilot", "anthropic", "openai-codex")
+        if provider in providers
+    ]
     available_identities = {selector_identity(selector) for selector in available}
     primaries: dict[str, str] = {}
     fallbacks: dict[str, list[str]] = {}
     unavailable: list[str] = []
-    for role, candidates in routing["roles"].items():
+    for role in ROUTING_ROLES:
+        provider_order = (
+            interactive_order if role in ("default", "slow") else worker_order
+        )
+        candidates = (
+            selector
+            for provider in provider_order
+            for selector in recommendations["providers"][provider]["roles"][role]
+        )
         retained: list[str] = []
         seen: set[str] = set()
         for candidate in candidates:
-            if candidate not in seen and selector_identity(candidate) in available_identities:
+            if (
+                candidate not in seen
+                and selector_identity(candidate) in available_identities
+            ):
                 seen.add(candidate)
                 retained.append(candidate)
         if retained:
@@ -813,6 +980,26 @@ def configured_omp_value(runner: Runner, key: str) -> Any | None:
     return configured["value"]
 
 
+def build_omp_routing_intent(
+    routing: dict[str, Any],
+    recommendations: dict[str, Any],
+    providers: list[str],
+    primary: str,
+) -> dict[str, Any]:
+    return {
+        "providers": sorted(providers),
+        "primaryProvider": primary,
+        "agentModelOverrides": routing.get(
+            "agentModelOverrides", recommendations["agentModelOverrides"]
+        ),
+        "usageReservePct": routing.get("usageReservePct", 10),
+        "usageReservePolicy": routing.get("usageReservePolicy", "auto"),
+        "fallbackRevertPolicy": routing.get(
+            "fallbackRevertPolicy", "cooldown-expiry"
+        ),
+    }
+
+
 def omp_routing_scalar_values(routing: dict[str, Any]) -> dict[str, Any]:
     return {
         "retry.modelFallback": True,
@@ -823,43 +1010,62 @@ def omp_routing_scalar_values(routing: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def configure_omp_routing(manifest: dict[str, Any], runner: Runner) -> int:
-    routing = manifest.get("ompRouting")
-    if not routing:
-        print(f"{badge('INACTIVE')} OMP routing: not configured in manifest")
-        return 0
-
+def configure_omp_routing(
+    manifest: dict[str, Any],
+    path: Path,
+    runner: Runner,
+    requested_primary: str | None = None,
+) -> int:
+    routing = manifest.get("ompRouting") or {}
+    recommendations = load_routing_recommendations()
     available = available_omp_models(runner)
     if available is None:
         print(f"{badge('FAIL')} OMP routing: unable to read OMP model catalog")
         return 1
-    primaries, fallbacks, unavailable = resolve_omp_routing(routing, available)
-    if not primaries:
-        print(f"{badge('INACTIVE')} OMP routing: no configured model candidates are available")
-        print(f"  unavailable roles: {', '.join(unavailable)}")
+
+    providers = detected_routing_providers(recommendations, available)
+    persisted_primary = routing.get("primaryProvider")
+    primary = choose_primary_provider(providers, persisted_primary, requested_primary)
+    primaries, fallbacks, unavailable = resolve_omp_routing(
+        recommendations, providers, primary, available
+    )
+    if unavailable:
+        print(f"{badge('FAIL')} OMP routing: unavailable managed roles: {', '.join(unavailable)}")
         return 1
 
-    providers = sorted({selector.partition("/")[0] for selector in available})
-    print(f"{heading('OMP routing:')}")
-    print(f"  discovered providers: {', '.join(providers)}")
-    print(f"  resolved primaries: {json.dumps(primaries, separators=(',', ':'))}")
-    print(f"  fallback chains: {json.dumps(fallbacks, separators=(',', ':'))}")
-    print(f"  unavailable roles: {', '.join(unavailable) or 'none'}")
-
-    record_keys = ("modelRoles", "retry.fallbackChains", "task.agentModelOverrides")
-    scalar_values = omp_routing_scalar_values(routing)
-    current = {key: configured_omp_value(runner, key) for key in (*record_keys, *scalar_values)}
+    intent = build_omp_routing_intent(
+        routing, recommendations, providers, primary
+    )
+    record_keys = (
+        "modelRoles",
+        "retry.fallbackChains",
+        "task.agentModelOverrides",
+    )
+    scalar_values = omp_routing_scalar_values(intent)
+    current = {
+        key: configured_omp_value(runner, key)
+        for key in (*record_keys, *scalar_values)
+    }
     if any(
-        not isinstance(current[key], dict) or any(not isinstance(name, str) for name in current[key])
+        not isinstance(current[key], dict)
+        or any(not isinstance(name, str) for name in current[key])
         for key in record_keys
     ) or any(current[key] is None for key in scalar_values):
         print(f"{badge('FAIL')} OMP routing: unable to read required OMP configuration")
         return 1
 
+    updated = dict(manifest)
+    updated["ompRouting"] = intent
     desired_records = {
         "modelRoles": {**current["modelRoles"], **primaries},
-        "retry.fallbackChains": {**current["retry.fallbackChains"], **fallbacks},
-        "task.agentModelOverrides": {**current["task.agentModelOverrides"], **routing["agentModelOverrides"]},
+        "retry.fallbackChains": {
+            **current["retry.fallbackChains"],
+            **fallbacks,
+        },
+        "task.agentModelOverrides": {
+            **current["task.agentModelOverrides"],
+            **intent["agentModelOverrides"],
+        },
     }
     writes: list[tuple[str, str]] = []
     for key, value in desired_records.items():
@@ -867,19 +1073,48 @@ def configure_omp_routing(manifest: dict[str, Any], runner: Runner) -> int:
             writes.append((key, json.dumps(value, separators=(",", ":"))))
     for key, value in scalar_values.items():
         if current[key] != value:
-            writes.append((key, str(value).lower() if isinstance(value, bool) else str(value)))
+            serialized = str(value).lower() if isinstance(value, bool) else str(value)
+            writes.append((key, serialized))
 
-    if not writes:
-        print(f"{badge('OK')} OMP routing: already configured")
-        return 0
-    if runner.dry_run:
+    print(f"{heading('OMP routing:')}")
+    print(f"  discovered providers: {', '.join(providers)}")
+    print(f"  interactive primary: {primary}")
+    print(
+        "  resolved role primaries: "
+        + json.dumps(primaries, separators=(",", ":"))
+    )
+    print(
+        "  fallback chains: "
+        + json.dumps(fallbacks, separators=(",", ":"))
+    )
+    print("  manifest changes:")
+    diff = manifest_diff(manifest, updated, path)
+    print(diff or "    none")
+    print("  pending OMP commands:")
+    if writes:
         for key, value in writes:
-            print(f"{badge('RUN')} Dry run: Configure OMP routing {key}: omp config set {key} {value}")
+            print(f"    omp config set {key} {value}")
+    else:
+        print("    none")
+
+    if runner.dry_run:
+        print(f"{badge('RUN')} Dry run: no manifest or OMP changes applied.")
         return 0
+
+    manifest_changed = manifest != updated
+    if manifest_changed:
+        backup = backup_manifest(path)
+        write_manifest(path, updated)
+        print(f"{badge('OK')} Manifest backup written to {backup}")
 
     failures_before = len(runner.failures)
     for key, value in writes:
-        runner.run(["omp", "config", "set", key, value], f"Configure OMP routing {key}")
+        runner.run(
+            ["omp", "config", "set", key, value],
+            f"Configure OMP routing {key}",
+        )
+    if not manifest_changed and not writes:
+        print(f"{badge('OK')} OMP routing: already configured")
     return 1 if len(runner.failures) > failures_before else 0
 
 
@@ -1142,12 +1377,36 @@ def omp_routing_status(manifest: dict[str, Any], runner: Runner) -> tuple[str, s
     if not routing:
         return "OK", "not configured in manifest"
 
+    try:
+        recommendations = load_routing_recommendations()
+    except DotAiError:
+        return "FAIL", "unable to read routing recommendations"
     available = available_omp_models(runner)
     if available is None:
         return "FAIL", "unable to read OMP model catalog"
-    primaries, fallbacks, unavailable = resolve_omp_routing(routing, available)
-    if not primaries:
-        return "INACTIVE", "no configured model candidates are available"
+    try:
+        providers = detected_routing_providers(recommendations, available)
+    except DotAiError as exc:
+        return "FAIL", str(exc)
+
+    persisted_providers = set(routing["providers"])
+    detected_providers = set(providers)
+    if not persisted_providers & detected_providers:
+        return "INACTIVE", "configured providers are unavailable"
+    if persisted_providers != detected_providers:
+        return (
+            "DRIFT",
+            "authenticated providers changed; run 'dotai configure omp-routing'",
+        )
+
+    primaries, fallbacks, unavailable = resolve_omp_routing(
+        recommendations,
+        routing["providers"],
+        routing["primaryProvider"],
+        available,
+    )
+    if unavailable:
+        return "DRIFT", f"unavailable roles: {', '.join(unavailable)}"
 
     record_keys = ("modelRoles", "retry.fallbackChains", "task.agentModelOverrides")
     scalar_values = omp_routing_scalar_values(routing)
@@ -1157,8 +1416,6 @@ def omp_routing_status(manifest: dict[str, Any], runner: Runner) -> tuple[str, s
         for key in record_keys
     ) or any(current[key] is None for key in scalar_values):
         return "FAIL", "unable to read required OMP configuration"
-    if unavailable:
-        return "DRIFT", f"unavailable roles: {', '.join(unavailable)}"
     for role, primary in primaries.items():
         if current["modelRoles"].get(role) != primary:
             return "DRIFT", f"model role differs: {role}"
@@ -1518,6 +1775,11 @@ def build_parser() -> argparse.ArgumentParser:
     configure_sub = configure.add_subparsers(dest="configure_target", required=True)
     configure_routing = configure_sub.add_parser("omp-routing", help="Configure OMP multi-provider model routing")
     configure_routing.add_argument("--dry-run", action="store_true")
+    configure_routing.add_argument(
+        "--primary",
+        choices=["anthropic", "openai-codex"],
+        help="Interactive primary when both Anthropic and Codex are authenticated",
+    )
     sub.add_parser("version", help="Print the current DotAi version")
     sub.add_parser("init", help="Generate a new manifest from stack.example.json")
     fix = sub.add_parser("fix", help="Review and migrate legacy Pi-targeted skills to OMP")
@@ -1603,9 +1865,14 @@ def main(argv: list[str] | None = None) -> int:
             print(f"{styled('dotai:', 'red', 'bold')} {exc}", file=sys.stderr)
             return 2
         return 0
+    allow_legacy_routing = (
+        args.command == "configure" and args.configure_target == "omp-routing"
+    )
     try:
         initialize_default_manifest(args.manifest)
-        manifest = load_manifest(args.manifest)
+        manifest = load_manifest(
+            args.manifest, allow_legacy_routing=allow_legacy_routing
+        )
     except (OSError, DotAiError) as exc:
         print(f"{styled('dotai:', 'red', 'bold')} {exc}", file=sys.stderr)
         return 2
@@ -1620,7 +1887,13 @@ def main(argv: list[str] | None = None) -> int:
             return 2
     runner = Runner(platform_name, getattr(args, "dry_run", False), args.verbose)
     if args.command == "configure":
-        return configure_omp_routing(manifest, runner)
+        try:
+            return configure_omp_routing(
+                manifest, args.manifest, runner, args.primary
+            )
+        except (OSError, DotAiError) as exc:
+            print(f"{styled('dotai:', 'red', 'bold')} {exc}", file=sys.stderr)
+            return 2
     if args.command == "fix":
         try:
             return fix_legacy_skills(manifest, args.manifest, runner)
