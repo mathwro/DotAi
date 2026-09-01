@@ -100,20 +100,20 @@
     {
       "source": "DietrichGebert/ponytail",
       "agent": "universal",
-      "skills": ["*"],
+      "skills": ["ponytail", "ponytail-review"],
       "checkSkills": ["ponytail", "ponytail-review"]
     },
     {
       "source": "obra/superpowers",
       "agent": "universal",
-      "skills": ["*"],
-      "checkSkills": ["using-superpowers", "systematic-debugging"]
+      "skills": ["test-driven-development", "verification-before-completion", "receiving-code-review", "writing-skills"],
+      "checkSkills": ["test-driven-development", "verification-before-completion", "receiving-code-review", "writing-skills"]
     },
     {
       "source": "mattpocock/skills",
       "agent": "universal",
-      "skills": ["grill-me", "grill-with-docs"],
-      "checkSkills": ["grill-me", "grill-with-docs"]
+      "skills": ["grill-me", "grill-with-docs", "grilling", "writing-for-agents"],
+      "checkSkills": ["grill-me", "grill-with-docs", "grilling", "writing-for-agents"]
     },
     {
       "source": "mathwro/Skills",
