@@ -2346,9 +2346,21 @@ class DotAiTests(unittest.TestCase):
             all(skill.get("agent") == "universal" for skill in manifest["skills"]),
         )
         self.assertEqual(manifest["ompExtensions"], ["~/.pi/agent/extensions/rtk.ts"])
+        ponytail = next(skill for skill in manifest["skills"] if skill["source"] == "DietrichGebert/ponytail")
+        self.assertEqual(ponytail["skills"], ["ponytail", "ponytail-review"])
+        self.assertEqual(ponytail["checkSkills"], ["ponytail", "ponytail-review"])
+        superpowers = next(skill for skill in manifest["skills"] if skill["source"] == "obra/superpowers")
+        self.assertEqual(
+            superpowers["skills"],
+            ["test-driven-development", "verification-before-completion", "receiving-code-review", "writing-skills"],
+        )
+        self.assertEqual(superpowers["checkSkills"], superpowers["skills"])
         grill_me = next(skill for skill in manifest["skills"] if skill["source"] == "mattpocock/skills")
-        self.assertEqual(grill_me["skills"], ["grill-me", "grill-with-docs"])
-        self.assertEqual(grill_me["checkSkills"], ["grill-me", "grill-with-docs"])
+        self.assertEqual(
+            grill_me["skills"],
+            ["grill-me", "grill-with-docs", "grilling", "writing-for-agents"],
+        )
+        self.assertEqual(grill_me["checkSkills"], grill_me["skills"])
         commit_and_document = next(skill for skill in manifest["skills"] if skill["source"] == "mathwro/Skills")
         self.assertEqual(
             commit_and_document["skills"],
@@ -2371,7 +2383,7 @@ class DotAiTests(unittest.TestCase):
             self.assertEqual(DOTAI.main(["version"]), 0)
         self.assertEqual(
             output.getvalue(),
-            "0.3.1\n[UPDATE] DotAi 0.4.0 is available (current: 0.3.1); pull the repository to update.\n",
+            "0.3.2\n[UPDATE] DotAi 0.4.0 is available (current: 0.3.2); pull the repository to update.\n",
         )
 
     def test_release_warning_is_checked_by_status_sync_and_install(self) -> None:
@@ -2404,17 +2416,17 @@ class DotAiTests(unittest.TestCase):
     def test_release_warning_is_silent_when_current_version_is_latest(self) -> None:
         response = mock.MagicMock()
         response.__enter__.return_value = response
-        response.read.return_value = b'{"tag_name": "0.3.1"}'
+        response.read.return_value = b'{"tag_name": "0.3.2"}'
         output = io.StringIO()
         with mock.patch("urllib.request.urlopen", return_value=response), contextlib.redirect_stdout(output):
             self.assertEqual(DOTAI.main(["version"]), 0)
-        self.assertEqual(output.getvalue(), "0.3.1\n")
+        self.assertEqual(output.getvalue(), "0.3.2\n")
 
     def test_release_check_failure_does_not_change_version_output(self) -> None:
         output = io.StringIO()
         with mock.patch("urllib.request.urlopen", side_effect=OSError("offline")), contextlib.redirect_stdout(output):
             self.assertEqual(DOTAI.main(["version"]), 0)
-        self.assertEqual(output.getvalue(), "0.3.1\n")
+        self.assertEqual(output.getvalue(), "0.3.2\n")
 
     def test_malformed_release_response_is_ignored(self) -> None:
         response = mock.MagicMock()
@@ -2431,7 +2443,7 @@ class DotAiTests(unittest.TestCase):
             check=False,
         )
         self.assertEqual(result.returncode, 0)
-        self.assertEqual(result.stdout, "0.3.1\n")
+        self.assertEqual(result.stdout, "0.3.2\n")
 
 
 
