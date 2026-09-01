@@ -1713,15 +1713,13 @@ class DotAiTests(unittest.TestCase):
                     "remove",
                     "old-skill",
                     "--global",
-                    "--agent",
-                    "universal",
                     "--yes",
                 ],
                 commands,
             )
             self.assertIn(DOTAI.skill_command(added), commands)
             history = json.loads((state_root / "recommended-skills.json").read_text(encoding="utf-8"))
-            self.assertEqual(history[os.path.normcase(str(path.resolve()))], [added])
+            self.assertEqual(history[os.path.normcase(str(path.resolve()))], {"version": 1, "skills": [added]})
             self.assertIn("owner/retired", output.getvalue())
             self.assertIn("owner/added", output.getvalue())
 
@@ -1740,6 +1738,57 @@ class DotAiTests(unittest.TestCase):
 
         machine_query.assert_not_called()
         self.assertIn("resolved when applied", output.getvalue())
+
+    def test_recommended_skill_dry_run_does_not_verify_named_removal(self) -> None:
+        retired = {
+            "source": "owner/retired",
+            "agent": "universal",
+            "skills": ["old-skill"],
+            "checkSkills": ["old-skill"],
+        }
+        runner = DOTAI.Runner("ubuntu", dry_run=True)
+        changes = [{"kind": "remove", "source": retired["source"], "before": retired, "after": None}]
+        output = io.StringIO()
+        with mock.patch.object(runner, "output", return_value="[]") as machine_query, contextlib.redirect_stdout(output):
+            DOTAI.remove_retired_skills(changes, runner)
+
+        machine_query.assert_not_called()
+        self.assertEqual(runner.failures, [])
+        self.assertIn("remove old-skill", output.getvalue())
+
+
+    def test_runner_output_ignores_stderr(self) -> None:
+        runner = DOTAI.Runner("ubuntu")
+        result = subprocess.CompletedProcess(["command"], 0, '{"valid": true}')
+        with mock.patch.object(DOTAI.subprocess, "run", return_value=result) as run:
+            self.assertEqual(runner.output(["command"]), '{"valid": true}')
+
+        self.assertIs(run.call_args.kwargs["stderr"], subprocess.DEVNULL)
+
+    def test_installed_skill_listing_uses_universal_skill_path(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            listing = json.dumps(
+                [
+                    {
+                        "name": "old-skill",
+                        "path": str(home / ".agents" / "skills" / "old-skill"),
+                        "scope": "global",
+                        "agents": ["Pi"],
+                        "source": "owner/retired",
+                    }
+                ]
+            )
+            runner = DOTAI.Runner("ubuntu")
+            with (
+                mock.patch.dict(os.environ, {"DOTAI_HOME": str(home)}),
+                mock.patch.object(runner, "output", return_value=listing),
+            ):
+                self.assertEqual(
+                    DOTAI.installed_skill_names("universal", runner, "owner/retired"),
+                    {"old-skill"},
+                )
+
 
     def test_installed_skill_listing_excludes_other_agents(self) -> None:
         listing = json.dumps(
@@ -1831,6 +1880,53 @@ class DotAiTests(unittest.TestCase):
             "Remove retired skills from owner/skills",
         )
 
+    def test_legacy_recommendation_state_updates_current_recommendation_sources(self) -> None:
+        before = {
+            "source": "owner/recommended",
+            "agent": "universal",
+            "skills": ["old-skill"],
+            "checkSkills": ["old-skill"],
+        }
+        after = {
+            "source": "owner/recommended",
+            "agent": "universal",
+            "skills": ["new-skill"],
+            "checkSkills": ["new-skill"],
+        }
+        custom = {
+            "source": "user/custom",
+            "agent": "universal",
+            "skills": ["custom-skill"],
+            "checkSkills": ["custom-skill"],
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            path = root / "stack.json"
+            example_path = root / "stack.example.json"
+            state_root = root / "state"
+            manifest = self.minimal_manifest("~/.omp/agent/mcp.json")
+            manifest["skills"] = [before, custom]
+            example = self.minimal_manifest("~/.omp/agent/mcp.json")
+            example["skills"] = [after]
+            path.write_text(json.dumps(manifest), encoding="utf-8")
+            example_path.write_text(json.dumps(example), encoding="utf-8")
+            state_root.mkdir()
+            (state_root / "recommended-skills.json").write_text(
+                json.dumps({os.path.normcase(str(path.resolve())): [before, custom]}),
+                encoding="utf-8",
+            )
+            with (
+                mock.patch.dict(os.environ, {"DOTAI_STATE_DIR": str(state_root)}, clear=False),
+                mock.patch.object(DOTAI, "EXAMPLE_MANIFEST", example_path),
+            ):
+                managed, changes, conflicts = DOTAI.recommended_skill_plan(manifest, path)
+
+        self.assertEqual(managed, [before])
+        self.assertEqual([(change["kind"], change["source"]) for change in changes], [("update", "owner/recommended")])
+        self.assertEqual(conflicts, [])
+
+
+
     def test_recommended_skill_history_is_preserved_for_each_manifest(self) -> None:
         first = {"source": "owner/first", "agent": "universal", "skills": ["first"]}
         second = {"source": "owner/second", "agent": "universal", "skills": ["second"]}
@@ -1875,7 +1971,7 @@ class DotAiTests(unittest.TestCase):
             example_path.write_text(json.dumps(example), encoding="utf-8")
             state_root.mkdir()
             (state_root / "recommended-skills.json").write_text(
-                json.dumps({os.path.normcase(str(path.resolve())): [retired]}),
+                json.dumps({os.path.normcase(str(path.resolve())): {"version": 1, "skills": [retired]}}),
                 encoding="utf-8",
             )
             runner = DOTAI.Runner("ubuntu")
@@ -1948,7 +2044,7 @@ class DotAiTests(unittest.TestCase):
             state_root.mkdir()
             history_path = state_root / "recommended-skills.json"
             history_path.write_text(
-                json.dumps({os.path.normcase(str(path.resolve())): [retired]}),
+                json.dumps({os.path.normcase(str(path.resolve())): {"version": 1, "skills": [retired]}}),
                 encoding="utf-8",
             )
             runner = DOTAI.Runner("ubuntu")
@@ -1967,7 +2063,7 @@ class DotAiTests(unittest.TestCase):
             self.assertEqual(json.loads(path.read_text(encoding="utf-8")), manifest)
             self.assertEqual(
                 json.loads(history_path.read_text(encoding="utf-8"))[os.path.normcase(str(path.resolve()))],
-                [retired],
+                {"version": 1, "skills": [retired]},
             )
 
     def test_accepted_recommendations_persist_when_unrelated_sync_fails(self) -> None:
@@ -2001,7 +2097,7 @@ class DotAiTests(unittest.TestCase):
 
             self.assertTrue((state_root / "recommended-skills.json").is_file())
             history = json.loads((state_root / "recommended-skills.json").read_text(encoding="utf-8"))
-            self.assertEqual(history[os.path.normcase(str(path.resolve()))], [added])
+            self.assertEqual(history[os.path.normcase(str(path.resolve()))], {"version": 1, "skills": [added]})
 
     def test_fix_shows_diff_and_applies_after_confirmation_with_backup(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -2275,7 +2371,7 @@ class DotAiTests(unittest.TestCase):
             self.assertEqual(DOTAI.main(["version"]), 0)
         self.assertEqual(
             output.getvalue(),
-            "0.3.0\n[UPDATE] DotAi 0.4.0 is available (current: 0.3.0); pull the repository to update.\n",
+            "0.3.1\n[UPDATE] DotAi 0.4.0 is available (current: 0.3.1); pull the repository to update.\n",
         )
 
     def test_release_warning_is_checked_by_status_sync_and_install(self) -> None:
@@ -2308,17 +2404,17 @@ class DotAiTests(unittest.TestCase):
     def test_release_warning_is_silent_when_current_version_is_latest(self) -> None:
         response = mock.MagicMock()
         response.__enter__.return_value = response
-        response.read.return_value = b'{"tag_name": "0.3.0"}'
+        response.read.return_value = b'{"tag_name": "0.3.1"}'
         output = io.StringIO()
         with mock.patch("urllib.request.urlopen", return_value=response), contextlib.redirect_stdout(output):
             self.assertEqual(DOTAI.main(["version"]), 0)
-        self.assertEqual(output.getvalue(), "0.3.0\n")
+        self.assertEqual(output.getvalue(), "0.3.1\n")
 
     def test_release_check_failure_does_not_change_version_output(self) -> None:
         output = io.StringIO()
         with mock.patch("urllib.request.urlopen", side_effect=OSError("offline")), contextlib.redirect_stdout(output):
             self.assertEqual(DOTAI.main(["version"]), 0)
-        self.assertEqual(output.getvalue(), "0.3.0\n")
+        self.assertEqual(output.getvalue(), "0.3.1\n")
 
     def test_malformed_release_response_is_ignored(self) -> None:
         response = mock.MagicMock()
@@ -2335,7 +2431,7 @@ class DotAiTests(unittest.TestCase):
             check=False,
         )
         self.assertEqual(result.returncode, 0)
-        self.assertEqual(result.stdout, "0.3.0\n")
+        self.assertEqual(result.stdout, "0.3.1\n")
 
 
 

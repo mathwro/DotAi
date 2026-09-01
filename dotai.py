@@ -18,7 +18,7 @@ from typing import Any
 from urllib import error as urlerror
 from urllib import request as urlrequest
 
-VERSION = "0.3.0"
+VERSION = "0.3.1"
 ROOT = Path(__file__).resolve().parent
 DEFAULT_MANIFEST = ROOT / "stack.json"
 EXAMPLE_MANIFEST = ROOT / "stack.example.json"
@@ -469,7 +469,7 @@ class Runner:
     def output(self, command: str | list[str]) -> str:
         try:
             result = subprocess.run(
-                self.argv(command), env=self.env, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, check=False
+                self.argv(command), env=self.env, text=True, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, check=False
             )
             return result.stdout.strip() if result.returncode == 0 else ""
         except OSError:
@@ -574,8 +574,13 @@ def managed_recommendations(manifest_path: Path) -> list[dict[str, Any]] | None:
     except (FileNotFoundError, json.JSONDecodeError, OSError):
         values = {}
     stored = values.get(key) if isinstance(values, dict) else None
+    if isinstance(stored, dict) and stored.get("version") == 1:
+        skills = stored.get("skills")
+        if valid_skill_list(skills):
+            return list(skills)
     if valid_skill_list(stored):
-        return list(stored)
+        sources = {skill["source"] for skill in load_manifest(EXAMPLE_MANIFEST)["skills"]}
+        return [skill for skill in stored if skill["source"] in sources]
     legacy = read_state(manifest_path).get("managedRecommendedSkills")
     return list(legacy) if valid_skill_list(legacy) else None
 
@@ -590,7 +595,7 @@ def save_managed_recommendations(manifest_path: Path, skills: list[dict[str, Any
         values = {}
     if not isinstance(values, dict):
         values = {}
-    values[os.path.normcase(str(manifest_path.resolve()))] = skills
+    values[os.path.normcase(str(manifest_path.resolve()))] = {"version": 1, "skills": skills}
     payload = json.dumps(values, indent=2) + "\n"
     with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=directory, delete=False) as handle:
         handle.write(payload)
@@ -695,12 +700,22 @@ def installed_skill_names(agent: str, runner: Runner, source: str | None = None)
         return None
     if not isinstance(installed, list) or any(not isinstance(skill, dict) for skill in installed):
         return None
+    universal_root = (home_dir() / ".agents" / "skills").resolve()
     return {
         skill["name"]
         for skill in installed
         if isinstance(skill.get("name"), str)
-        and isinstance(skill.get("agents"), list)
-        and any(agent_display_matches(agent, display) for display in skill["agents"])
+        and (
+            (
+                agent == "universal"
+                and isinstance(skill.get("path"), str)
+                and Path(skill["path"]).resolve().is_relative_to(universal_root)
+            )
+            or (
+                isinstance(skill.get("agents"), list)
+                and any(agent_display_matches(agent, display) for display in skill["agents"])
+            )
+        )
         and (source is None or skill.get("source") == source)
     }
 
@@ -744,12 +759,13 @@ def remove_retired_skills(changes: list[dict[str, Any]], runner: Runner) -> None
                 "remove",
                 *sorted(names),
                 "--global",
-                "--agent",
-                before.get("agent", "universal"),
+                *([] if before.get("agent", "universal") == "universal" else ["--agent", before["agent"]]),
                 "--yes",
             ]
             failure_count = len(runner.failures)
             runner.run(command, f"Remove retired skills from {before['source']}")
+            if runner.dry_run:
+                continue
             if len(runner.failures) != failure_count:
                 continue
             agent = before.get("agent", "universal")
