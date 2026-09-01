@@ -118,8 +118,8 @@
     {
       "source": "mathwro/Skills",
       "agent": "universal",
-      "skills": ["commit-and-document"],
-      "checkSkills": ["commit-and-document"]
+      "skills": ["choosing-branch-structure", "commit-and-document"],
+      "checkSkills": ["choosing-branch-structure", "commit-and-document"]
     }
   ],
   "marketplaces": [],
