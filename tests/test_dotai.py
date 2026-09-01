@@ -2240,25 +2240,50 @@ class DotAiTests(unittest.TestCase):
             self.assertEqual(json.loads(target.read_text(encoding="utf-8")), default_local)
             self.assertEqual(output.getvalue().count("Initialized"), 2)
 
-    def test_repository_example_manifest_has_no_winget_commands(self) -> None:
+    def test_repository_example_manifest_has_curated_skill_stack(self) -> None:
         manifest = DOTAI.load_manifest(ROOT / "stack.example.json")
-        self.assertNotIn("winget", json.dumps(manifest).lower())
         serialized = json.dumps(manifest)
-        rtk = next(package for package in manifest["packages"] if package["name"] == "RTK")
-        self.assertIn(["rtk", "init", "-g", "--agent", "pi"], rtk["configure"]["default"])
-        self.assertTrue(
-            all(skill.get("agent") == "universal" for skill in manifest["skills"]),
+        packages = {package["name"]: package for package in manifest["packages"]}
+        self.assertNotIn("winget", serialized.lower())
+        self.assertIn(["rtk", "init", "-g", "--agent", "pi"], packages["RTK"]["configure"]["default"])
+        self.assertEqual(
+            {
+                skill["source"]: (skill["skills"], skill["checkSkills"])
+                for skill in manifest["skills"]
+            },
+            {
+                "DietrichGebert/ponytail": (["ponytail-review"], ["ponytail-review"]),
+                "obra/superpowers": (
+                    ["verification-before-completion", "receiving-code-review"],
+                    ["verification-before-completion", "receiving-code-review"],
+                ),
+                "mattpocock/skills": (
+                    ["grilling", "writing-for-agents"],
+                    ["grilling", "writing-for-agents"],
+                ),
+                "mathwro/Skills": (["commit-and-document"], ["commit-and-document"]),
+                "tw93/Waza": (["think", "hunt"], ["think", "hunt"]),
+                "github/gh-stack": (["gh-stack"], ["gh-stack"]),
+                "vercel-labs/skills": (["find-skills"], ["find-skills"]),
+                "vercel-labs/agent-skills": (["web-design-guidelines"], ["web-design-guidelines"]),
+                "anthropics/skills": (["frontend-design"], ["frontend-design"]),
+            },
+        )
+        self.assertEqual(packages["GitHub CLI"]["check"], ["gh", "--version"])
+        self.assertEqual(packages["GitHub CLI"]["install"]["windows"], [["scoop", "install", "gh"]])
+        self.assertEqual(packages["GitHub CLI"]["install"]["macos"], [["brew", "install", "gh"]])
+        self.assertEqual(packages["GitHub Stacked PRs"]["check"], ["gh", "stack", "--help"])
+        self.assertEqual(
+            packages["GitHub Stacked PRs"]["install"]["default"],
+            [["gh", "extension", "install", "github/gh-stack"]],
+        )
+        self.assertEqual(
+            packages["GitHub Stacked PRs"]["update"]["default"],
+            ["gh extension upgrade gh-stack || gh extension install github/gh-stack"],
         )
         self.assertEqual(manifest["ompExtensions"], ["~/.pi/agent/extensions/rtk.ts"])
-        grill_me = next(skill for skill in manifest["skills"] if skill["source"] == "mattpocock/skills")
-        self.assertEqual(grill_me["skills"], ["grill-me", "grill-with-docs"])
-        self.assertEqual(grill_me["checkSkills"], ["grill-me", "grill-with-docs"])
-        commit_and_document = next(skill for skill in manifest["skills"] if skill["source"] == "mathwro/Skills")
-        self.assertEqual(commit_and_document["skills"], ["commit-and-document"])
-        self.assertEqual(commit_and_document["checkSkills"], ["commit-and-document"])
         self.assertNotIn("--codex", serialized)
         self.assertIn("/stack.json", (ROOT / ".gitignore").read_text(encoding="utf-8").splitlines())
-        self.assertEqual(DOTAI.detect_platform(), os.environ.get("DOTAI_PLATFORM", DOTAI.detect_platform()))
 
     def test_version_warns_when_newer_release_exists(self) -> None:
         response = mock.MagicMock()

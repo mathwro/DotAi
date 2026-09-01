@@ -16,6 +16,32 @@
       }
     },
     {
+      "name": "GitHub CLI",
+      "check": ["gh", "--version"],
+      "install": {
+        "windows": [["scoop", "install", "gh"]],
+        "macos": [["brew", "install", "gh"]],
+        "ubuntu": ["(type -p wget >/dev/null || (sudo apt update && sudo apt install wget -y)) && sudo mkdir -p -m 755 /etc/apt/keyrings && out=$(mktemp) && wget -nv -O$out https://cli.github.com/packages/githubcli-archive-keyring.gpg && cat $out | sudo tee /etc/apt/keyrings/githubcli-archive-keyring.gpg > /dev/null && sudo chmod go+r /etc/apt/keyrings/githubcli-archive-keyring.gpg && sudo mkdir -p -m 755 /etc/apt/sources.list.d && echo \"deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main\" | sudo tee /etc/apt/sources.list.d/github-cli.list > /dev/null && sudo apt update && sudo apt install gh -y"],
+        "arch": ["if [ \"$(id -u)\" -eq 0 ]; then pacman -S --needed --noconfirm github-cli; else sudo pacman -S --needed --noconfirm github-cli; fi"]
+      },
+      "update": {
+        "windows": ["scoop update gh; if ($LASTEXITCODE -ne 0) { scoop install gh }"],
+        "macos": ["brew upgrade gh || brew install gh"],
+        "ubuntu": ["sudo apt update && sudo apt install gh -y"],
+        "arch": ["if [ \"$(id -u)\" -eq 0 ]; then pacman -S --needed --noconfirm github-cli; else sudo pacman -S --needed --noconfirm github-cli; fi"]
+      }
+    },
+    {
+      "name": "GitHub Stacked PRs",
+      "check": ["gh", "stack", "--help"],
+      "install": {
+        "default": [["gh", "extension", "install", "github/gh-stack"]]
+      },
+      "update": {
+        "default": ["gh extension upgrade gh-stack || gh extension install github/gh-stack"]
+      }
+    },
+    {
       "name": "Node.js",
       "updateGroup": "dependency",
       "check": ["node", "--version"],
@@ -100,26 +126,56 @@
     {
       "source": "DietrichGebert/ponytail",
       "agent": "universal",
-      "skills": ["*"],
-      "checkSkills": ["ponytail", "ponytail-review"]
+      "skills": ["ponytail-review"],
+      "checkSkills": ["ponytail-review"]
     },
     {
       "source": "obra/superpowers",
       "agent": "universal",
-      "skills": ["*"],
-      "checkSkills": ["using-superpowers", "systematic-debugging"]
+      "skills": ["verification-before-completion", "receiving-code-review"],
+      "checkSkills": ["verification-before-completion", "receiving-code-review"]
     },
     {
       "source": "mattpocock/skills",
       "agent": "universal",
-      "skills": ["grill-me", "grill-with-docs"],
-      "checkSkills": ["grill-me", "grill-with-docs"]
+      "skills": ["grilling", "writing-for-agents"],
+      "checkSkills": ["grilling", "writing-for-agents"]
     },
     {
       "source": "mathwro/Skills",
       "agent": "universal",
       "skills": ["commit-and-document"],
       "checkSkills": ["commit-and-document"]
+    },
+    {
+      "source": "tw93/Waza",
+      "agent": "universal",
+      "skills": ["think", "hunt"],
+      "checkSkills": ["think", "hunt"]
+    },
+    {
+      "source": "github/gh-stack",
+      "agent": "universal",
+      "skills": ["gh-stack"],
+      "checkSkills": ["gh-stack"]
+    },
+    {
+      "source": "vercel-labs/skills",
+      "agent": "universal",
+      "skills": ["find-skills"],
+      "checkSkills": ["find-skills"]
+    },
+    {
+      "source": "vercel-labs/agent-skills",
+      "agent": "universal",
+      "skills": ["web-design-guidelines"],
+      "checkSkills": ["web-design-guidelines"]
+    },
+    {
+      "source": "anthropics/skills",
+      "agent": "universal",
+      "skills": ["frontend-design"],
+      "checkSkills": ["frontend-design"]
     }
   ],
   "marketplaces": [],

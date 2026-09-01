@@ -12,7 +12,23 @@ The `add` commands update `stack.json`. Run `dotai sync` or `dotai install` afte
 
 Skills default to the `universal` agent target, which installs into `~/.agents/skills/`, the user-level location OMP discovers. Repeat `--skill` and `--check-skill` when a source provides multiple skills.
 
-After synchronization, restart OMP so it discovers newly installed skills. With OMP's default `skills.enableSkillCommands` setting, invoke them as `/skill:<name>` commands, for example `/skill:grill-me`, `/skill:grill-with-docs`, or `/skill:commit-and-document`; the shorter `/<name>` form is not the registered command syntax.
+After synchronization, restart OMP so it discovers newly installed skills. With OMP's default `skills.enableSkillCommands` setting, invoke them as `/skill:<name>` commands, for example `/skill:think`, `/skill:gh-stack`, or `/skill:commit-and-document`; the shorter `/<name>` form is not the registered command syntax.
+
+The default stack assigns one skill to each workflow phase: `think` plans new work, `gh-stack` manages dependent pull-request layers, `hunt` investigates defects, verification and review skills provide evidence gates, and `commit-and-document` finalizes an explicitly requested commit. `ponytail-review`, `grilling`, and design-audit skills are explicit review tools, not always-on implementation governors.
+
+## Work with stacked pull requests
+
+`gh-stack` is installed with the GitHub CLI. Use it only for dependent, independently reviewable layers; keep unrelated work in separate stacks. Plan layers before editing, then create the stack from the bottom layer:
+
+```sh
+gh stack init feature/foundation
+# Commit the foundational layer.
+gh stack add feature/dependent-behavior
+# Commit the dependent layer.
+gh stack submit --auto
+```
+
+Run `gh stack rebase` after changing a lower layer, `gh stack sync` after merges, and `gh stack view --json` to inspect the current stack. A one-PR change remains an ordinary branch and pull request.
 
 To review skill recommendations added, changed, or removed from `stack.example.json`, run:
 
