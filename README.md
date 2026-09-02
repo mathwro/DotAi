@@ -37,6 +37,7 @@ Use `./dotai` on Linux, WSL, and macOS, or `.\dotai.ps1` in PowerShell.
 ./dotai update           # Update core components and synchronize configuration
 ./dotai sync             # Synchronize skills, plugins, and MCP servers only
 ./dotai sync --recommended-skills  # Review and apply repository skill recommendations
+./dotai sync --recommended-skills --enforce  # Fully adopt and clean recommended skill sources
 ./dotai status           # Show installed, missing, inactive, or drifting components
 ./dotai doctor           # Check the stack plus platform prerequisites
 ./dotai validate         # Initialize when absent, then validate stack.json

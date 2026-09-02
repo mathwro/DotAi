@@ -22,7 +22,7 @@ To review skill recommendations added, changed, or removed from `stack.example.j
 
 DotAi prints the proposed manifest diff, then lets you accept all changes, review each change, or cancel. Accepted removals also uninstall the retired skills so OMP no longer discovers them; rejected changes are offered again later. User-added sources and locally modified recommended entries are preserved. Use `./dotai sync --recommended-skills --dry-run` to print the diff and planned actions without changing files or machine state.
 
-The first run on an existing installation establishes recommendation ownership conservatively from exact matches in the current example. Entries DotAi cannot prove it previously recommended remain user-owned and are not removed.
+The first run on an existing installation establishes recommendation ownership conservatively from exact matches in the current example. Entries DotAi cannot prove it previously recommended remain user-owned and are not removed. To adopt existing entries whose sources match the repository recommendations and remove skills those sources no longer recommend, run `./dotai sync --recommended-skills --enforce`. DotAi still shows the diff and requires acceptance; unrelated user-added sources remain untouched.
 
 Normal `sync` runs do not rewrite existing `stack.json` skill entries. To migrate all legacy skill entries that still target Pi, run:
 
