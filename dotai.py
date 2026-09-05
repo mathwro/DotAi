@@ -18,7 +18,7 @@ from typing import Any
 from urllib import error as urlerror
 from urllib import request as urlrequest
 
-VERSION = "0.3.4"
+VERSION = "0.3.5"
 ROOT = Path(__file__).resolve().parent
 DEFAULT_MANIFEST = ROOT / "stack.json"
 EXAMPLE_MANIFEST = ROOT / "stack.example.json"
