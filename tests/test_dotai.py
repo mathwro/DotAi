@@ -92,6 +92,7 @@ class DotAiTests(unittest.TestCase):
                 ],
                 "slow": [
                     "anthropic/claude-opus-4-8:high",
+                    "github-copilot/gpt-5.6-sol:high",
                     "github-copilot/gpt-5.6-terra:high",
                 ],
             },
@@ -116,16 +117,65 @@ class DotAiTests(unittest.TestCase):
             {"github-copilot", "openai-codex", "anthropic"},
         )
         self.assertEqual(
-            recommendations["providers"]["anthropic"]["roles"]["smol"],
-            ["anthropic/claude-haiku-4-5", "anthropic/claude-sonnet-4-6"],
+            recommendations["providers"]["anthropic"]["roles"],
+            {
+                "default": [
+                    "anthropic/claude-opus-5",
+                    "anthropic/claude-opus-4-8",
+                    "anthropic/claude-opus-4-7",
+                    "anthropic/claude-opus-4-6",
+                ],
+                "task": [
+                    "anthropic/claude-sonnet-5",
+                    "anthropic/claude-sonnet-4-6",
+                    "anthropic/claude-opus-5",
+                    "anthropic/claude-opus-4-8",
+                ],
+                "smol": [
+                    "anthropic/claude-haiku-4-5",
+                    "anthropic/claude-sonnet-5",
+                    "anthropic/claude-sonnet-4-6",
+                ],
+                "slow": [
+                    "anthropic/claude-fable-5-1:high",
+                    "anthropic/claude-opus-5:high",
+                    "anthropic/claude-opus-4-8:high",
+                    "anthropic/claude-opus-4-7:high",
+                    "anthropic/claude-opus-4-6:high",
+                ],
+            },
         )
         self.assertEqual(
             recommendations["providers"]["github-copilot"]["roles"]["default"][0],
-            "github-copilot/gpt-5.6-sol",
+            "github-copilot/gpt-6-astra",
         )
         self.assertEqual(
-            recommendations["providers"]["github-copilot"]["roles"]["task"][0],
-            "github-copilot/gpt-5.6-terra",
+            recommendations["providers"]["github-copilot"]["roles"]["slow"][:2],
+            [
+                "github-copilot/gpt-6-astra:high",
+                "github-copilot/gpt-5.6-sol:high",
+            ],
+        )
+        self.assertEqual(
+            recommendations["providers"]["openai-codex"]["roles"],
+            {
+                "default": [
+                    "openai-codex/gpt-6-astra",
+                    "openai-codex/gpt-5.6-sol",
+                ],
+                "task": [
+                    "openai-codex/gpt-5.6-terra",
+                    "openai-codex/gpt-5.6-sol",
+                ],
+                "smol": [
+                    "openai-codex/gpt-5.6-luna",
+                    "openai-codex/gpt-5.4-mini",
+                ],
+                "slow": [
+                    "openai-codex/gpt-6-astra:high",
+                    "openai-codex/gpt-5.6-sol:high",
+                ],
+            },
         )
 
     def test_validate_omp_routing_accepts_compact_intent_and_null(self) -> None:
@@ -504,22 +554,22 @@ class DotAiTests(unittest.TestCase):
             }
 
         copilot = {
-            "default": "github-copilot/gpt-5.6-sol",
+            "default": "github-copilot/gpt-6-astra",
             "task": "github-copilot/gpt-5.6-terra",
             "smol": "github-copilot/gpt-5.6-luna",
-            "slow": "github-copilot/gpt-5.6-terra:high",
+            "slow": "github-copilot/gpt-6-astra:high",
         }
         anthropic = {
-            "default": "anthropic/claude-opus-4-8",
-            "task": "anthropic/claude-sonnet-4-6",
+            "default": "anthropic/claude-opus-5",
+            "task": "anthropic/claude-sonnet-5",
             "smol": "anthropic/claude-haiku-4-5",
-            "slow": "anthropic/claude-opus-4-8:high",
+            "slow": "anthropic/claude-fable-5-1:high",
         }
         codex = {
-            "default": "openai-codex/gpt-5.6-sol",
-            "task": "openai-codex/gpt-5.6-sol",
-            "smol": "openai-codex/gpt-5.4-mini",
-            "slow": "openai-codex/gpt-5.6-sol:high",
+            "default": "openai-codex/gpt-6-astra",
+            "task": "openai-codex/gpt-5.6-terra",
+            "smol": "openai-codex/gpt-5.6-luna",
+            "slow": "openai-codex/gpt-6-astra:high",
         }
         cases = [
             (["github-copilot"], "github-copilot", copilot),
@@ -564,6 +614,7 @@ class DotAiTests(unittest.TestCase):
                 "smol": [copilot["smol"], copilot["task"]],
                 "slow": [
                     copilot["slow"],
+                    "github-copilot/gpt-5.6-terra:high",
                     "github-copilot/gpt-5.6-luna:high",
                 ],
             },
@@ -571,7 +622,10 @@ class DotAiTests(unittest.TestCase):
                 "default": [anthropic["default"]],
                 "task": [anthropic["task"], anthropic["default"]],
                 "smol": [anthropic["smol"], anthropic["task"]],
-                "slow": [anthropic["slow"]],
+                "slow": [
+                    anthropic["slow"],
+                    "anthropic/claude-opus-5:high",
+                ],
             },
             "openai-codex": {
                 role: [selector] for role, selector in codex.items()
@@ -719,6 +773,7 @@ class DotAiTests(unittest.TestCase):
                     ],
                     "slow": [
                         "openai-codex/gpt-5.6-sol:high",
+                        "github-copilot/gpt-5.6-sol:high",
                         "github-copilot/gpt-5.6-terra:high",
                         "github-copilot/gpt-5.6-luna:high",
                     ],
@@ -810,6 +865,7 @@ class DotAiTests(unittest.TestCase):
                 ],
                 "slow": [
                     "openai-codex/gpt-5.6-sol:high",
+                    "github-copilot/gpt-5.6-sol:high",
                     "github-copilot/gpt-5.6-terra:high",
                     "github-copilot/gpt-5.6-luna:high",
                 ],
@@ -2383,7 +2439,7 @@ class DotAiTests(unittest.TestCase):
             self.assertEqual(DOTAI.main(["version"]), 0)
         self.assertEqual(
             output.getvalue(),
-            "0.3.2\n[UPDATE] DotAi 0.4.0 is available (current: 0.3.2); pull the repository to update.\n",
+            "0.3.5\n[UPDATE] DotAi 0.4.0 is available (current: 0.3.5); pull the repository to update.\n",
         )
 
     def test_release_warning_is_checked_by_status_sync_and_install(self) -> None:
@@ -2416,17 +2472,17 @@ class DotAiTests(unittest.TestCase):
     def test_release_warning_is_silent_when_current_version_is_latest(self) -> None:
         response = mock.MagicMock()
         response.__enter__.return_value = response
-        response.read.return_value = b'{"tag_name": "0.3.2"}'
+        response.read.return_value = b'{"tag_name": "0.3.5"}'
         output = io.StringIO()
         with mock.patch("urllib.request.urlopen", return_value=response), contextlib.redirect_stdout(output):
             self.assertEqual(DOTAI.main(["version"]), 0)
-        self.assertEqual(output.getvalue(), "0.3.2\n")
+        self.assertEqual(output.getvalue(), "0.3.5\n")
 
     def test_release_check_failure_does_not_change_version_output(self) -> None:
         output = io.StringIO()
         with mock.patch("urllib.request.urlopen", side_effect=OSError("offline")), contextlib.redirect_stdout(output):
             self.assertEqual(DOTAI.main(["version"]), 0)
-        self.assertEqual(output.getvalue(), "0.3.2\n")
+        self.assertEqual(output.getvalue(), "0.3.5\n")
 
     def test_malformed_release_response_is_ignored(self) -> None:
         response = mock.MagicMock()
@@ -2443,7 +2499,7 @@ class DotAiTests(unittest.TestCase):
             check=False,
         )
         self.assertEqual(result.returncode, 0)
-        self.assertEqual(result.stdout, "0.3.2\n")
+        self.assertEqual(result.stdout, "0.3.5\n")
 
 
 
