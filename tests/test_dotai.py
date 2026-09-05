@@ -1779,6 +1779,113 @@ class DotAiTests(unittest.TestCase):
             self.assertIn("owner/retired", output.getvalue())
             self.assertIn("owner/added", output.getvalue())
 
+    def test_enforced_recommended_skill_sync_adopts_matching_sources_and_removes_retired_skills(self) -> None:
+        before = {
+            "source": "owner/recommended",
+            "agent": "universal",
+            "skills": ["*"],
+            "checkSkills": ["keep"],
+        }
+        after = {
+            "source": "owner/recommended",
+            "agent": "universal",
+            "skills": ["keep"],
+            "checkSkills": ["keep"],
+        }
+        custom = {
+            "source": "user/custom",
+            "agent": "universal",
+            "skills": ["custom"],
+            "checkSkills": ["custom"],
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            path = root / "stack.json"
+            example_path = root / "stack.example.json"
+            state_root = root / "state"
+            manifest = self.minimal_manifest("~/.omp/agent/mcp.json")
+            manifest["skills"] = [before, custom]
+            example = self.minimal_manifest("~/.omp/agent/mcp.json")
+            example["skills"] = [after]
+            path.write_text(json.dumps(manifest), encoding="utf-8")
+            example_path.write_text(json.dumps(example), encoding="utf-8")
+            state_root.mkdir()
+            (state_root / "recommended-skills.json").write_text(
+                json.dumps({os.path.normcase(str(path.resolve())): {"version": 1, "skills": []}}),
+                encoding="utf-8",
+            )
+            installed = json.dumps(
+                [
+                    {
+                        "name": name,
+                        "path": str(root / ".agents" / "skills" / name),
+                        "scope": "global",
+                        "agents": ["Universal"],
+                        "source": before["source"],
+                        "sourceUrl": "https://github.com/owner/recommended.git",
+                        "sourceType": "github",
+                    }
+                    for name in ("keep", "retired")
+                ]
+            )
+            remaining = json.dumps(
+                [
+                    {
+                        "name": "keep",
+                        "path": str(root / ".agents" / "skills" / "keep"),
+                        "scope": "global",
+                        "agents": ["Universal"],
+                        "source": before["source"],
+                        "sourceUrl": "https://github.com/owner/recommended.git",
+                        "sourceType": "github",
+                    }
+                ]
+            )
+            with (
+                mock.patch.dict(os.environ, {"DOTAI_STATE_DIR": str(state_root)}, clear=False),
+                mock.patch.object(DOTAI, "EXAMPLE_MANIFEST", example_path),
+                mock.patch.object(DOTAI, "latest_release_version", return_value=None),
+                mock.patch.object(DOTAI, "reconcile_omp_extensions"),
+                mock.patch.object(DOTAI, "reconcile_plugins"),
+                mock.patch.object(DOTAI, "sync_mcp", return_value=False),
+                mock.patch.object(DOTAI.Runner, "output", side_effect=[installed, remaining]),
+                mock.patch.object(
+                    DOTAI.Runner,
+                    "run",
+                    return_value=subprocess.CompletedProcess([], 0),
+                ) as run,
+                mock.patch("builtins.input", return_value="a"),
+                contextlib.redirect_stdout(io.StringIO()),
+            ):
+                try:
+                    result = DOTAI.main(
+                        ["--manifest", str(path), "sync", "--recommended-skills", "--enforce"]
+                    )
+                except SystemExit as exc:
+                    result = exc.code
+
+            self.assertEqual(result, 0)
+            self.assertEqual(json.loads(path.read_text(encoding="utf-8"))["skills"], [after, custom])
+            history = json.loads((state_root / "recommended-skills.json").read_text(encoding="utf-8"))
+            self.assertEqual(
+                history[os.path.normcase(str(path.resolve()))],
+                {"version": 1, "skills": [after]},
+            )
+            commands = [call.args[0] for call in run.call_args_list]
+            self.assertIn(
+                [
+                    "npx",
+                    "--yes",
+                    "skills@latest",
+                    "remove",
+                    "retired",
+                    "--global",
+                    "--yes",
+                ],
+                commands,
+            )
+            self.assertIn(DOTAI.skill_command(after), commands)
+
     def test_recommended_skill_dry_run_does_not_query_machine_for_wildcard_removal(self) -> None:
         retired = {
             "source": "owner/retired",

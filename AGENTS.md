@@ -41,6 +41,7 @@ Supported platforms:
 - `dotai add mcp` supports repeatable `--header NAME=VALUE` options for HTTP/SSE servers and repeatable `--env NAME=VALUE` options for stdio servers. Keep these transport-specific, reject duplicate or invalid names, and preserve values after the first `=`.
 - Secret-bearing header and environment values must be references to environment variables or secret commands supported by OMP, never literal credentials in `stack.example.json` or tests. Use placeholders in documentation.
 - Skill status is agent-scoped. A skill found only in another agent's plugin cache is not active for OMP and must be reported as `INACTIVE`, not `OK`.
+- Recommended skill reconciliation preserves locally modified entries by default. `sync --recommended-skills --enforce` may adopt and exactly reconcile only sources present in `stack.example.json`; remove retired skills from those sources while preserving unrelated user sources.
 - Keep status labels consistent: `OK` is green, `RUN` is cyan, `INACTIVE` and `DRIFT` are yellow, and `MISSING` and `FAIL` are red. Respect `--color auto|always|never`, `NO_COLOR`, and `FORCE_COLOR`.
 - Windows package operations must use Scoop. Do not introduce Winget commands.
 - Installation, update, and synchronization must remain safe to rerun. Dry runs must not modify files or machine state.

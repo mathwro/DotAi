@@ -616,7 +616,7 @@ def replace_skill(skills: list[dict[str, Any]], source: str, value: dict[str, An
 
 
 def recommended_skill_plan(
-    manifest: dict[str, Any], manifest_path: Path
+    manifest: dict[str, Any], manifest_path: Path, enforce: bool = False
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[str]]:
     desired = load_manifest(EXAMPLE_MANIFEST)["skills"]
     stored = managed_recommendations(manifest_path)
@@ -638,6 +638,8 @@ def recommended_skill_plan(
         if after is None:
             if current is None or current == before:
                 changes.append({"kind": "remove", "source": source, "before": before, "after": None})
+            elif enforce:
+                changes.append({"kind": "remove", "source": source, "before": current, "after": None})
             else:
                 conflicts.append(source)
         elif after != before:
@@ -645,10 +647,29 @@ def recommended_skill_plan(
                 changes.append({"kind": "update", "source": source, "before": before, "after": after})
             elif current == after:
                 replace_skill(accepted_baseline, source, after)
+            elif enforce:
+                changes.append(
+                    {
+                        "kind": "add" if current is None else "update",
+                        "source": source,
+                        "before": current,
+                        "after": after,
+                    }
+                )
             else:
                 conflicts.append(source)
         elif current != before:
-            conflicts.append(source)
+            if enforce:
+                changes.append(
+                    {
+                        "kind": "add" if current is None else "update",
+                        "source": source,
+                        "before": current,
+                        "after": after,
+                    }
+                )
+            else:
+                conflicts.append(source)
 
     managed_sources = {skill["source"] for skill in managed}
     for after in desired:
@@ -660,6 +681,8 @@ def recommended_skill_plan(
             changes.append({"kind": "add", "source": source, "before": None, "after": after})
         elif current == after:
             replace_skill(accepted_baseline, source, after)
+        elif enforce:
+            changes.append({"kind": "update", "source": source, "before": current, "after": after})
         else:
             conflicts.append(source)
 
@@ -782,9 +805,9 @@ def remove_retired_skills(changes: list[dict[str, Any]], runner: Runner) -> None
 
 
 def review_recommended_skills(
-    manifest: dict[str, Any], manifest_path: Path, runner: Runner
+    manifest: dict[str, Any], manifest_path: Path, runner: Runner, enforce: bool = False
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
-    managed, changes, conflicts = recommended_skill_plan(manifest, manifest_path)
+    managed, changes, conflicts = recommended_skill_plan(manifest, manifest_path, enforce)
     for source in conflicts:
         print(f"{badge('DRIFT')} Recommended source {source}: local entry was modified; preserving it")
     if not changes:
@@ -1787,6 +1810,11 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Review repository-recommended skill additions, updates, and removals",
     )
+    sync.add_argument(
+        "--enforce",
+        action="store_true",
+        help="Offer exact repository recommendations for existing matching skill sources",
+    )
     configure = sub.add_parser("configure", help="Configure explicit post-authentication integrations")
     configure_sub = configure.add_subparsers(dest="configure_target", required=True)
     configure_routing = configure_sub.add_parser("omp-routing", help="Configure OMP multi-provider model routing")
@@ -1860,6 +1888,8 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
+    if args.command == "sync" and args.enforce and not args.recommended_skills:
+        parser.error("--enforce requires --recommended-skills")
     configure_color(args.color)
     if args.platform:
         os.environ["DOTAI_PLATFORM"] = args.platform
@@ -1924,7 +1954,9 @@ def main(argv: list[str] | None = None) -> int:
         managed_skills = None
         if args.recommended_skills:
             try:
-                manifest, managed_skills = review_recommended_skills(manifest, args.manifest, runner)
+                manifest, managed_skills = review_recommended_skills(
+                    manifest, args.manifest, runner, args.enforce
+                )
             except (OSError, DotAiError) as exc:
                 print(f"{styled('dotai:', 'red', 'bold')} {exc}", file=sys.stderr)
                 return 2
