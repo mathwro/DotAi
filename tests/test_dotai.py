@@ -1587,6 +1587,67 @@ class DotAiTests(unittest.TestCase):
             self.assertIn("[OK]", plain.getvalue())
             self.assertNotIn("Legacy Pi skill targets", plain.getvalue())
 
+    def test_added_named_skill_reports_installed_only_after_skill_file_exists(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            manifest_path = home / "stack.json"
+            mcp_path = home / "mcp.json"
+            mcp_path.write_text("{}", encoding="utf-8")
+            manifest = self.minimal_manifest(str(mcp_path))
+            manifest["mcp"]["servers"] = {}
+            manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+            with mock.patch.dict(os.environ, {"DOTAI_HOME": str(home)}), contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(DOTAI.main(["--manifest", str(manifest_path), "add", "skill", "owner/skills", "--skill", "foo"]), 0)
+                before = DOTAI.main(["--manifest", str(manifest_path), "--color", "never", "status"])
+            self.assertEqual(before, 1)
+            self.assertEqual(json.loads(manifest_path.read_text(encoding="utf-8"))["skills"][0]["checkSkills"], ["foo"])
+
+            skill_file = home / ".agents" / "skills" / "foo" / "SKILL.md"
+            skill_file.parent.mkdir(parents=True)
+            skill_file.write_text("# foo\n", encoding="utf-8")
+            output = io.StringIO()
+            with mock.patch.dict(os.environ, {"DOTAI_HOME": str(home)}), contextlib.redirect_stdout(output):
+                result = DOTAI.main(["--manifest", str(manifest_path), "--color", "never", "status"])
+            self.assertEqual(result, 0, output.getvalue())
+            self.assertIn("[OK] owner/skills: installed for universal", output.getvalue())
+
+    def test_added_wildcard_skill_reports_unverified_instead_of_missing_or_ok(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            manifest_path = home / "stack.json"
+            mcp_path = home / "mcp.json"
+            mcp_path.write_text("{}", encoding="utf-8")
+            manifest = self.minimal_manifest(str(mcp_path))
+            manifest["mcp"]["servers"] = {}
+            manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+            output = io.StringIO()
+            with mock.patch.dict(os.environ, {"DOTAI_HOME": str(home)}), contextlib.redirect_stdout(output):
+                self.assertEqual(DOTAI.main(["--manifest", str(manifest_path), "add", "skill", "owner/skills"]), 0)
+                result = DOTAI.main(["--manifest", str(manifest_path), "--color", "never", "status"])
+            self.assertEqual(result, 1)
+            self.assertIn("[UNVERIFIED] owner/skills:", output.getvalue())
+            self.assertNotIn("[MISSING] owner/skills:", output.getvalue())
+            self.assertNotIn("[OK] owner/skills:", output.getvalue())
+
+    def test_explicit_skill_check_overrides_named_install_selection(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            manifest_path = home / "stack.json"
+            mcp_path = home / "mcp.json"
+            mcp_path.write_text("{}", encoding="utf-8")
+            manifest = self.minimal_manifest(str(mcp_path))
+            manifest["mcp"]["servers"] = {}
+            manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+            skill_file = home / ".agents" / "skills" / "actual" / "SKILL.md"
+            skill_file.parent.mkdir(parents=True)
+            skill_file.write_text("# actual\n", encoding="utf-8")
+            output = io.StringIO()
+            with mock.patch.dict(os.environ, {"DOTAI_HOME": str(home)}), contextlib.redirect_stdout(output):
+                self.assertEqual(DOTAI.main(["--manifest", str(manifest_path), "add", "skill", "owner/skills", "--skill", "alias", "--check-skill", "actual"]), 0)
+                result = DOTAI.main(["--manifest", str(manifest_path), "--color", "never", "status"])
+            self.assertEqual(result, 0, output.getvalue())
+            self.assertIn("[OK] owner/skills: installed for universal", output.getvalue())
+
     def test_add_commands_extend_every_supported_integration_kind(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "stack.json"

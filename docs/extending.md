@@ -5,12 +5,12 @@ The `add` commands update `stack.json`. Run `dotai sync` or `dotai install` afte
 ## Add a skill source
 
 ```sh
-./dotai add skill owner/repository \
-  --skill review \
-  --check-skill review
+./dotai add skill owner/repository --skill review
 ```
 
-Skills default to the `universal` agent target, which installs into `~/.agents/skills/`, the user-level location OMP discovers. Repeat `--skill` and `--check-skill` when a source provides multiple skills.
+Skills default to the `universal` agent target, which installs into `~/.agents/skills/`, the user-level location OMP discovers. Repeat `--skill` to select several skills; named selections are also used for agent-scoped health checks. Use `--check-skill NAME` to override those names when the installed directory differs.
+
+If no skills are named (or `--skill '*'` is used), status reports `UNVERIFIED` rather than guessing whether the source installed correctly, and exits nonzero. Specify `--check-skill NAME` for each expected installed skill to make the health check actionable.
 
 After synchronization, restart OMP so it discovers newly installed skills. With OMP's default `skills.enableSkillCommands` setting, invoke them as `/skill:<name>` commands, for example `/skill:grill-me`, `/skill:grill-with-docs`, or `/skill:commit-and-document`; the shorter `/<name>` form is not the registered command syntax.
 
