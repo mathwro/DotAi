@@ -1590,17 +1590,19 @@ def reconcile(
     mode: str,
     force: bool = False,
     include_dependencies: bool = False,
+    managed_skills: list[dict[str, Any]] | None = None,
 ) -> int:
-    reconcile_packages(manifest, runner, mode, force, include_dependencies)
+    if mode != "sync":
+        reconcile_packages(manifest, runner, mode, force, include_dependencies)
     reconcile_omp_extensions(manifest, runner)
     reconcile_skills(manifest, runner)
-    reconcile_plugins(manifest, runner, mode)
+    reconcile_plugins(manifest, runner, "install" if mode == "sync" else mode)
     try:
         sync_mcp(manifest, runner)
     except (OSError, DotAiError) as exc:
         runner.failures.append(str(exc))
         print(f"{badge('FAIL')} MCP: {exc}")
-    save_state(manifest_path, runner, mode)
+    save_state(manifest_path, runner, mode, managed_skills)
     if runner.failures:
         print(f"\n{styled('Reconciliation failed:', 'red', 'bold')}")
         for failure in runner.failures:
@@ -1960,15 +1962,7 @@ def main(argv: list[str] | None = None) -> int:
             except (OSError, DotAiError) as exc:
                 print(f"{styled('dotai:', 'red', 'bold')} {exc}", file=sys.stderr)
                 return 2
-        reconcile_omp_extensions(manifest, runner)
-        reconcile_skills(manifest, runner)
-        reconcile_plugins(manifest, runner, "install")
-        try:
-            sync_mcp(manifest, runner)
-        except (OSError, DotAiError) as exc:
-            runner.failures.append(str(exc))
-        save_state(args.manifest, runner, "sync", managed_skills)
-        return 1 if runner.failures else 0
+        return reconcile(manifest, args.manifest, runner, "sync", managed_skills=managed_skills)
     if args.command == "update":
         print_legacy_skill_notice(manifest)
     return reconcile(
