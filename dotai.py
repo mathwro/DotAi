@@ -501,12 +501,18 @@ def package_version_check(package: dict[str, Any], runner: Runner, command: Any)
         return False, "not found"
     try:
         result = subprocess.run(
-            runner.argv(command), env=runner.env, text=True, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, check=False
+            runner.argv(command), env=runner.env, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False
         )
     except (OSError, UnicodeError):
         return False, "not found"
-    output = result.stdout.strip() if result.stdout else ""
-    version = PACKAGE_VERSION_PATTERN.search(output)
+    stdout = (result.stdout or "").strip()
+    stderr = (result.stderr or "").strip()
+    version = PACKAGE_VERSION_PATTERN.search(stdout)
+    if version:
+        output = stdout
+    else:
+        version = PACKAGE_VERSION_PATTERN.search(stderr)
+        output = stderr if version else stdout or stderr
     if result.returncode != 0 or not version:
         return False, output or "not found"
     actual_parts = tuple(int(part or 0) for part in version.groups())

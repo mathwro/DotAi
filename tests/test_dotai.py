@@ -2322,6 +2322,24 @@ class DotAiTests(unittest.TestCase):
                 with mock.patch.object(DOTAI.subprocess, "run", return_value=result):
                     self.assertEqual(DOTAI.package_check(package, runner), expected)
 
+    def test_package_version_check_reads_stderr_only_version_output(self) -> None:
+        command = [sys.executable, "-c", "import sys; print('other 0.50.0', file=sys.stderr)"]
+        package = {"name": "Other tool", "check": command, "minimumVersion": "0.43"}
+        self.assertEqual(
+            DOTAI.package_version_check(package, DOTAI.Runner("ubuntu"), command),
+            (True, "other 0.50.0"),
+        )
+
+    def test_package_version_check_finds_version_after_stdout_notice(self) -> None:
+        command = [
+            sys.executable, "-c",
+            "import sys; print('Checking installation'); print('other 0.50.0', file=sys.stderr)",
+        ]
+        package = {"name": "Other tool", "check": command, "minimumVersion": "0.43"}
+        installed, report = DOTAI.package_version_check(package, DOTAI.Runner("ubuntu"), command)
+        self.assertTrue(installed, report)
+        self.assertIn("other 0.50.0", report)
+
     def test_rtk_status_checks_minimum_version_on_supported_platforms(self) -> None:
         manifest = DOTAI.load_manifest(ROOT / "stack.example.json")
         manifest["packages"] = [next(package for package in manifest["packages"] if package["name"] == "RTK")]
