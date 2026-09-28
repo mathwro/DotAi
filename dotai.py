@@ -1518,6 +1518,8 @@ def print_status(manifest: dict[str, Any], runner: Runner) -> bool:
         label, detail = omp_routing_status(manifest, runner)
         healthy &= label == "OK"
         print(f"{heading('OMP routing:')}\n  {badge(label)} {detail}")
+    else:
+        print(f"{heading('OMP routing:')}\n  {badge('INACTIVE')} optional routing not configured; preview with 'dotai configure omp-routing --dry-run'")
     mcp_ok, detail = mcp_status(manifest)
     healthy &= mcp_ok
     label = "OK" if mcp_ok else "DRIFT"

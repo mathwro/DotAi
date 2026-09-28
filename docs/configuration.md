@@ -38,6 +38,8 @@ The Pi extension is independent of RTK's optional Codex integration. DotAi also 
 
 After installation, configure routing from the providers already authenticated in OMP:
 
+Routing is optional and never enabled automatically. Until it is configured, `status` and `doctor` display a non-failing `INACTIVE` hint with the preview command; they do not inspect credentials or change OMP configuration.
+
 1. Run `./dotai install`.
 2. Authenticate GitHub Copilot, OpenAI Codex, Anthropic, or any combination of them inside OMP.
 3. Preview the detected providers, resolved roles, manifest diff, and pending OMP commands:
