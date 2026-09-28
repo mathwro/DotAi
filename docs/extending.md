@@ -12,7 +12,7 @@ The `add` commands update `stack.json`. Run `dotai sync` or `dotai install` afte
 
 Skills default to the `universal` agent target, which installs into `~/.agents/skills/`, the user-level location OMP discovers. Repeat `--skill` and `--check-skill` when a source provides multiple skills.
 
-After synchronization, restart OMP so it discovers newly installed skills. With OMP's default `skills.enableSkillCommands` setting, invoke them as `/skill:<name>` commands, for example `/skill:grill-me`, `/skill:grill-with-docs`, or `/skill:commit-and-document`; the shorter `/<name>` form is not the registered command syntax.
+After synchronization, restart OMP so it discovers newly installed skills. With OMP's default `skills.enableSkillCommands` setting, invoke them as `/skill:<name>` commands, for example `/skill:grilling` or `/skill:commit-and-document`; the shorter `/<name>` form is not the registered command syntax.
 
 To review skill recommendations added, changed, or removed from `stack.example.json`, run:
 

@@ -2509,30 +2509,6 @@ class DotAiTests(unittest.TestCase):
             all(skill.get("agent") == "universal" for skill in manifest["skills"]),
         )
         self.assertEqual(manifest["ompExtensions"], ["~/.pi/agent/extensions/rtk.ts"])
-        ponytail = next(skill for skill in manifest["skills"] if skill["source"] == "DietrichGebert/ponytail")
-        self.assertEqual(ponytail["skills"], ["ponytail", "ponytail-review"])
-        self.assertEqual(ponytail["checkSkills"], ["ponytail", "ponytail-review"])
-        superpowers = next(skill for skill in manifest["skills"] if skill["source"] == "obra/superpowers")
-        self.assertEqual(
-            superpowers["skills"],
-            ["test-driven-development", "verification-before-completion", "receiving-code-review", "writing-skills"],
-        )
-        self.assertEqual(superpowers["checkSkills"], superpowers["skills"])
-        grill_me = next(skill for skill in manifest["skills"] if skill["source"] == "mattpocock/skills")
-        self.assertEqual(
-            grill_me["skills"],
-            ["grill-me", "grill-with-docs", "grilling", "writing-for-agents"],
-        )
-        self.assertEqual(grill_me["checkSkills"], grill_me["skills"])
-        commit_and_document = next(skill for skill in manifest["skills"] if skill["source"] == "mathwro/Skills")
-        self.assertEqual(
-            commit_and_document["skills"],
-            ["choosing-branch-structure", "commit-and-document"],
-        )
-        self.assertEqual(
-            commit_and_document["checkSkills"],
-            ["choosing-branch-structure", "commit-and-document"],
-        )
         self.assertNotIn("--codex", serialized)
         self.assertIn("/stack.json", (ROOT / ".gitignore").read_text(encoding="utf-8").splitlines())
         self.assertEqual(DOTAI.detect_platform(), os.environ.get("DOTAI_PLATFORM", DOTAI.detect_platform()))

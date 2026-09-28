@@ -76,10 +76,12 @@ Color can be controlled with `--color auto|always|never`. Automatic mode respect
 | --- | --- |
 | Harness | [Oh My Pi](https://github.com/can1357/oh-my-pi) |
 | Tools | [RTK](https://github.com/rtk-ai/rtk), [Graphify](https://github.com/Graphify-Labs/graphify), Node.js, `uv`, `curl` |
-| Skills | [Ponytail](https://github.com/DietrichGebert/ponytail), [Superpowers](https://github.com/obra/superpowers), [Grill Me](https://github.com/mattpocock/skills), [Choose Branch Structure](https://github.com/mathwro/Skills/tree/main/skills/choosing-branch-structure), [Commit and Document](https://github.com/mathwro/Skills), installed through [skills.sh](https://skills.sh/) |
+| Skills | [Ponytail](https://github.com/DietrichGebert/ponytail), [Superpowers](https://github.com/obra/superpowers), [Grilling and Writing for Agents](https://github.com/mattpocock/skills), [Choose Branch Structure](https://github.com/mathwro/Skills/tree/main/skills/choosing-branch-structure), [Commit and Document](https://github.com/mathwro/Skills), installed through [skills.sh](https://skills.sh/) |
 | MCP servers | [Context7](https://context7.com/), [Microsoft Learn](https://learn.microsoft.com/training/support/mcp) |
 
 RTK 0.43 or newer is configured for Pi and registered as an OMP global extension without replacing unrelated extensions. DotAi also enables OMP's **Hide Secrets** privacy setting during installation and updates.
+
+Graphify is an opt-in CLI tool: DotAi does not install its Pi skill or create a graph for each project. Run `graphify extract . --code-only` in a project when you want a graph. Existing local manifests retain their earlier Graphify configuration; see [Configuration](docs/configuration.md) before syncing an older installation.
 
 ## Guides
 
