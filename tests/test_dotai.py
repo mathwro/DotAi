@@ -2313,6 +2313,67 @@ class DotAiTests(unittest.TestCase):
             self.assertIn('"agent": "universal"', output.getvalue())
             self.assertIn("--agent universal", output.getvalue())
 
+    def test_package_check_uses_declared_minimum_for_any_package(self) -> None:
+        package = {"name": "Other tool", "check": ["other", "--version"], "minimumVersion": "0.43"}
+        runner = DOTAI.Runner("ubuntu")
+        for version, expected in (("other 0.42.99", False), ("other 0.43.0", True), ("other 0.50.0", True)):
+            with self.subTest(version=version):
+                result = subprocess.CompletedProcess(["other", "--version"], 0, version)
+                with mock.patch.object(DOTAI.subprocess, "run", return_value=result):
+                    self.assertEqual(DOTAI.package_check(package, runner), expected)
+
+    def test_rtk_status_checks_minimum_version_on_supported_platforms(self) -> None:
+        manifest = DOTAI.load_manifest(ROOT / "stack.example.json")
+        manifest["packages"] = [next(package for package in manifest["packages"] if package["name"] == "RTK")]
+        manifest["skills"] = []
+        manifest["ompExtensions"] = []
+        for platform in ("windows", "macos", "ubuntu", "wsl", "arch"):
+            for version, expected in (("rtk 0.42.9", False), ("rtk 0.43.0", True), ("rtk 0.50.0", True)):
+                with self.subTest(platform=platform, version=version):
+                    runner = DOTAI.Runner(platform)
+                    result = subprocess.CompletedProcess(["rtk", "--version"], 0, version)
+                    output = io.StringIO()
+                    with (
+                        mock.patch.object(DOTAI.subprocess, "run", return_value=result),
+                        mock.patch.object(DOTAI, "mcp_status", return_value=(True, "configured")),
+                        contextlib.redirect_stdout(output),
+                    ):
+                        healthy = DOTAI.print_status(manifest, runner)
+                    self.assertEqual(healthy, expected)
+                    self.assertIn(f"[{'OK' if expected else 'MISSING'}] RTK:", output.getvalue())
+
+    def test_rtk_old_version_updates_while_missing_binary_installs(self) -> None:
+        manifest = DOTAI.load_manifest(ROOT / "stack.example.json")
+        manifest["packages"] = [next(package for package in manifest["packages"] if package["name"] == "RTK")]
+        for platform in ("windows", "macos", "ubuntu", "wsl", "arch"):
+            for version, returncode, operation in (
+                ("rtk 0.42.9", 0, "Check/update RTK"),
+                ("", 127, "Install RTK"),
+                ("rtk 0.50.0", 0, "Check/update RTK"),
+            ):
+                with self.subTest(platform=platform, version=version, returncode=returncode):
+                    runner = DOTAI.Runner(platform, dry_run=True)
+                    result = subprocess.CompletedProcess(["rtk", "--version"], returncode, version)
+                    output = io.StringIO()
+                    with (
+                        mock.patch.object(DOTAI.subprocess, "run", return_value=result),
+                        contextlib.redirect_stdout(output),
+                    ):
+                        DOTAI.reconcile_packages(manifest, runner, "update")
+                    self.assertIn(operation, output.getvalue())
+
+    def test_install_upgrades_present_rtk_below_minimum(self) -> None:
+        manifest = DOTAI.load_manifest(ROOT / "stack.example.json")
+        manifest["packages"] = [next(package for package in manifest["packages"] if package["name"] == "RTK")]
+        for platform in ("windows", "macos", "ubuntu", "wsl", "arch"):
+            with self.subTest(platform=platform):
+                runner = DOTAI.Runner(platform, dry_run=True)
+                result = subprocess.CompletedProcess(["rtk", "--version"], 0, "rtk 0.42.9")
+                output = io.StringIO()
+                with mock.patch.object(DOTAI.subprocess, "run", return_value=result), contextlib.redirect_stdout(output):
+                    DOTAI.reconcile_packages(manifest, runner, "install")
+                self.assertIn("Check/update RTK", output.getvalue())
+
     def test_update_skips_dependency_group_unless_explicitly_included(self) -> None:
         manifest = self.minimal_manifest("~/.omp/agent/mcp.json")
         manifest["packages"] = [
