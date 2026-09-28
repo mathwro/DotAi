@@ -289,6 +289,132 @@ class DotAiTests(unittest.TestCase):
             legacy["roles"],
         )
 
+    def test_load_manifest_rejects_non_object_roots_and_missing_sections(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "stack.json"
+            for root in ([], [self.minimal_manifest("mcp.json")], None, "stack"):
+                with self.subTest(root=root):
+                    path.write_text(json.dumps(root), encoding="utf-8")
+                    with self.assertRaises(DOTAI.DotAiError):
+                        DOTAI.load_manifest(path)
+
+            for section in ("packages", "skills", "marketplaces", "plugins", "mcp"):
+                with self.subTest(missing=section):
+                    manifest = self.minimal_manifest("mcp.json")
+                    del manifest[section]
+                    path.write_text(json.dumps(manifest), encoding="utf-8")
+                    with self.assertRaises(DOTAI.DotAiError):
+                        DOTAI.load_manifest(path)
+
+            for field in ("target", "servers"):
+                with self.subTest(missing_mcp_field=field):
+                    manifest = self.minimal_manifest("mcp.json")
+                    del manifest["mcp"][field]
+                    path.write_text(json.dumps(manifest), encoding="utf-8")
+                    with self.assertRaises(DOTAI.DotAiError):
+                        DOTAI.load_manifest(path)
+
+    def test_load_manifest_rejects_malformed_packages_and_platform_commands(self) -> None:
+        package = {
+            "name": "sample", "check": ["sample", "--version"],
+            "install": {"default": [["sample", "install"]]},
+        }
+        invalid = {
+            "non-object": 1,
+            "missing-name": {"check": ["sample"], "install": []},
+            "invalid-name": {**package, "name": False},
+            "missing-check": {"name": "sample", "install": []},
+            "invalid-check": {**package, "check": ["sample", 42]},
+            "invalid-platform-check": {**package, "check": {"unknown": ["sample"]}},
+            "missing-install": {"name": "sample", "check": ["sample"]},
+            "invalid-install": {**package, "install": "sample install"},
+            "empty-command": {**package, "install": [""]},
+            "invalid-argv": {**package, "install": [["sample", 42]]},
+            "invalid-platform-command": {**package, "install": {"ubuntu": "sample install"}},
+            "invalid-platform-name": {**package, "install": {"unknown": [["sample"]]}},
+            "invalid-update": {**package, "update": [42]},
+            "invalid-configure": {**package, "configure": {"default": [["sample", None]]}},
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "stack.json"
+            for case, entry in invalid.items():
+                with self.subTest(case=case):
+                    manifest = self.minimal_manifest("mcp.json")
+                    manifest["packages"] = [entry]
+                    path.write_text(json.dumps(manifest), encoding="utf-8")
+                    with self.assertRaises(DOTAI.DotAiError):
+                        DOTAI.load_manifest(path)
+
+    def test_load_manifest_rejects_malformed_skills_plugins_and_extensions(self) -> None:
+        invalid = (
+            ("skills", [None]),
+            ("skills", [{}]),
+            ("skills", [{"source": 4}]),
+            ("skills", [{"source": "owner/skill", "agent": False}]),
+            ("skills", [{"source": "owner/skill", "skills": [3]}]),
+            ("skills", [{"source": "owner/skill", "checkSkills": "skill"}]),
+            ("marketplaces", [{"name": "market"}]),
+            ("marketplaces", [{"name": "market", "source": 12}]),
+            ("plugins", [{"id": "not-a-plugin-id"}]),
+            ("plugins", [{"id": "plugin@market", "scope": "machine"}]),
+            ("ompExtensions", ["path", "path"]),
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "stack.json"
+            for section, entries in invalid:
+                with self.subTest(section=section, entries=entries):
+                    manifest = self.minimal_manifest("mcp.json")
+                    manifest[section] = entries
+                    path.write_text(json.dumps(manifest), encoding="utf-8")
+                    with self.assertRaises(DOTAI.DotAiError):
+                        DOTAI.load_manifest(path)
+
+    def test_load_manifest_rejects_malformed_mcp_servers(self) -> None:
+        invalid = {
+            "non-object": [],
+            "missing-stdio-command": {"type": "stdio"},
+            "invalid-stdio-command": {"command": ["npx"]},
+            "invalid-stdio-args": {"command": "npx", "args": ["-y", 9]},
+            "invalid-stdio-env": {"command": "npx", "env": {"TOKEN": 3}},
+            "invalid-stdio-cwd": {"command": "npx", "cwd": False},
+            "missing-http-url": {"type": "http"},
+            "invalid-http-url": {"type": "http", "url": "not a URI"},
+            "invalid-http-headers": {"type": "http", "url": "https://example.test/mcp", "headers": {"Authorization": 3}},
+            "invalid-enabled": {"type": "sse", "url": "https://example.test/mcp", "enabled": "yes"},
+            "invalid-timeout": {"command": "npx", "timeout": True},
+            "unsupported-type": {"type": "grpc", "command": "npx"},
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "stack.json"
+            for case, server in invalid.items():
+                with self.subTest(case=case):
+                    manifest = self.minimal_manifest("mcp.json")
+                    manifest["mcp"]["servers"] = {"custom": server}
+                    path.write_text(json.dumps(manifest), encoding="utf-8")
+                    with self.assertRaises(DOTAI.DotAiError):
+                        DOTAI.load_manifest(path)
+
+            for field, value in (("target", ""), ("servers", [])):
+                with self.subTest(mcp_field=field):
+                    manifest = self.minimal_manifest("mcp.json")
+                    manifest["mcp"][field] = value
+                    path.write_text(json.dumps(manifest), encoding="utf-8")
+                    with self.assertRaises(DOTAI.DotAiError):
+                        DOTAI.load_manifest(path)
+
+    def test_load_manifest_preserves_user_owned_extra_fields(self) -> None:
+        manifest = self.minimal_manifest("mcp.json")
+        manifest["localOnly"] = {"owner": "user"}
+        manifest["mcp"]["servers"]["custom"] = {
+            "command": "npx", "args": ["server"], "providerSetting": {"keep": True},
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "stack.json"
+            path.write_text(json.dumps(manifest), encoding="utf-8")
+            loaded = DOTAI.load_manifest(path)
+        self.assertEqual(loaded["localOnly"], {"owner": "user"})
+        self.assertEqual(loaded["mcp"]["servers"]["custom"]["providerSetting"], {"keep": True})
+
     def test_load_manifest_normalizes_present_omp_routing_only(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "stack.json"
