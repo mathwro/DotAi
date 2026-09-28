@@ -21,6 +21,9 @@ DotAi updates configuration conservatively:
 - Unmanaged MCP servers and top-level settings are preserved.
 - Existing MCP files receive timestamped backups before a managed change.
 - MCP servers are matched semantically across configurations OMP can discover, so aliases and provider-specific fields such as authentication headers do not create duplicates.
+- Required stdio `cwd`, server `timeout`, and enabled state participate in health matching. An enabled target alias can be reconciled without dropping its unrelated settings.
+- A matching server disabled in its provider configuration is a conflict: `sync` reports `DRIFT` and exits nonzero rather than enabling it, duplicating an alias, or reporting success. Resolve the provider's `disabledServers` setting yourself.
+- MCP status confirms configured provider entries, not network reachability or successful server startup.
 - Repeated synchronization is idempotent and does not create another backup when nothing changes.
 - Managed `ompExtensions` are appended to OMP's global extension list; unrelated user extensions are retained.
 - Skill health is agent-scoped. A skill found only in a Codex plugin cache is reported as `INACTIVE` until installed for the configured OMP skill target.

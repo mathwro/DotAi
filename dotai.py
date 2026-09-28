@@ -1257,8 +1257,8 @@ def mcp_config_paths(target: Path) -> list[Path]:
     return unique
 
 
-def discover_mcp_servers(target: Path) -> list[tuple[str, dict[str, Any], Path]]:
-    discovered: list[tuple[str, dict[str, Any], Path]] = []
+def discover_mcp_servers(target: Path) -> list[tuple[str, dict[str, Any], Path, bool]]:
+    discovered: list[tuple[str, dict[str, Any], Path, bool]] = []
     for path in mcp_config_paths(target):
         if not path.is_file():
             continue
@@ -1272,13 +1272,13 @@ def discover_mcp_servers(target: Path) -> list[tuple[str, dict[str, Any], Path]]
             if not isinstance(servers, dict):
                 continue
             for name, server in servers.items():
-                if name in disabled or not isinstance(server, dict) or server.get("enabled") is False:
+                if not isinstance(server, dict):
                     continue
-                discovered.append((name, server, path))
+                discovered.append((name, server, path, name not in disabled and server.get("enabled") is not False))
     return discovered
 
 
-def server_satisfies(found: dict[str, Any], required: dict[str, Any]) -> bool:
+def server_identity_matches(found: dict[str, Any], required: dict[str, Any]) -> bool:
     found_type = found.get("type", "http" if "url" in found else "stdio")
     required_type = required.get("type", "http" if "url" in required else "stdio")
     if found_type == "remote":
@@ -1288,12 +1288,15 @@ def server_satisfies(found: dict[str, Any], required: dict[str, Any]) -> bool:
     if found_type != required_type:
         return False
     if "url" in required:
-        if str(found.get("url", "")).rstrip("/") != str(required["url"]).rstrip("/"):
-            return False
-    else:
-        if found.get("command") != required.get("command"):
-            return False
-        if list(found.get("args", [])) != list(required.get("args", [])):
+        return str(found.get("url", "")).rstrip("/") == str(required["url"]).rstrip("/")
+    return found.get("command") == required.get("command") and list(found.get("args", [])) == list(required.get("args", []))
+
+
+def server_satisfies(found: dict[str, Any], required: dict[str, Any]) -> bool:
+    if not server_identity_matches(found, required):
+        return False
+    for field in ("cwd", "timeout", "enabled"):
+        if field in required and found.get(field, True if field == "enabled" else None) != required[field]:
             return False
     for section in ("env", "headers"):
         expected = required.get(section, {})
@@ -1310,25 +1313,63 @@ def sync_mcp(manifest: dict[str, Any], runner: Runner) -> bool:
     existing = load_json_object(target)
     servers = dict(existing.get("mcpServers", {}))
     discovered = discover_mcp_servers(target)
-    additions = 0
+    changes = 0
+    conflicts: list[str] = []
     for name, required in mcp["servers"].items():
-        if any(server_satisfies(found, required) for _, found, _ in discovered):
+        if any(enabled and server_satisfies(found, required) for _, found, _, enabled in discovered):
             continue
-        servers[name] = required
-        additions += 1
-    if additions == 0:
+        if required.get("enabled") is False or any(
+            not enabled and (alias == name or server_identity_matches(found, required))
+            for alias, found, _, enabled in discovered
+        ):
+            conflicts.append(name)
+            continue
+
+        alias = next(
+            (
+                alias for alias, found, path, _ in discovered
+                if path == target and alias in servers and server_identity_matches(found, required)
+            ),
+            None,
+        )
+        if alias is None and name in servers:
+            alias = name
+        if alias is None:
+            if any(server_identity_matches(found, required) for _, found, _, _ in discovered):
+                conflicts.append(name)
+                continue
+            servers[name] = required
+            changes += 1
+            continue
+
+        current = servers[alias]
+        same_server = server_identity_matches(current, required)
+        updated = dict(current) if same_server else {}
+        for key, value in required.items():
+            if key == "type" and same_server and current.get("type") == "remote" and value == "http":
+                continue
+            if key in ("env", "headers") and isinstance(updated.get(key), dict):
+                updated[key] = {**updated[key], **value}
+            else:
+                updated[key] = value
+        if updated != current:
+            servers[alias] = updated
+            changes += 1
+    if conflicts:
+        detail = f"MCP servers unavailable or disabled: {', '.join(conflicts)}; resolve the provider configuration manually"
+        runner.failures.append(detail)
+        print(f"{badge('DRIFT')} {detail}")
+        return False
+    if changes == 0:
         print(f"{badge('OK')} MCP: all managed servers are available through discovered provider configs")
         return False
     merged = dict(existing)
-    merged["$schema"] = mcp.get(
-        "$schema", "https://raw.githubusercontent.com/can1357/oh-my-pi/main/packages/coding-agent/src/config/mcp-schema.json"
+    merged.setdefault(
+        "$schema", mcp.get("$schema", "https://raw.githubusercontent.com/can1357/oh-my-pi/main/packages/coding-agent/src/config/mcp-schema.json")
     )
     merged["mcpServers"] = servers
-    if merged == existing:
-        print(f"{badge('OK')} MCP: already synchronized at {target}")
-        return False
     if runner.dry_run:
-        print(f"{badge('RUN')} MCP: add {additions} unavailable managed servers to {target}")
+        print(f"{badge('RUN')} MCP: reconcile {changes} unavailable managed servers at {target}")
         return True
     target.parent.mkdir(parents=True, exist_ok=True)
     if target.exists():
@@ -1401,7 +1442,7 @@ def mcp_status(manifest: dict[str, Any]) -> tuple[bool, str]:
     missing: list[str] = []
     sources: set[Path] = set()
     for name, required in mcp["servers"].items():
-        matches = [(found, path) for _, found, path in discovered if server_satisfies(found, required)]
+        matches = [(found, path) for _, found, path, enabled in discovered if enabled and server_satisfies(found, required)]
         if not matches:
             missing.append(name)
         else:

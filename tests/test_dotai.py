@@ -409,6 +409,152 @@ class DotAiTests(unittest.TestCase):
                 self.assertFalse(DOTAI.sync_mcp(manifest, DOTAI.Runner("ubuntu")))
             self.assertEqual(target.read_text(encoding="utf-8"), original)
 
+    def test_mcp_sync_respects_disabled_server_without_reporting_ok(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            target = home / ".omp" / "agent" / "mcp.json"
+            target.parent.mkdir(parents=True)
+            manifest = self.minimal_manifest("~/.omp/agent/mcp.json")
+            manifest["mcp"]["servers"] = {"context7": manifest["mcp"]["servers"]["context7"]}
+            original = json.dumps(
+                {
+                    "disabledServers": ["context7"],
+                    "mcpServers": {
+                        "context7": manifest["mcp"]["servers"]["context7"],
+                        "personal": {"type": "http", "url": "https://personal.example/mcp"},
+                    },
+                    "customTopLevel": {"owner": "user"},
+                }
+            )
+            target.write_text(original, encoding="utf-8")
+            output = io.StringIO()
+            with mock.patch.dict(os.environ, {"DOTAI_HOME": str(home)}), contextlib.redirect_stdout(output):
+                self.assertFalse(DOTAI.mcp_status(manifest)[0])
+                self.assertFalse(DOTAI.sync_mcp(manifest, DOTAI.Runner("ubuntu")))
+                self.assertFalse(DOTAI.sync_mcp(manifest, DOTAI.Runner("ubuntu")))
+                self.assertFalse(DOTAI.mcp_status(manifest)[0])
+            self.assertNotIn("OK", output.getvalue())
+            self.assertEqual(target.read_text(encoding="utf-8"), original)
+            self.assertEqual(list(target.parent.glob("mcp.json.bak.*")), [])
+
+    def test_mcp_sync_does_not_duplicate_disabled_provider_alias(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            target = home / ".omp" / "agent" / "mcp.json"
+            provider = home / ".config" / "opencode" / "opencode.json"
+            provider.parent.mkdir(parents=True)
+            provider.write_text(
+                json.dumps(
+                    {
+                        "disabledServers": ["disabled-alias"],
+                        "mcp": {
+                            "disabled-alias": {
+                                "type": "remote", "url": "https://mcp.context7.com/mcp"
+                            }
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            manifest = self.minimal_manifest("~/.omp/agent/mcp.json")
+            manifest["mcp"]["servers"] = {"context7": manifest["mcp"]["servers"]["context7"]}
+            original = provider.read_text(encoding="utf-8")
+            output = io.StringIO()
+            with mock.patch.dict(os.environ, {"DOTAI_HOME": str(home)}), contextlib.redirect_stdout(output):
+                self.assertFalse(DOTAI.mcp_status(manifest)[0])
+                self.assertFalse(DOTAI.sync_mcp(manifest, DOTAI.Runner("ubuntu")))
+                self.assertFalse(DOTAI.mcp_status(manifest)[0])
+            self.assertNotIn("OK", output.getvalue())
+            self.assertFalse(target.exists())
+            self.assertEqual(provider.read_text(encoding="utf-8"), original)
+
+    def test_mcp_sync_reconciles_stdio_cwd_and_timeout_without_losing_alias_fields(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            target = home / ".omp" / "agent" / "mcp.json"
+            target.parent.mkdir(parents=True)
+            target.write_text(
+                json.dumps(
+                    {
+                        "mcpServers": {
+                            "local-alias": {
+                                "type": "stdio", "command": "python3", "args": ["-m", "example"],
+                                "cwd": "/workspace/old", "timeout": 5,
+                                "env": {"TOKEN": "TOKEN_FROM_ENV", "LOCAL_SETTING": "keep"},
+                                "providerOptions": {"retry": 2},
+                            },
+                            "personal": {"type": "http", "url": "https://personal.example/mcp"},
+                        },
+                        "customTopLevel": {"owner": "user"},
+                    }
+                ),
+                encoding="utf-8",
+            )
+            manifest = self.minimal_manifest("~/.omp/agent/mcp.json")
+            manifest["mcp"]["servers"] = {
+                "local": {
+                    "type": "stdio", "command": "python3", "args": ["-m", "example"],
+                    "cwd": "/workspace/current", "timeout": 30, "env": {"TOKEN": "TOKEN_FROM_ENV"},
+                }
+            }
+            with mock.patch.dict(os.environ, {"DOTAI_HOME": str(home)}):
+                self.assertFalse(DOTAI.mcp_status(manifest)[0])
+                with contextlib.redirect_stdout(io.StringIO()):
+                    self.assertTrue(DOTAI.sync_mcp(manifest, DOTAI.Runner("ubuntu")))
+                merged = json.loads(target.read_text(encoding="utf-8"))
+                self.assertEqual(set(merged["mcpServers"]), {"local-alias", "personal"})
+                self.assertEqual(merged["mcpServers"]["local-alias"]["cwd"], "/workspace/current")
+                self.assertEqual(merged["mcpServers"]["local-alias"]["timeout"], 30)
+                self.assertEqual(
+                    merged["mcpServers"]["local-alias"]["env"],
+                    {"TOKEN": "TOKEN_FROM_ENV", "LOCAL_SETTING": "keep"},
+                )
+                self.assertEqual(merged["mcpServers"]["local-alias"]["providerOptions"], {"retry": 2})
+                self.assertEqual(merged["customTopLevel"], {"owner": "user"})
+                self.assertTrue(DOTAI.mcp_status(manifest)[0])
+                after = target.read_bytes()
+                with contextlib.redirect_stdout(io.StringIO()):
+                    self.assertFalse(DOTAI.sync_mcp(manifest, DOTAI.Runner("ubuntu")))
+                self.assertEqual(target.read_bytes(), after)
+                self.assertEqual(len(list(target.parent.glob("mcp.json.bak.*"))), 1)
+
+    def test_mcp_sync_reconciles_remote_timeout_while_preserving_extra_headers(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            target = home / ".omp" / "agent" / "mcp.json"
+            target.parent.mkdir(parents=True)
+            target.write_text(
+                json.dumps(
+                    {
+                        "mcpServers": {
+                            "remote-alias": {
+                                "type": "remote", "url": "https://mcp.example.test/mcp", "timeout": 5,
+                                "enabled": True, "headers": {"X-Extra": "EXTRA_FROM_ENV"},
+                                "providerOptions": {"keep": True},
+                            }
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+            manifest = self.minimal_manifest("~/.omp/agent/mcp.json")
+            manifest["mcp"]["servers"] = {
+                "remote": {
+                    "type": "http", "url": "https://mcp.example.test/mcp",
+                    "timeout": 20, "enabled": True,
+                }
+            }
+            with mock.patch.dict(os.environ, {"DOTAI_HOME": str(home)}):
+                self.assertFalse(DOTAI.mcp_status(manifest)[0])
+                with contextlib.redirect_stdout(io.StringIO()):
+                    self.assertTrue(DOTAI.sync_mcp(manifest, DOTAI.Runner("ubuntu")))
+                merged = json.loads(target.read_text(encoding="utf-8"))["mcpServers"]
+                self.assertEqual(set(merged), {"remote-alias"})
+                self.assertEqual(merged["remote-alias"]["timeout"], 20)
+                self.assertEqual(merged["remote-alias"]["headers"], {"X-Extra": "EXTRA_FROM_ENV"})
+                self.assertEqual(merged["remote-alias"]["providerOptions"], {"keep": True})
+                self.assertTrue(DOTAI.mcp_status(manifest)[0])
+
     def test_selector_identity_removes_one_recognized_thinking_suffix(self) -> None:
         self.assertEqual(DOTAI.selector_identity("openai-codex/gpt-5.6-sol:high"), "openai-codex/gpt-5.6-sol")
         self.assertEqual(DOTAI.selector_identity("openai-codex/gpt-5.6-sol:high:auto"), "openai-codex/gpt-5.6-sol:high")
