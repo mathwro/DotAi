@@ -1520,10 +1520,76 @@ class DotAiTests(unittest.TestCase):
                 installed, detail = DOTAI.skill_status(skill)
             self.assertTrue(installed)
             self.assertEqual(detail, "installed for universal")
-        self.assertEqual(
-            DOTAI.skill_command(skill)[:9],
-            ["npx", "--yes", "skills@latest", "add", "owner/skills", "--global", "--agent", "universal", "--skill"],
-        )
+
+    def test_sync_leaves_healthy_skills_untouched_by_default(self) -> None:
+        manifest = self.minimal_manifest("~/.omp/agent/mcp.json")
+        manifest["skills"] = [{
+            "source": "owner/skills",
+            "agent": "universal",
+            "skills": ["alpha", "beta"],
+            "checkSkills": ["alpha", "beta"],
+        }]
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            for name in ("alpha", "beta"):
+                target = home / ".agents" / "skills" / name / "SKILL.md"
+                target.parent.mkdir(parents=True)
+                target.write_text(f"# {name}\n", encoding="utf-8")
+            plan = io.StringIO()
+            with mock.patch.dict(os.environ, {"DOTAI_HOME": str(home)}), contextlib.redirect_stdout(plan):
+                DOTAI.reconcile_skills(manifest, DOTAI.Runner("linux", dry_run=True))
+            self.assertNotIn("Reconcile skills from", plan.getvalue())
+            self.assertNotIn("npx", plan.getvalue())
+
+    def test_sync_installs_skills_when_any_required_skill_is_missing(self) -> None:
+        manifest = self.minimal_manifest("~/.omp/agent/mcp.json")
+        manifest["skills"] = [{
+            "source": "owner/skills",
+            "agent": "universal",
+            "skills": ["alpha", "beta"],
+            "checkSkills": ["alpha", "beta"],
+        }]
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            target = home / ".agents" / "skills" / "alpha" / "SKILL.md"
+            target.parent.mkdir(parents=True)
+            target.write_text("# alpha\n", encoding="utf-8")
+            plan = io.StringIO()
+            with mock.patch.dict(os.environ, {"DOTAI_HOME": str(home)}), contextlib.redirect_stdout(plan):
+                DOTAI.reconcile_skills(manifest, DOTAI.Runner("linux", dry_run=True))
+            self.assertIn("Reconcile skills from owner/skills", plan.getvalue())
+            self.assertIn("--skill beta", plan.getvalue())
+
+    def test_sync_update_skills_explicitly_refreshes_healthy_installations(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            target = home / ".agents" / "skills" / "alpha" / "SKILL.md"
+            target.parent.mkdir(parents=True)
+            target.write_text("# alpha\n", encoding="utf-8")
+            manifest = self.minimal_manifest(str(home / "mcp.json"))
+            manifest["mcp"]["servers"] = {}
+            manifest["skills"] = [{
+                "source": "owner/skills",
+                "agent": "universal",
+                "skills": ["alpha"],
+                "checkSkills": ["alpha"],
+            }]
+            path = home / "stack.json"
+            path.write_text(json.dumps(manifest), encoding="utf-8")
+            plan = io.StringIO()
+            with (
+                mock.patch.dict(os.environ, {"DOTAI_HOME": str(home)}),
+                mock.patch.object(DOTAI, "print_release_notice"),
+                contextlib.redirect_stdout(plan),
+            ):
+                with contextlib.redirect_stderr(io.StringIO()):
+                    try:
+                        result = DOTAI.main(["--manifest", str(path), "sync", "--update-skills", "--dry-run"])
+                    except SystemExit as exc:
+                        result = exc.code
+                self.assertEqual(result, 0)
+            self.assertIn("Reconcile skills from owner/skills", plan.getvalue())
+
 
     def test_status_highlights_legacy_pi_skill_targets(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -1689,6 +1755,33 @@ class DotAiTests(unittest.TestCase):
                 )
             self.assertEqual(json.loads(path.read_text(encoding="utf-8")), manifest)
             self.assertIn("--agent pi", output.getvalue())
+
+    def test_accepted_recommendation_refreshes_a_healthy_skill_source(self) -> None:
+        before = {"source": "owner/recommended", "agent": "universal", "skills": ["*"], "checkSkills": ["keep"]}
+        after = {**before, "skills": ["keep"]}
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            manifest_path = home / "stack.json"
+            example_path = home / "stack.example.json"
+            manifest = self.minimal_manifest(str(home / "mcp.json"))
+            manifest["skills"] = [before]
+            manifest["mcp"]["servers"] = {}
+            manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+            example = {**manifest, "skills": [after]}
+            example_path.write_text(json.dumps(example), encoding="utf-8")
+            skill_file = home / ".agents" / "skills" / "keep" / "SKILL.md"
+            skill_file.parent.mkdir(parents=True)
+            skill_file.write_text("# keep\n", encoding="utf-8")
+            output = io.StringIO()
+            with (
+                mock.patch.dict(os.environ, {"DOTAI_HOME": str(home), "DOTAI_STATE_DIR": str(home / "state")}),
+                mock.patch.object(DOTAI, "EXAMPLE_MANIFEST", example_path),
+                mock.patch.object(DOTAI, "latest_release_version", return_value=None),
+                contextlib.redirect_stdout(output),
+            ):
+                result = DOTAI.main(["--manifest", str(manifest_path), "sync", "--recommended-skills", "--enforce", "--dry-run"])
+            self.assertEqual(result, 0)
+            self.assertIn("Reconcile skills from owner/recommended", output.getvalue())
 
     def test_recommended_skill_sync_accepts_all_without_overwriting_custom_skills(self) -> None:
         retired = {
@@ -2362,10 +2455,38 @@ class DotAiTests(unittest.TestCase):
             DOTAI.reconcile_packages(manifest, runner, "update", include_dependencies=True)
         self.assertIn("Check/update Dependency", output.getvalue())
 
-    def test_default_omp_update_uses_omp_updater_and_marks_dependencies(self) -> None:
+    def test_linux_update_keeps_omp_updater_and_pinned_rtk_update(self) -> None:
+        manifest = DOTAI.load_manifest(ROOT / "stack.example.json")
+        manifest["packages"] = [
+            package for package in manifest["packages"] if package["name"] in {"RTK", "Oh My Pi"}
+        ]
+        plan = io.StringIO()
+        with (
+            mock.patch.object(DOTAI, "package_check", return_value=True),
+            contextlib.redirect_stdout(plan),
+        ):
+            DOTAI.reconcile_packages(manifest, DOTAI.Runner("wsl", dry_run=True), "update")
+        self.assertIn("omp update", plan.getvalue())
+        self.assertIn("Check/update RTK", plan.getvalue())
+        self.assertIn("releases/download/v0.50.0/rtk-", plan.getvalue())
+        self.assertIn("sha256sum -c -", plan.getvalue())
+        self.assertNotIn("install.sh", plan.getvalue())
+
+    def test_linux_update_still_installs_missing_rtk(self) -> None:
+        manifest = DOTAI.load_manifest(ROOT / "stack.example.json")
+        manifest["packages"] = [package for package in manifest["packages"] if package["name"] == "RTK"]
+        plan = io.StringIO()
+        with (
+            mock.patch.object(DOTAI, "package_check", return_value=False),
+            contextlib.redirect_stdout(plan),
+        ):
+            DOTAI.reconcile_packages(manifest, DOTAI.Runner("ubuntu", dry_run=True), "update")
+        self.assertIn("Install RTK", plan.getvalue())
+        self.assertIn("releases/download/v0.50.0/rtk-", plan.getvalue())
+
+    def test_default_omp_privacy_configuration_and_dependencies(self) -> None:
         manifest = DOTAI.load_manifest(ROOT / "stack.example.json")
         packages = {package["name"]: package for package in manifest["packages"]}
-        self.assertEqual(DOTAI.selected(packages["Oh My Pi"]["update"], "wsl"), [["omp", "update"]])
         self.assertEqual(
             packages["Oh My Pi"]["configure"]["default"],
             [["omp", "config", "set", "secrets.enabled", "true"]],

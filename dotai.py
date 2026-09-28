@@ -548,8 +548,15 @@ def skill_command(skill: dict[str, Any]) -> list[str]:
     return command
 
 
-def reconcile_skills(manifest: dict[str, Any], runner: Runner) -> None:
+def reconcile_skills(
+    manifest: dict[str, Any], runner: Runner, *, update_skills: bool = False,
+    refresh_sources: set[str] | None = None,
+) -> None:
     for skill in manifest["skills"]:
+        refresh = update_skills or (refresh_sources is not None and skill["source"] in refresh_sources)
+        if not refresh and skill_status(skill)[0]:
+            print(f"{badge('OK')} Skills from {skill['source']}: already installed")
+            continue
         runner.run(skill_command(skill), f"Reconcile skills from {skill['source']}")
 
 def read_state(manifest_path: Path) -> dict[str, Any]:
@@ -1805,6 +1812,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     sync = sub.add_parser("sync", help="Synchronize skills, plugins, and MCP configuration")
     sync.add_argument("--dry-run", action="store_true")
+    sync.add_argument("--update-skills", action="store_true", help="Refresh already installed skills")
     sync.add_argument(
         "--recommended-skills",
         action="store_true",
@@ -1952,16 +1960,25 @@ def main(argv: list[str] | None = None) -> int:
         return 0 if doctor(manifest, runner) else 1
     if args.command == "sync":
         managed_skills = None
+        refresh_sources: set[str] = set()
         if args.recommended_skills:
             try:
+                old_skills = manifest["skills"]
                 manifest, managed_skills = review_recommended_skills(
                     manifest, args.manifest, runner, args.enforce
                 )
+                previous = {skill["source"]: skill for skill in old_skills}
+                refresh_sources = {
+                    skill["source"] for skill in manifest["skills"]
+                    if previous.get(skill["source"]) != skill
+                }
             except (OSError, DotAiError) as exc:
                 print(f"{styled('dotai:', 'red', 'bold')} {exc}", file=sys.stderr)
                 return 2
         reconcile_omp_extensions(manifest, runner)
-        reconcile_skills(manifest, runner)
+        reconcile_skills(
+            manifest, runner, update_skills=args.update_skills, refresh_sources=refresh_sources
+        )
         reconcile_plugins(manifest, runner, "install")
         try:
             sync_mcp(manifest, runner)

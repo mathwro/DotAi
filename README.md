@@ -35,7 +35,8 @@ Use `./dotai` on Linux, WSL, and macOS, or `.\dotai.ps1` in PowerShell.
 ```sh
 ./dotai install          # Install missing components and synchronize configuration
 ./dotai update           # Update core components and synchronize configuration
-./dotai sync             # Synchronize skills, plugins, and MCP servers only
+./dotai sync             # Install missing skills; synchronize plugins and MCP servers
+./dotai sync --update-skills  # Explicitly refresh already installed skill sources
 ./dotai sync --recommended-skills  # Review and apply repository skill recommendations
 ./dotai sync --recommended-skills --enforce  # Fully adopt and clean recommended skill sources
 ./dotai status           # Show installed, missing, inactive, or drifting components
@@ -56,6 +57,8 @@ Common options:
 ```
 
 `init` creates only a missing manifest and refuses to overwrite an existing file. Dependency tools such as Node.js and `uv` install when missing but update only with `--include-dependencies`. OMP updates use its version-aware `omp update` command.
+
+Linux RTK installs and updates use the reviewed v0.50.0 release archives with pinned SHA-256 digests rather than executing an installer from a moving branch. To adopt this change on an existing installation, update the RTK commands in your personal `stack.json` from `stack.example.json`; DotAi does not overwrite that file.
 
 ### Status output
 
