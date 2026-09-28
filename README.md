@@ -83,6 +83,6 @@ RTK 0.43 or newer is configured for Pi and registered as an OMP global extension
 
 ## Guides
 
-- [Configuration](docs/configuration.md) — manifest lifecycle, safety guarantees, and OMP provider routing
+- [Configuration](docs/configuration.md) — manifest lifecycle, safety guarantees, OMP provider routing, and the optional TypeSafe/Jev decision
 - [Extending the stack](docs/extending.md) — add skills, MCP servers, plugins, and command-line tools
 - [Development](docs/development.md) — repository layout and contributor verification

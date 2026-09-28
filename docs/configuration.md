@@ -34,6 +34,34 @@ RTK 0.43 or newer is configured through `rtk init -g --agent pi`. This creates `
 
 The Pi extension is independent of RTK's optional Codex integration. DotAi also enables OMP's **Hide Secrets** privacy setting (`secrets.enabled`) during installation and updates, so configured secrets are obfuscated before prompts are sent to providers.
 
+## TypeSafe/Jev: optional, not a stack default
+
+[TypeSafe's coding-agent guide](https://docs.typesafe.ai/introduction/coding-agents) distinguishes Jev from the chat model running OMP: Jev answers typed Choice, Score, and Noul questions about supplied state; it does not converse or write code. The [official `typesafe-ai` skill](https://docs.typesafe.ai/agent-skill) is instructions for an agent *building software that calls TypeSafe*, not a Jev runtime, API credential, or an upgrade to OMP's existing judgment features.
+
+**Decision:** Do not add the skill to `stack.example.json`, install a Jev extension, or change OMP's judge settings by default. DotAi's package and configuration reconciliation does not need semantic judgments. OMP already has an independent [judge model role](https://github.com/can1357/oh-my-pi/blob/main/packages/coding-agent/src/judgment/index.ts) for its own typed decisions; adding the skill would not activate that role or turn Jev into OMP's chat model. Revisit the skill when building an application feature that needs semantic routing, scoring, or verification and can evaluate the resulting decisions on representative data. For simple exploration without an integration, use the [TypeSafe Playground](https://console.typesafe.ai/playground).
+
+If a user does want the skill, keep it in their local manifest rather than the shared baseline:
+
+```sh
+./dotai add skill typesafe-ai/skills --skill typesafe-ai --check-skill typesafe-ai
+./dotai sync
+```
+
+OMP discovers the resulting `~/.agents/skills/typesafe-ai/SKILL.md` when `skills.enabled` and `skills.enableAgentsUser` are on. With `skillful` on it lists the skill for the agent; with `skills.enableSkillCommands` on, `/skill:typesafe-ai` invokes it. Restart OMP after installation and inspect discovery with `rtk omp skill list --json`. Reading the skill needs no TypeSafe API key; actual TypeSafe calls do. See [Extending the stack](extending.md#add-a-skill-source) for local skill lifecycle details.
+
+### Optional built-in OMP judgment settings
+
+These are separate from installing the skill. Check current keys and effective values with `rtk omp config list --json` before changing anything; the OMP observations below were made on v18.4.1. Avoid putting credentials in `stack.json`, project config, or tracked files.
+
+| Intent | What to inspect or configure | When it makes sense |
+| --- | --- | --- |
+| Use native Jev for OMP's typed judgments | Authenticate TypeSafe with OMP's `/login typesafe` or a securely supplied `TYPESAFE_API_KEY`; inspect the `judge` entry in `modelRoles` and select a native Jev candidate in OMP's model-role UI only if you need to pin its route. An OpenRouter Jev route is also supported. | Only if you want OMP's own judgment calls to use Jev; neither the skill nor a new chat-model setting is required. Native calls send their supplied state/questions to the selected provider and may be billed. |
+| Let OMP choose reasoning effort | `defaultThinkingLevel: auto` and `providers.autoThinkingMaxEffort` | Optional tuning of built-in effort classification, not a TypeSafe-skill setting. |
+| Use judged semantic file search | `find.enabled: auto` | Auto enables `find` only when the `judge` role resolves first to a native Jev backend. |
+| Classify text-only unexpected stops | `features.unexpectedStopDetection: smart` instead of `mechanical` | Opt in only if that recovery behavior is useful; no reason to change it to install the skill. |
+
+The old `providers.judgmentProvider` option is not a setting in OMP v18.4.1; configure the `judge` model role instead. Current [OMP judgment resolution](https://github.com/can1357/oh-my-pi/blob/main/packages/coding-agent/src/judgment/index.ts) does not substitute a prompted chat model after a selected native judge fails. Verify the selected route and credentials before relying on native probabilities; typed output is not a guarantee of correct decisions.
+
 ## Configure OMP provider routing
 
 After installation, configure routing from the providers already authenticated in OMP:
