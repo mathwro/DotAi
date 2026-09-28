@@ -379,6 +379,8 @@ class DotAiTests(unittest.TestCase):
             "invalid-stdio-cwd": {"command": "npx", "cwd": False},
             "missing-http-url": {"type": "http"},
             "invalid-http-url": {"type": "http", "url": "not a URI"},
+            "invalid-port-name": {"type": "http", "url": "https://example.test:not-a-port/mcp"},
+            "invalid-port-range": {"type": "sse", "url": "https://example.test:65536/mcp"},
             "invalid-http-headers": {"type": "http", "url": "https://example.test/mcp", "headers": {"Authorization": 3}},
             "invalid-enabled": {"type": "sse", "url": "https://example.test/mcp", "enabled": "yes"},
             "invalid-timeout": {"command": "npx", "timeout": True},

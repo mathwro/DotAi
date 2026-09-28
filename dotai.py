@@ -398,6 +398,7 @@ def validate_mcp_server(server: Any, path: str) -> None:
             raise DotAiError(f"Manifest '{path}.url' must be an HTTP(S) URL")
         try:
             parsed = urlsplit(url)
+            _ = parsed.port  # Accessing the port validates its syntax and range.
             valid = parsed.scheme in {"http", "https"} and parsed.hostname is not None
         except ValueError:
             valid = False
