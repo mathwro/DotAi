@@ -14,7 +14,7 @@ Skills default to the `universal` agent target, which installs into `~/.agents/s
 
 After synchronization, restart OMP so it discovers newly installed skills. With OMP's default `skills.enableSkillCommands` setting, invoke them as `/skill:<name>` commands, for example `/skill:grill-me`, `/skill:grill-with-docs`, or `/skill:commit-and-document`; the shorter `/<name>` form is not the registered command syntax.
 
-Normal `install`, `update`, and `sync` install skill sources missing from the configured agent but leave healthy installed files untouched. To refresh existing skills from their remote sources, opt in with `./dotai sync --update-skills`. Accepting a changed recommended source also refreshes that source. This prevents a routine sync from fetching new upstream skill contents without your approval.
+Normal `install`, `update`, and `sync` leave named skills untouched only when they are installed for the configured agent and the skills.sh lock records the requested source. A missing or different recorded source is reconciled. Use `./dotai sync --update-skills` to refresh healthy skills explicitly; `./dotai install --force` refreshes them too. Accepting a changed recommended source also refreshes it.
 
 Sources without named `checkSkills` cannot be confirmed installed and are still reconciled on each run. Add the expected skill names to your manifest to avoid repeated fetches.
 

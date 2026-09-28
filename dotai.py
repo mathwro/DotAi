@@ -552,9 +552,19 @@ def reconcile_skills(
     manifest: dict[str, Any], runner: Runner, *, update_skills: bool = False,
     refresh_sources: set[str] | None = None,
 ) -> None:
+    try:
+        lock = load_json_object(home_dir() / ".agents" / ".skill-lock.json")
+    except (OSError, DotAiError):
+        lock = {}
+    owned = lock.get("skills")
+    owners = owned if isinstance(owned, dict) else {}
     for skill in manifest["skills"]:
         refresh = update_skills or (refresh_sources is not None and skill["source"] in refresh_sources)
-        if not refresh and skill_status(skill)[0]:
+        checks = skill.get("checkSkills", [])
+        if not refresh and skill_status(skill)[0] and checks and all(
+            isinstance(owners.get(name), dict) and owners[name].get("source") == skill["source"]
+            for name in checks
+        ):
             print(f"{badge('OK')} Skills from {skill['source']}: already installed")
             continue
         runner.run(skill_command(skill), f"Reconcile skills from {skill['source']}")
@@ -1600,7 +1610,7 @@ def reconcile(
 ) -> int:
     reconcile_packages(manifest, runner, mode, force, include_dependencies)
     reconcile_omp_extensions(manifest, runner)
-    reconcile_skills(manifest, runner)
+    reconcile_skills(manifest, runner, update_skills=force)
     reconcile_plugins(manifest, runner, mode)
     try:
         sync_mcp(manifest, runner)
