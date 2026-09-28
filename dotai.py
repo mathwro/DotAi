@@ -1343,7 +1343,7 @@ def sync_mcp(manifest: dict[str, Any], runner: Runner) -> bool:
             continue
 
         current = servers[alias]
-        same_server = server_identity_matches(current, required)
+        same_server = isinstance(current, dict) and server_identity_matches(current, required)
         updated = dict(current) if same_server else {}
         for key, value in required.items():
             if key == "type" and same_server and current.get("type") == "remote" and value == "http":

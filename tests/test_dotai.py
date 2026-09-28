@@ -437,6 +437,32 @@ class DotAiTests(unittest.TestCase):
             self.assertEqual(target.read_text(encoding="utf-8"), original)
             self.assertEqual(list(target.parent.glob("mcp.json.bak.*")), [])
 
+    def test_mcp_sync_replaces_non_object_managed_entry_and_preserves_other_settings(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            target = home / ".omp" / "agent" / "mcp.json"
+            target.parent.mkdir(parents=True)
+            original = {"mcpServers": {
+                "context7": None,
+                "personal": {"type": "http", "url": "https://personal.example/mcp"},
+            }, "customTopLevel": {"owner": "user"}}
+            target.write_text(json.dumps(original), encoding="utf-8")
+            manifest = self.minimal_manifest("~/.omp/agent/mcp.json")
+            manifest["mcp"]["servers"] = {"context7": manifest["mcp"]["servers"]["context7"]}
+            with mock.patch.dict(os.environ, {"DOTAI_HOME": str(home)}):
+                try:
+                    changed = DOTAI.sync_mcp(manifest, DOTAI.Runner("ubuntu"))
+                except AttributeError as exc:
+                    self.fail(f"MCP sync crashed on a non-object managed entry: {exc}")
+                self.assertTrue(changed)
+                self.assertTrue(DOTAI.mcp_status(manifest)[0])
+            updated = json.loads(target.read_text(encoding="utf-8"))
+            self.assertEqual(updated["mcpServers"]["context7"], manifest["mcp"]["servers"]["context7"])
+            self.assertEqual(updated["mcpServers"]["personal"], original["mcpServers"]["personal"])
+            self.assertEqual(updated["customTopLevel"], original["customTopLevel"])
+            backup = next(target.parent.glob("mcp.json.bak.*"))
+            self.assertEqual(json.loads(backup.read_text(encoding="utf-8")), original)
+
     def test_mcp_sync_does_not_duplicate_disabled_provider_alias(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             home = Path(directory)
