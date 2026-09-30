@@ -90,6 +90,7 @@ def badge(label: str) -> str:
         "RUN": "cyan",
         "INACTIVE": "yellow",
         "DRIFT": "yellow",
+        "UNVERIFIED": "yellow",
         "UPDATE": "yellow",
         "MISSING": "red",
         "FAIL": "red",
@@ -1550,7 +1551,11 @@ def skill_status(skill: dict[str, Any]) -> tuple[bool, str]:
     }
     root = roots.get(agent, home_dir() / f".{agent}" / "skills")
     checks = skill.get("checkSkills", [])
-    if checks and all((root / name / "SKILL.md").is_file() for name in checks):
+    if not checks:
+        return False, f"unverified for {agent}: no named skills configured to check"
+    if "*" in checks:
+        return False, f"unverified for {agent}: wildcard skills cannot be checked"
+    if all((root / name / "SKILL.md").is_file() for name in checks):
         return True, f"installed for {agent}"
     plugin_cache = home_dir() / ".codex" / "plugins" / "cache"
     if checks and plugin_cache.is_dir():
@@ -1672,7 +1677,16 @@ def print_status(manifest: dict[str, Any], runner: Runner) -> bool:
         installed, detail = skill_status(skill)
         legacy = skill.get("agent") == "pi"
         healthy &= installed and not legacy
-        label = "DRIFT" if legacy and installed else "OK" if installed else "INACTIVE" if detail.startswith("installed as") else "MISSING"
+        if legacy and installed:
+            label = "DRIFT"
+        elif installed:
+            label = "OK"
+        elif detail.startswith("unverified for "):
+            label = "UNVERIFIED"
+        elif detail.startswith("installed as"):
+            label = "INACTIVE"
+        else:
+            label = "MISSING"
         print(f"  {badge(label)} {skill['source']}: {detail}")
     if print_legacy_skill_notice(manifest):
         healthy = False
@@ -1918,14 +1932,24 @@ def write_manifest(
     return backup_path
 
 
+def installed_skill_name(name: str) -> str:
+    """Match the skills installer's directory normalization for named selections."""
+    sanitized = re.sub(r"[^a-z0-9._]+", "-", name.lower()).strip(".-")
+    return sanitized[:255] or "unnamed-skill"
+
+
 def add_integration(args: argparse.Namespace, manifest: dict[str, Any], path: Path) -> int:
     kind = args.kind
     if kind == "skill":
+        skills = args.skills or ["*"]
+        check_skills = args.check_skills if args.check_skills is not None else (
+            [] if "*" in skills else [installed_skill_name(name) for name in skills]
+        )
         value = {
             "source": args.source,
             "agent": args.agent,
-            "skills": args.skills or ["*"],
-            "checkSkills": args.check_skills or [],
+            "skills": skills,
+            "checkSkills": check_skills,
         }
         upsert(manifest["skills"], "source", value)
     elif kind == "marketplace":
