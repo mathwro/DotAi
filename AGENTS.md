@@ -14,12 +14,12 @@ Supported platforms:
 
 ## Repository map
 
-- `dotai.py` — manifest validation, platform detection, reconciliation, status, doctor, extension commands, and explicit routing configuration
+- `dotai.py` — executable Python CLI entry point; use `./dotai.py` on Unix or `python dotai.py` on Windows
+- `dotai_app/` — purpose-specific application modules; see `docs/development.md` for module responsibilities and dependency direction
 - `stack.example.json` — tracked baseline stack definition copied for new users
 - `stack.json` — ignored, user-owned stack configuration generated on first use
 - `routing-recommendations.json` — tracked provider/model policy; compact routing intent stays in `stack.json`
 - `stack.schema.json` — JSON Schema for both manifests
-- `dotai` / `dotai.ps1` — operational launchers
 - `tests/test_dotai.py` — behavioral tests
 - `README.md` — concise installation, usage, status, and managed-stack overview
 - `docs/configuration.md` — read before changing manifest validation, reconciliation safety, or OMP routing
@@ -30,7 +30,7 @@ Supported platforms:
 ## Development rules
 
 - Keep the runtime compatible with Python 3.10 or newer and use the standard library unless a dependency is demonstrably necessary.
-- Treat stack manifests as declarative data. Do not hard-code stack-specific tools or integrations into `dotai.py` when a manifest can express them.
+- Treat stack manifests as declarative data. Do not hard-code stack-specific tools or integrations into the Python modules when a manifest can express them.
 - Shared defaults belong in `stack.example.json`; never commit or overwrite the user-owned `stack.json`.
 - When the default `stack.json` is absent, initialize it once from `stack.example.json`. Existing local manifests must remain untouched, and missing explicitly selected custom manifests must still fail.
 - Keep `stack.schema.json`, manifest validation, CLI mutation commands, and `stack.example.json` aligned when changing the manifest format.

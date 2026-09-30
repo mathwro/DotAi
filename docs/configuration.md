@@ -2,17 +2,17 @@
 
 ## Local stack configuration
 
-`stack.example.json` is the version-controlled baseline for new users. Any command that needs the default manifest initializes a missing `stack.json` once from that example; `version`, `platform`, and help do not need a manifest. This initialization also occurs before a first-use dry run. Run `./dotai validate` first to initialize and check the manifest separately from previewing changes.
+`stack.example.json` is the version-controlled baseline for new users. Any command that needs the default manifest initializes a missing `stack.json` once from that example; `version`, `platform`, and help do not need a manifest. This initialization also occurs before a first-use dry run. Run `./dotai.py validate` first to initialize and check the manifest separately from previewing changes.
 
-The generated `stack.json` is ignored by Git. Pulling repository updates therefore cannot replace personal tools, skills, plugins, MCP servers, or credential references. Changes to `stack.example.json` affect new configurations automatically; existing users can opt into recommended skill changes with `./dotai sync --recommended-skills`.
+The generated `stack.json` is ignored by Git. Pulling repository updates therefore cannot replace personal tools, skills, plugins, MCP servers, or credential references. Changes to `stack.example.json` affect new configurations automatically; existing users can opt into recommended skill changes with `./dotai.py sync --recommended-skills`.
 
 To recreate the defaults, first back up your local `stack.json`, then remove it and run:
 
 ```sh
-./dotai validate
+./dotai.py validate
 ```
 
-For a separate manifest, use `./dotai --manifest path/to/new-stack.json init`. Normal commands never initialize or overwrite an explicitly selected custom path, and `init` also refuses to overwrite an existing file.
+For a separate manifest, use `./dotai.py --manifest path/to/new-stack.json init`. Normal commands never initialize or overwrite an explicitly selected custom path, and `init` also refuses to overwrite an existing file.
 
 `validate` checks required sections and supported package, skill, plugin, and MCP entry shapes before they can be applied, including valid HTTP(S) server URLs and port numbers. The same validation runs before initializing a manifest or saving changes from `add`, recommended skill synchronization, skill migration, or routing configuration. Invalid additions (for example, an MCP URL with an invalid port, a malformed `plugin@marketplace` ID, or an empty tool check command) exit with code `2` without changing the existing manifest or creating backups; correct the input and retry. User-owned extra fields and credential references remain untouched, and unconfigured routing remains `null` when saved. See [`stack.schema.json`](../stack.schema.json) for the declarative format.
 
@@ -43,7 +43,7 @@ Backups retain the previous complete file, including any literal credentials alr
 
 ## Managed OMP extensions
 
-RTK 0.43 or newer is configured through `rtk init -g --agent pi`. This creates `~/.pi/agent/extensions/rtk.ts`, which DotAi appends to OMP's global extensions without removing user-configured entries. Restart OMP after the first installation; `dotai status` verifies both registration and source availability.
+RTK 0.43 or newer is configured through `rtk init -g --agent pi`. This creates `~/.pi/agent/extensions/rtk.ts`, which DotAi appends to OMP's global extensions without removing user-configured entries. Restart OMP after the first installation; `./dotai.py status` verifies both registration and source availability.
 
 The Linux RTK commands in `stack.example.json` use the reviewed v0.50.0 binary archives and architecture-specific SHA-256 digests. Updating the pinned release requires updating its version and archive digests together; existing user-owned `stack.json` files never receive such baseline changes automatically. Windows and macOS continue to use Scoop and Homebrew.
 
@@ -65,23 +65,23 @@ Existing `stack.json` files are user-owned and are not updated from `stack.examp
 
 Routing is never enabled automatically by `install`, `update`, or `sync`. Until it is configured, `status` and `doctor` display a non-failing `INACTIVE` hint with the preview command; they do not inspect credentials or change OMP configuration.
 
-1. Run `./dotai install` (or `.\dotai.ps1 install` on Windows).
+1. Run `./dotai.py install` (or `python dotai.py install` on Windows).
 2. Run `omp` to open OMP for the first time.
 3. Inside OMP, use `/login` to authenticate GitHub Copilot, OpenAI Codex, Anthropic, or any combination of them, then return to your shell. See [OMP's provider authentication guide](https://github.com/can1357/oh-my-pi/blob/main/packages/ai/README.md#oauth-providers) for supported login flows. Authentication belongs to OMP, not to `stack.json`.
 4. Only after those prerequisites, preview the detected providers, resolved roles, manifest diff, and pending OMP commands:
 
    ```sh
-   ./dotai configure omp-routing --dry-run
+   ./dotai.py configure omp-routing --dry-run
    ```
 
 5. If both Anthropic and OpenAI Codex are authenticated, choose the interactive primary when prompted or pass `--primary anthropic` or `--primary openai-codex`. Use the same flag while previewing and applying when a non-interactive shell cannot prompt.
 6. Apply the routing only if you want DotAi to manage it:
 
    ```sh
-   ./dotai configure omp-routing
+   ./dotai.py configure omp-routing
    ```
 
-In PowerShell, substitute `.\dotai.ps1` for `./dotai`; `omp` is the same command on all supported platforms.
+In PowerShell, substitute `python dotai.py` for `./dotai.py`; `omp` is the same command on all supported platforms.
 
 The `default` and `slow` interactive roles prefer the selected premium primary, then the other available premium provider, then Copilot. The `task` and `smol` worker roles prefer Copilot, then Anthropic, then Codex. When no premium provider is available, Copilot serves as the primary.
 
@@ -95,10 +95,10 @@ The tracked `routing-recommendations.json` selects the first available model in 
 
 [GPT-6.1 Sol](https://openai.com/index/introducing-gpt-6-1-sol/) offers near-Astra coding capability at lower API cost; Astra remains the recommendation for the most demanding reasoning. [Opus 5.5](https://www.anthropic.com/claude-opus-5-5) replaces Opus 5 for interactive work and precedes Fable 5.1 for `slow`; [Sonnet 5.5](https://www.anthropic.com/claude-sonnet-5-5) replaces Sonnet 5 for workers. Haiku 5.5 is not yet released, so the small Anthropic role remains on Haiku 4.5. These are curated role choices, not runtime price comparisons.
 
-Older recommendations remain fallbacks for staged rollouts or restricted subscriptions; unavailable models are omitted. Exact IDs follow OMP's [model catalog](https://github.com/can1357/oh-my-pi/blob/main/packages/catalog/src/models.json) and live `omp models --json` output, not display names (Anthropic uses `claude-opus-5-5` and `claude-sonnet-5-5`). After pulling recommendation updates, preview and rerun `./dotai configure omp-routing` to apply them; pulling alone does not change your manifest or OMP settings.
+Older recommendations remain fallbacks for staged rollouts or restricted subscriptions; unavailable models are omitted. Exact IDs follow OMP's [model catalog](https://github.com/can1357/oh-my-pi/blob/main/packages/catalog/src/models.json) and live `omp models --json` output, not display names (Anthropic uses `claude-opus-5-5` and `claude-sonnet-5-5`). After pulling recommendation updates, preview and rerun `./dotai.py configure omp-routing` to apply them; pulling alone does not change your manifest or OMP settings.
 
 DotAi stores only compact routing intent in `stack.json`: the detected provider set, selected primary, agent overrides, and usage/fallback policies. Expanded model routes stay in OMP. DotAi discovers availability from OMP without reading provider credentials, and it preserves unrelated OMP roles, fallback chains, agent overrides, extensions, and other settings.
 
-If an existing manifest still contains static `ompRouting.roles`, run `./dotai configure omp-routing` to perform the backed-up, one-way migration to compact intent. Provider authentication changes appear as `DRIFT` while at least one persisted provider remains available; if none remains, `dotai status` reports `INACTIVE`. Rerun `./dotai configure omp-routing` to refresh the persisted intent and managed OMP routes. Status is observational and never prompts or writes.
+If an existing manifest still contains static `ompRouting.roles`, run `./dotai.py configure omp-routing` to perform the backed-up, one-way migration to compact intent. Provider authentication changes appear as `DRIFT` while at least one persisted provider remains available; if none remains, `./dotai.py status` reports `INACTIVE`. Rerun `./dotai.py configure omp-routing` to refresh the persisted intent and managed OMP routes. Status is observational and never prompts or writes.
 
 Credentials belong in environment variables or a secret manager, not in `stack.json` or version control.
