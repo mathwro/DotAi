@@ -24,8 +24,17 @@ Supported platforms:
 - `README.md` — concise installation, usage, status, and managed-stack overview
 - `docs/configuration.md` — read before changing manifest validation, reconciliation safety, or OMP routing
 - `docs/extending.md` — read before changing extension commands, skill ownership/refresh, or recommendation reconciliation
-- `docs/development.md` — read before changing tests or the routing catalog; verification and fixture conventions
+- `docs/development.md` — read before changing application code, tests, or the routing catalog; module ownership, dependency direction, and verification conventions
 - `docs/superpowers/specs/` — historical design records, not active agent instructions or current defaults; current contracts are in the guides above
+
+## Module boundaries
+
+- Place application changes in the owning module identified by `docs/development.md`'s responsibility table. Extend an existing responsibility before introducing a new module.
+- Keep `dotai.py` an executable entry point that delegates to `dotai_app.cli.main`; application logic belongs in `dotai_app/`, not the root script or new platform wrappers.
+- Keep `cli.py` focused on argument parsing and dispatch, `integrations.py` on manifest additions, `reconcile.py` on coordinating reconciliation, and `health.py` on aggregating observational checks. Delegate domain decisions and operations to their owning modules rather than accumulating them in these entry points.
+- Keep imports acyclic. Domain modules must not import `cli.py`, `reconcile.py`, or `health.py`; shared manifest, runtime, and terminal helpers must not depend on domain modules.
+- Reuse behavior through explicit imports of its owning module. Keep `__init__.py` a package marker rather than a re-export facade, and patch the owning module in behavioral tests.
+- Create a module only for a distinct, cohesive responsibility that does not fit an existing owner; avoid generic utility grab bags and one-function forwarding modules. Update the responsibility table when adding a module or moving ownership.
 
 ## Development rules
 
