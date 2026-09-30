@@ -34,6 +34,8 @@ HEADER_NAME = re.compile(r"^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$")
 ENV_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 RELEASE_URL = "https://api.github.com/repos/mathwro/DotAi/releases/latest"
 VERSION_PATTERN = re.compile(r"^v?(\d+)\.(\d+)\.(\d+)$")
+VERSION_MINIMUM_PATTERN = re.compile(r"^(0|[1-9]\d*)\.(0|[1-9]\d*)(?:\.(0|[1-9]\d*))?$")
+PACKAGE_VERSION_PATTERN = re.compile(r"(?<![\w.])v?(\d+)\.(\d+)(?:\.(\d+))?(?![\w.-])")
 THINKING_SUFFIXES = frozenset({"minimal", "low", "medium", "high", "xhigh", "max", "auto"})
 PLACEHOLDER = re.compile(r"\{(home|repo|python)\}")
 
@@ -463,6 +465,11 @@ def validate_manifest(data: Any, *, allow_legacy_routing: bool = False) -> dict[
         for field in ("install", "update", "configure"):
             if field in package:
                 validate_platform_commands(package[field], f"{path_name}.{field}")
+        minimum_version = package.get("minimumVersion")
+        if "minimumVersion" in package and (
+            not isinstance(minimum_version, str) or not VERSION_MINIMUM_PATTERN.fullmatch(minimum_version)
+        ):
+            raise DotAiError("Manifest package 'minimumVersion' must be a major.minor or major.minor.patch version")
     for index, skill in enumerate(data["skills"]):
         path_name = f"skills[{index}]"
         if not isinstance(skill, dict):
@@ -634,8 +641,36 @@ def run_steps(steps: Any, runner: Runner, label: str) -> None:
             runner.failures.append(f"{step_label}: invalid command entry")
 
 
+def package_version_check(package: dict[str, Any], runner: Runner, command: Any) -> tuple[bool, str]:
+    minimum_value = package["minimumVersion"]
+    minimum = VERSION_MINIMUM_PATTERN.fullmatch(minimum_value) if isinstance(minimum_value, str) else None
+    if not minimum or not command:
+        return False, "not found"
+    try:
+        result = subprocess.run(
+            runner.argv(command), env=runner.env, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False
+        )
+    except (OSError, UnicodeError):
+        return False, "not found"
+    stdout = (result.stdout or "").strip()
+    stderr = (result.stderr or "").strip()
+    version = PACKAGE_VERSION_PATTERN.search(stdout)
+    if version:
+        output = stdout
+    else:
+        version = PACKAGE_VERSION_PATTERN.search(stderr)
+        output = stderr if version else stdout or stderr
+    if result.returncode != 0 or not version:
+        return False, output or "not found"
+    actual_parts = tuple(int(part or 0) for part in version.groups())
+    minimum_parts = tuple(int(part or 0) for part in minimum.groups())
+    return actual_parts >= minimum_parts, output
+
+
 def package_check(package: dict[str, Any], runner: Runner) -> bool:
     command = selected(package.get("check", []), runner.platform)
+    if "minimumVersion" in package:
+        return package_version_check(package, runner, command)[0]
     return bool(command) and runner.succeeds(command)
 
 
@@ -649,9 +684,13 @@ def reconcile_packages(
     for package in manifest["packages"]:
         name = package["name"]
         installed = package_check(package, runner)
+        check_command = selected(package.get("check", []), runner.platform)
+        present = installed or (
+            "minimumVersion" in package and bool(check_command) and runner.succeeds(check_command)
+        )
         if (
             mode == "update"
-            and installed
+            and present
             and package.get("updateGroup", "core") == "dependency"
             and not include_dependencies
         ):
@@ -659,7 +698,7 @@ def reconcile_packages(
         elif mode == "install" and installed and not force:
             print(f"{badge('OK')} {name}: already installed")
         else:
-            operation = "install" if mode == "install" or not installed else "update"
+            operation = "update" if present and (mode == "update" or not installed) else "install"
             steps = selected(package.get(operation, package.get("install", {})), runner.platform)
             if not steps and operation == "update" and installed:
                 print(f"{badge('OK')} {name}: no managed update required")
@@ -1620,9 +1659,12 @@ def print_status(manifest: dict[str, Any], runner: Runner) -> bool:
     print(f"{heading('Platform:')} {runner.platform}")
     print(heading("Packages:"))
     for package in manifest["packages"]:
-        installed = package_check(package, runner)
+        if "minimumVersion" in package:
+            installed, version = package_version_check(package, runner, selected(package.get("check", []), runner.platform))
+        else:
+            installed = package_check(package, runner)
+            version = runner.output(selected(package.get("check", []), runner.platform)) if installed else "not found"
         healthy &= installed
-        version = runner.output(selected(package.get("check", []), runner.platform)) if installed else "not found"
         label = "OK" if installed else "MISSING"
         print(f"  {badge(label)} {package['name']}: {version.splitlines()[0] if version else 'installed'}")
     print(heading("Skills:"))

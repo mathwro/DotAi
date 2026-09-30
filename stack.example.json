@@ -52,6 +52,7 @@
     {
       "name": "RTK",
       "check": ["rtk", "--version"],
+      "minimumVersion": "0.43",
       "install": {
         "windows": [["scoop", "install", "rtk"]],
         "macos": [["brew", "install", "rtk"]],
