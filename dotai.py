@@ -6,10 +6,12 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import difflib
+import hashlib
 import json
 import os
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -548,23 +550,93 @@ def skill_command(skill: dict[str, Any]) -> list[str]:
     return command
 
 
+def skill_root(skill: dict[str, Any]) -> Path:
+    agent = skill.get("agent", "universal")
+    roots = {
+        "pi": home_dir() / ".pi" / "agent" / "skills",
+        "universal": home_dir() / ".agents" / "skills",
+    }
+    return roots.get(agent, home_dir() / f".{agent}" / "skills")
+
+
+def github_repository_source(source: Any) -> str | None:
+    """Normalize only public GitHub repository roots, not refs, subpaths or other hosts."""
+    if not isinstance(source, str):
+        return None
+    if source.startswith("https://github.com/"):
+        source = source[len("https://github.com/"):].removesuffix("/").removesuffix(".git")
+    else:
+        source = source.removeprefix("github:").removesuffix("/")
+    if not re.fullmatch(r"[A-Za-z0-9-]+/[A-Za-z0-9_.-]+", source):
+        return None
+    return source.lower()
+
+
+def installed_skill_tree_hash(folder: Path) -> str:
+    """Reconstruct the Git tree SHA recorded by skills.sh for GitHub skill folders."""
+    entries = []
+    for path in folder.iterdir():
+        mode = path.lstat().st_mode
+        name = path.name.encode("utf-8")
+        if stat.S_ISDIR(mode):
+            digest = bytes.fromhex(installed_skill_tree_hash(path))
+            entry_mode, sort_name = b"40000", name + b"/"
+        elif stat.S_ISREG(mode):
+            content = path.read_bytes()
+            digest = hashlib.sha1(b"blob " + str(len(content)).encode("ascii") + b"\0" + content).digest()
+            entry_mode, sort_name = (b"100755" if mode & stat.S_IXUSR else b"100644"), name
+        else:
+            # Copies dereference symlinks; their original tree cannot be proven locally.
+            raise ValueError("unsupported installed skill file type")
+        entries.append((sort_name, entry_mode + b" " + name + b"\0" + digest))
+    content = b"".join(entry for _, entry in sorted(entries))
+    return hashlib.sha1(b"tree " + str(len(content)).encode("ascii") + b"\0" + content).hexdigest()
+
+
+def skill_source_owned(skill: dict[str, Any], owners: dict[str, Any]) -> bool:
+    source = github_repository_source(skill["source"])
+    checks = skill.get("checkSkills", [])
+    if source is None or not checks:
+        return False
+    # Shorthand can select an Enterprise host; never attribute it to a public GitHub lock.
+    if not skill["source"].startswith("https://github.com/") and os.environ.get("GH_HOST", "").strip().lower() not in {"", "github.com"}:
+        return False
+    root = skill_root(skill)
+    for name in checks:
+        entry = owners.get(name)
+        if not isinstance(entry, dict) or (
+            entry.get("sourceType") != "github"
+            or github_repository_source(entry.get("source")) != source
+            or github_repository_source(entry.get("sourceUrl")) != source
+            or entry.get("ref") is not None
+        ):
+            return False
+        folder_hash = entry.get("skillFolderHash")
+        if not isinstance(folder_hash, str) or not re.fullmatch(r"[0-9a-f]{40}", folder_hash):
+            return False
+        try:
+            if installed_skill_tree_hash(root / name) != folder_hash:
+                return False
+        except (OSError, ValueError, UnicodeError):
+            return False
+    return True
+
+
 def reconcile_skills(
     manifest: dict[str, Any], runner: Runner, *, update_skills: bool = False,
     refresh_sources: set[str] | None = None,
 ) -> None:
+    xdg_state = os.environ.get("XDG_STATE_HOME")
+    lock_path = Path(xdg_state) / "skills" / ".skill-lock.json" if xdg_state else home_dir() / ".agents" / ".skill-lock.json"
     try:
-        lock = load_json_object(home_dir() / ".agents" / ".skill-lock.json")
+        lock = load_json_object(lock_path)
     except (OSError, DotAiError):
         lock = {}
-    owned = lock.get("skills")
+    owned = lock.get("skills") if lock.get("version") == 3 else None
     owners = owned if isinstance(owned, dict) else {}
     for skill in manifest["skills"]:
         refresh = update_skills or (refresh_sources is not None and skill["source"] in refresh_sources)
-        checks = skill.get("checkSkills", [])
-        if not refresh and skill_status(skill)[0] and checks and all(
-            isinstance(owners.get(name), dict) and owners[name].get("source") == skill["source"]
-            for name in checks
-        ):
+        if not refresh and skill_status(skill)[0] and skill_source_owned(skill, owners):
             print(f"{badge('OK')} Skills from {skill['source']}: already installed")
             continue
         runner.run(skill_command(skill), f"Reconcile skills from {skill['source']}")
@@ -1377,11 +1449,7 @@ def print_legacy_skill_notice(manifest: dict[str, Any]) -> bool:
 
 def skill_status(skill: dict[str, Any]) -> tuple[bool, str]:
     agent = skill.get("agent", "universal")
-    roots = {
-        "pi": home_dir() / ".pi" / "agent" / "skills",
-        "universal": home_dir() / ".agents" / "skills",
-    }
-    root = roots.get(agent, home_dir() / f".{agent}" / "skills")
+    root = skill_root(skill)
     checks = skill.get("checkSkills", [])
     if checks and all((root / name / "SKILL.md").is_file() for name in checks):
         return True, f"installed for {agent}"

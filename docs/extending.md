@@ -14,9 +14,15 @@ Skills default to the `universal` agent target, which installs into `~/.agents/s
 
 After synchronization, restart OMP so it discovers newly installed skills. With OMP's default `skills.enableSkillCommands` setting, invoke them as `/skill:<name>` commands, for example `/skill:grill-me`, `/skill:grill-with-docs`, or `/skill:commit-and-document`; the shorter `/<name>` form is not the registered command syntax.
 
-Normal `install`, `update`, and `sync` leave named skills untouched only when they are installed for the configured agent and the skills.sh lock records the requested source. A missing or different recorded source is reconciled. Use `./dotai sync --update-skills` to refresh healthy skills explicitly; `./dotai install --force` refreshes them too. Accepting a changed recommended source also refreshes it.
+Normal `install`, `update`, and `sync` leave named skills untouched only when their configured-agent files match the GitHub folder tree hash in the skills.sh v3 global lock and its source metadata matches the requested repository. The lock is keyed by skill name, not agent: another agent's independent copy does not prove ownership of the configured target. DotAi checks the entire installed folder, including supporting files and executable modes, rather than trusting a matching name or `SKILL.md` alone.
 
-Sources without named `checkSkills` cannot be confirmed installed and are still reconciled on each run. Add the expected skill names to your manifest to avoid repeated fetches.
+DotAi reads `$XDG_STATE_HOME/skills/.skill-lock.json` when `XDG_STATE_HOME` is set; otherwise it reads `~/.agents/.skill-lock.json`. Setting XDG changes only the lock location, not the installed skill directory. It does not fall back to a stale home-directory lock when the XDG lock is missing or unreadable.
+
+Public GitHub repository-root spellings such as `owner/repo`, `github:owner/repo`, and `https://github.com/owner/repo` (with an optional `.git` suffix or trailing slash on the URL) are treated as equivalent. Different repositories, hosts, refs, and subpaths are not collapsed together. Refresh avoidance is conservative: non-GitHub sources, ref/subpath selections, missing or invalid hashes, changed content or modes, and copies whose original tree cannot be reconstructed are reconciled rather than attributed to the wrong source. Such sources may be fetched again on each run.
+
+Use `./dotai sync --update-skills` to refresh healthy skills explicitly; `./dotai install --force` refreshes them too. Accepting a changed recommended source also refreshes it.
+
+Sources without named `checkSkills` cannot be confirmed installed and are still reconciled on each run. Naming the expected skills enables source and content verification; it does not override missing or ambiguous ownership evidence.
 
 To review skill recommendations added, changed, or removed from `stack.example.json`, run:
 
