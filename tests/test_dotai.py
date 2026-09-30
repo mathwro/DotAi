@@ -289,6 +289,134 @@ class DotAiTests(unittest.TestCase):
             legacy["roles"],
         )
 
+    def test_load_manifest_rejects_non_object_roots_and_missing_sections(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "stack.json"
+            for root in ([], [self.minimal_manifest("mcp.json")], None, "stack"):
+                with self.subTest(root=root):
+                    path.write_text(json.dumps(root), encoding="utf-8")
+                    with self.assertRaises(DOTAI.DotAiError):
+                        DOTAI.load_manifest(path)
+
+            for section in ("packages", "skills", "marketplaces", "plugins", "mcp"):
+                with self.subTest(missing=section):
+                    manifest = self.minimal_manifest("mcp.json")
+                    del manifest[section]
+                    path.write_text(json.dumps(manifest), encoding="utf-8")
+                    with self.assertRaises(DOTAI.DotAiError):
+                        DOTAI.load_manifest(path)
+
+            for field in ("target", "servers"):
+                with self.subTest(missing_mcp_field=field):
+                    manifest = self.minimal_manifest("mcp.json")
+                    del manifest["mcp"][field]
+                    path.write_text(json.dumps(manifest), encoding="utf-8")
+                    with self.assertRaises(DOTAI.DotAiError):
+                        DOTAI.load_manifest(path)
+
+    def test_load_manifest_rejects_malformed_packages_and_platform_commands(self) -> None:
+        package = {
+            "name": "sample", "check": ["sample", "--version"],
+            "install": {"default": [["sample", "install"]]},
+        }
+        invalid = {
+            "non-object": 1,
+            "missing-name": {"check": ["sample"], "install": []},
+            "invalid-name": {**package, "name": False},
+            "missing-check": {"name": "sample", "install": []},
+            "invalid-check": {**package, "check": ["sample", 42]},
+            "invalid-platform-check": {**package, "check": {"unknown": ["sample"]}},
+            "missing-install": {"name": "sample", "check": ["sample"]},
+            "invalid-install": {**package, "install": "sample install"},
+            "empty-command": {**package, "install": [""]},
+            "invalid-argv": {**package, "install": [["sample", 42]]},
+            "invalid-platform-command": {**package, "install": {"ubuntu": "sample install"}},
+            "invalid-platform-name": {**package, "install": {"unknown": [["sample"]]}},
+            "invalid-update": {**package, "update": [42]},
+            "invalid-configure": {**package, "configure": {"default": [["sample", None]]}},
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "stack.json"
+            for case, entry in invalid.items():
+                with self.subTest(case=case):
+                    manifest = self.minimal_manifest("mcp.json")
+                    manifest["packages"] = [entry]
+                    path.write_text(json.dumps(manifest), encoding="utf-8")
+                    with self.assertRaises(DOTAI.DotAiError):
+                        DOTAI.load_manifest(path)
+
+    def test_load_manifest_rejects_malformed_skills_plugins_and_extensions(self) -> None:
+        invalid = (
+            ("skills", [None]),
+            ("skills", [{}]),
+            ("skills", [{"source": 4}]),
+            ("skills", [{"source": "owner/skill", "agent": False}]),
+            ("skills", [{"source": "owner/skill", "skills": [3]}]),
+            ("skills", [{"source": "owner/skill", "checkSkills": "skill"}]),
+            ("marketplaces", [{"name": "market"}]),
+            ("marketplaces", [{"name": "market", "source": 12}]),
+            ("plugins", [{"id": "not-a-plugin-id"}]),
+            ("plugins", [{"id": "plugin@market", "scope": "machine"}]),
+            ("ompExtensions", ["path", "path"]),
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "stack.json"
+            for section, entries in invalid:
+                with self.subTest(section=section, entries=entries):
+                    manifest = self.minimal_manifest("mcp.json")
+                    manifest[section] = entries
+                    path.write_text(json.dumps(manifest), encoding="utf-8")
+                    with self.assertRaises(DOTAI.DotAiError):
+                        DOTAI.load_manifest(path)
+
+    def test_load_manifest_rejects_malformed_mcp_servers(self) -> None:
+        invalid = {
+            "non-object": [],
+            "missing-stdio-command": {"type": "stdio"},
+            "invalid-stdio-command": {"command": ["npx"]},
+            "invalid-stdio-args": {"command": "npx", "args": ["-y", 9]},
+            "invalid-stdio-env": {"command": "npx", "env": {"TOKEN": 3}},
+            "invalid-stdio-cwd": {"command": "npx", "cwd": False},
+            "missing-http-url": {"type": "http"},
+            "invalid-http-url": {"type": "http", "url": "not a URI"},
+            "invalid-port-name": {"type": "http", "url": "https://example.test:not-a-port/mcp"},
+            "invalid-port-range": {"type": "sse", "url": "https://example.test:65536/mcp"},
+            "invalid-http-headers": {"type": "http", "url": "https://example.test/mcp", "headers": {"Authorization": 3}},
+            "invalid-enabled": {"type": "sse", "url": "https://example.test/mcp", "enabled": "yes"},
+            "invalid-timeout": {"command": "npx", "timeout": True},
+            "unsupported-type": {"type": "grpc", "command": "npx"},
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "stack.json"
+            for case, server in invalid.items():
+                with self.subTest(case=case):
+                    manifest = self.minimal_manifest("mcp.json")
+                    manifest["mcp"]["servers"] = {"custom": server}
+                    path.write_text(json.dumps(manifest), encoding="utf-8")
+                    with self.assertRaises(DOTAI.DotAiError):
+                        DOTAI.load_manifest(path)
+
+            for field, value in (("target", ""), ("servers", [])):
+                with self.subTest(mcp_field=field):
+                    manifest = self.minimal_manifest("mcp.json")
+                    manifest["mcp"][field] = value
+                    path.write_text(json.dumps(manifest), encoding="utf-8")
+                    with self.assertRaises(DOTAI.DotAiError):
+                        DOTAI.load_manifest(path)
+
+    def test_load_manifest_preserves_user_owned_extra_fields(self) -> None:
+        manifest = self.minimal_manifest("mcp.json")
+        manifest["localOnly"] = {"owner": "user"}
+        manifest["mcp"]["servers"]["custom"] = {
+            "command": "npx", "args": ["server"], "providerSetting": {"keep": True},
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "stack.json"
+            path.write_text(json.dumps(manifest), encoding="utf-8")
+            loaded = DOTAI.load_manifest(path)
+        self.assertEqual(loaded["localOnly"], {"owner": "user"})
+        self.assertEqual(loaded["mcp"]["servers"]["custom"]["providerSetting"], {"keep": True})
+
     def test_load_manifest_normalizes_present_omp_routing_only(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "stack.json"
@@ -366,6 +494,30 @@ class DotAiTests(unittest.TestCase):
                 self.assertFalse(DOTAI.sync_mcp(manifest, runner))
                 self.assertEqual(len(list(target.parent.glob("mcp.json.bak.*"))), 1)
 
+    @unittest.skipIf(os.name == "nt", "POSIX permissions are not Windows ACLs")
+    def test_config_backups_are_private_even_when_sources_are_readable(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            target = home / ".omp" / "agent" / "mcp.json"
+            target.parent.mkdir(parents=True)
+            target.write_text(
+                json.dumps({"mcpServers": {"context7": {"type": "http", "url": "https://old.example/mcp", "headers": {"X-Key": "old-reference"}}}}),
+                encoding="utf-8",
+            )
+            target.chmod(0o644)
+            with mock.patch.dict(os.environ, {"DOTAI_HOME": str(home)}):
+                self.assertTrue(DOTAI.sync_mcp(self.minimal_manifest("~/.omp/agent/mcp.json"), DOTAI.Runner("ubuntu")))
+            backup = next(target.parent.glob("mcp.json.bak.*"))
+            self.assertIn("old-reference", backup.read_text(encoding="utf-8"))
+            self.assertEqual(backup.stat().st_mode & 0o777, 0o600)
+
+            custom = home / "custom-stack.json"
+            custom.write_text('{"env":"OLD_TOKEN"}', encoding="utf-8")
+            custom.chmod(0o644)
+            prior = DOTAI.backup_manifest(custom)
+            self.assertEqual(prior.read_text(encoding="utf-8"), custom.read_text(encoding="utf-8"))
+            self.assertEqual(prior.stat().st_mode & 0o777, 0o600)
+
     def test_mcp_status_accepts_alias_headers_and_external_provider_config(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             home = Path(directory)
@@ -408,6 +560,352 @@ class DotAiTests(unittest.TestCase):
                 self.assertTrue(healthy, detail)
                 self.assertFalse(DOTAI.sync_mcp(manifest, DOTAI.Runner("ubuntu")))
             self.assertEqual(target.read_text(encoding="utf-8"), original)
+
+    def test_mcp_sync_respects_disabled_server_without_reporting_ok(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            target = home / ".omp" / "agent" / "mcp.json"
+            target.parent.mkdir(parents=True)
+            manifest = self.minimal_manifest("~/.omp/agent/mcp.json")
+            manifest["mcp"]["servers"] = {"context7": manifest["mcp"]["servers"]["context7"]}
+            original = json.dumps(
+                {
+                    "disabledServers": ["context7"],
+                    "mcpServers": {
+                        "context7": manifest["mcp"]["servers"]["context7"],
+                        "personal": {"type": "http", "url": "https://personal.example/mcp"},
+                    },
+                    "customTopLevel": {"owner": "user"},
+                }
+            )
+            target.write_text(original, encoding="utf-8")
+            output = io.StringIO()
+            with mock.patch.dict(os.environ, {"DOTAI_HOME": str(home)}), contextlib.redirect_stdout(output):
+                self.assertFalse(DOTAI.mcp_status(manifest)[0])
+                self.assertFalse(DOTAI.sync_mcp(manifest, DOTAI.Runner("ubuntu")))
+                self.assertFalse(DOTAI.sync_mcp(manifest, DOTAI.Runner("ubuntu")))
+                self.assertFalse(DOTAI.mcp_status(manifest)[0])
+            self.assertNotIn("OK", output.getvalue())
+            self.assertEqual(target.read_text(encoding="utf-8"), original)
+            self.assertEqual(list(target.parent.glob("mcp.json.bak.*")), [])
+
+    def test_mcp_sync_respects_disabled_reserved_aliases(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            target = home / "mcp.json"
+            required = {"type": "http", "url": "https://example.test/mcp"}
+            original = json.dumps({
+                "disabledServers": ["second"],
+                "mcpServers": {"second": required},
+            })
+            target.write_text(original, encoding="utf-8")
+            manifest = self.minimal_manifest(str(target))
+            manifest["mcp"]["servers"] = {"first": required, "second": required}
+            with mock.patch.dict(os.environ, {"DOTAI_HOME": str(home)}), contextlib.redirect_stdout(io.StringIO()):
+                for dry_run in (True, False):
+                    with self.subTest(dry_run=dry_run):
+                        runner = DOTAI.Runner("ubuntu", dry_run=dry_run)
+                        self.assertFalse(DOTAI.sync_mcp(manifest, runner))
+                        self.assertTrue(runner.failures)
+                        self.assertFalse(DOTAI.mcp_status(manifest)[0])
+                        self.assertEqual(target.read_text(encoding="utf-8"), original)
+                        self.assertEqual(list(home.glob("mcp.json.bak.*")), [])
+
+    def test_mcp_sync_replaces_non_object_managed_entry_and_preserves_other_settings(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            target = home / ".omp" / "agent" / "mcp.json"
+            target.parent.mkdir(parents=True)
+            original = {"mcpServers": {
+                "context7": None,
+                "personal": {"type": "http", "url": "https://personal.example/mcp"},
+            }, "customTopLevel": {"owner": "user"}}
+            target.write_text(json.dumps(original), encoding="utf-8")
+            manifest = self.minimal_manifest("~/.omp/agent/mcp.json")
+            manifest["mcp"]["servers"] = {"context7": manifest["mcp"]["servers"]["context7"]}
+            with mock.patch.dict(os.environ, {"DOTAI_HOME": str(home)}):
+                try:
+                    changed = DOTAI.sync_mcp(manifest, DOTAI.Runner("ubuntu"))
+                except AttributeError as exc:
+                    self.fail(f"MCP sync crashed on a non-object managed entry: {exc}")
+                self.assertTrue(changed)
+                self.assertTrue(DOTAI.mcp_status(manifest)[0])
+            updated = json.loads(target.read_text(encoding="utf-8"))
+            self.assertEqual(updated["mcpServers"]["context7"], manifest["mcp"]["servers"]["context7"])
+            self.assertEqual(updated["mcpServers"]["personal"], original["mcpServers"]["personal"])
+            self.assertEqual(updated["customTopLevel"], original["customTopLevel"])
+            backup = next(target.parent.glob("mcp.json.bak.*"))
+            self.assertEqual(json.loads(backup.read_text(encoding="utf-8")), original)
+
+    def test_mcp_sync_does_not_duplicate_disabled_provider_alias(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            target = home / ".omp" / "agent" / "mcp.json"
+            provider = home / ".config" / "opencode" / "opencode.json"
+            provider.parent.mkdir(parents=True)
+            provider.write_text(
+                json.dumps(
+                    {
+                        "disabledServers": ["disabled-alias"],
+                        "mcp": {
+                            "disabled-alias": {
+                                "type": "remote", "url": "https://mcp.context7.com/mcp"
+                            }
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            manifest = self.minimal_manifest("~/.omp/agent/mcp.json")
+            manifest["mcp"]["servers"] = {"context7": manifest["mcp"]["servers"]["context7"]}
+            original = provider.read_text(encoding="utf-8")
+            output = io.StringIO()
+            with mock.patch.dict(os.environ, {"DOTAI_HOME": str(home)}), contextlib.redirect_stdout(output):
+                self.assertFalse(DOTAI.mcp_status(manifest)[0])
+                self.assertFalse(DOTAI.sync_mcp(manifest, DOTAI.Runner("ubuntu")))
+                self.assertFalse(DOTAI.mcp_status(manifest)[0])
+            self.assertNotIn("OK", output.getvalue())
+            self.assertFalse(target.exists())
+            self.assertEqual(provider.read_text(encoding="utf-8"), original)
+
+    def test_mcp_sync_keeps_same_command_instances_in_their_managed_slots(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            target = home / ".omp" / "agent" / "mcp.json"
+            target.parent.mkdir(parents=True)
+            original = {"mcpServers": {
+                "a": {"command": "python3", "args": ["-m", "example"], "cwd": "/workspace/a", "timeout": 5},
+                "b": {"command": "python3", "args": ["-m", "example"], "cwd": "/workspace/b", "timeout": 5},
+            }}
+            target.write_text(json.dumps(original), encoding="utf-8")
+            manifest = self.minimal_manifest("~/.omp/agent/mcp.json")
+            manifest["mcp"]["servers"] = {
+                "a": {"command": "python3", "args": ["-m", "example"], "cwd": "/workspace/a", "timeout": 30},
+                "b": {"command": "python3", "args": ["-m", "example"], "cwd": "/workspace/b", "timeout": 30},
+            }
+            with mock.patch.dict(os.environ, {"DOTAI_HOME": str(home)}), contextlib.redirect_stdout(io.StringIO()):
+                runner = DOTAI.Runner("ubuntu")
+                self.assertTrue(DOTAI.sync_mcp(manifest, runner))
+                updated = json.loads(target.read_text(encoding="utf-8"))
+                self.assertEqual(updated["mcpServers"], {
+                    "a": {"command": "python3", "args": ["-m", "example"], "cwd": "/workspace/a", "timeout": 30},
+                    "b": {"command": "python3", "args": ["-m", "example"], "cwd": "/workspace/b", "timeout": 30},
+                })
+                healthy, detail = DOTAI.mcp_status(manifest)
+                self.assertTrue(healthy, detail)
+                after = target.read_bytes()
+                self.assertFalse(DOTAI.sync_mcp(manifest, runner))
+                self.assertEqual(runner.failures, [])
+                self.assertEqual(target.read_bytes(), after)
+            backups = list(target.parent.glob("mcp.json.bak.*"))
+            self.assertEqual(len(backups), 1)
+            self.assertEqual(json.loads(backups[0].read_text(encoding="utf-8")), original)
+
+    def test_mcp_equivalent_requirements_share_one_healthy_provider_alias(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            target = home / ".omp" / "agent" / "mcp.json"
+            target.parent.mkdir(parents=True)
+            original = json.dumps({"mcpServers": {
+                "provider-alias": {"url": "https://shared.example/mcp", "headers": {"X-Auth": "SHARED_TOKEN_FROM_ENV"}},
+            }})
+            target.write_text(original, encoding="utf-8")
+            manifest = self.minimal_manifest("~/.omp/agent/mcp.json")
+            manifest["mcp"]["servers"] = {
+                "first": {"url": "https://shared.example/mcp"},
+                "second": {"url": "https://shared.example/mcp"},
+            }
+            with mock.patch.dict(os.environ, {"DOTAI_HOME": str(home)}), contextlib.redirect_stdout(io.StringIO()):
+                with self.subTest(operation="status"):
+                    healthy, detail = DOTAI.mcp_status(manifest)
+                    self.assertTrue(healthy, detail)
+                with self.subTest(operation="sync"):
+                    runner = DOTAI.Runner("ubuntu")
+                    self.assertFalse(DOTAI.sync_mcp(manifest, runner))
+                    self.assertEqual(runner.failures, [])
+                    self.assertEqual(target.read_text(encoding="utf-8"), original)
+                    self.assertEqual(list(target.parent.glob("mcp.json.bak.*")), [])
+
+    def test_mcp_sync_does_not_overwrite_a_named_slot_satisfying_another_requirement(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            target = home / ".omp" / "agent" / "mcp.json"
+            target.parent.mkdir(parents=True)
+            original = json.dumps({"mcpServers": {
+                "b": {"url": "https://first.example/mcp", "headers": {"X-Auth": "FIRST_TOKEN_FROM_ENV"}},
+            }})
+            target.write_text(original, encoding="utf-8")
+            manifest = self.minimal_manifest("~/.omp/agent/mcp.json")
+            manifest["mcp"]["servers"] = {
+                "a": {"url": "https://first.example/mcp"},
+                "b": {"url": "https://second.example/mcp"},
+            }
+            with mock.patch.dict(os.environ, {"DOTAI_HOME": str(home)}), contextlib.redirect_stdout(io.StringIO()):
+                for dry_run in (True, False):
+                    with self.subTest(dry_run=dry_run):
+                        runner = DOTAI.Runner("ubuntu", dry_run=dry_run)
+                        self.assertFalse(DOTAI.sync_mcp(manifest, runner))
+                        self.assertTrue(runner.failures)
+                        self.assertFalse(DOTAI.mcp_status(manifest)[0])
+                        self.assertEqual(target.read_text(encoding="utf-8"), original)
+                        self.assertEqual(list(target.parent.glob("mcp.json.bak.*")), [])
+
+    def test_mcp_sync_preserves_unmanaged_alias_colliding_with_another_section(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            target = home / ".omp" / "agent" / "mcp.json"
+            target.parent.mkdir(parents=True)
+            original = json.dumps({
+                "mcpServers": {"personal": {
+                    "url": "https://personal.example/mcp", "timeout": 5,
+                    "headers": {"X-Auth": "PERSONAL_TOKEN_FROM_ENV"},
+                }},
+                "servers": {"personal": {"url": "https://managed.example/mcp", "timeout": 5}},
+                "customTopLevel": {"owner": "user"},
+            })
+            target.write_text(original, encoding="utf-8")
+            manifest = self.minimal_manifest("~/.omp/agent/mcp.json")
+            manifest["mcp"]["servers"] = {
+                "managed": {"url": "https://managed.example/mcp", "timeout": 30}
+            }
+            with mock.patch.dict(os.environ, {"DOTAI_HOME": str(home)}), contextlib.redirect_stdout(io.StringIO()):
+                for dry_run in (True, False):
+                    with self.subTest(dry_run=dry_run):
+                        runner = DOTAI.Runner("ubuntu", dry_run=dry_run)
+                        self.assertFalse(DOTAI.sync_mcp(manifest, runner))
+                        self.assertTrue(runner.failures)
+                        self.assertFalse(DOTAI.mcp_status(manifest)[0])
+                        self.assertEqual(target.read_text(encoding="utf-8"), original)
+                        self.assertEqual(list(target.parent.glob("mcp.json.bak.*")), [])
+
+    def test_mcp_sync_ignores_malformed_args_on_unrelated_disabled_server(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            target = home / ".omp" / "agent" / "mcp.json"
+            target.parent.mkdir(parents=True)
+            original = {"mcpServers": {
+                "unrelated": {"command": "python3", "args": None, "enabled": False},
+            }, "customTopLevel": {"owner": "user"}}
+            target.write_text(json.dumps(original), encoding="utf-8")
+            before = target.read_bytes()
+            manifest = self.minimal_manifest("~/.omp/agent/mcp.json")
+            manifest["mcp"]["servers"] = {
+                "managed": {"command": "python3", "args": ["-m", "example"]}
+            }
+            with mock.patch.dict(os.environ, {"DOTAI_HOME": str(home)}), contextlib.redirect_stdout(io.StringIO()):
+                for dry_run in (True, False):
+                    with self.subTest(dry_run=dry_run):
+                        runner = DOTAI.Runner("ubuntu", dry_run=dry_run)
+                        try:
+                            changed = DOTAI.sync_mcp(manifest, runner)
+                        except TypeError as exc:
+                            self.fail(f"MCP sync crashed on unrelated malformed args: {exc}")
+                        self.assertTrue(changed)
+                        self.assertEqual(runner.failures, [])
+                        if dry_run:
+                            self.assertEqual(target.read_bytes(), before)
+                            self.assertEqual(list(target.parent.glob("mcp.json.bak.*")), [])
+                updated = json.loads(target.read_text(encoding="utf-8"))
+                self.assertEqual(updated["mcpServers"], {
+                    "unrelated": {"command": "python3", "args": None, "enabled": False},
+                    "managed": {"command": "python3", "args": ["-m", "example"]},
+                })
+                self.assertEqual(updated["customTopLevel"], {"owner": "user"})
+                healthy, detail = DOTAI.mcp_status(manifest)
+                self.assertTrue(healthy, detail)
+                after = target.read_bytes()
+                self.assertFalse(DOTAI.sync_mcp(manifest, DOTAI.Runner("ubuntu")))
+                self.assertEqual(target.read_bytes(), after)
+            backups = list(target.parent.glob("mcp.json.bak.*"))
+            self.assertEqual(len(backups), 1)
+            self.assertEqual(json.loads(backups[0].read_text(encoding="utf-8")), original)
+
+    def test_mcp_sync_reconciles_stdio_cwd_and_timeout_without_losing_alias_fields(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            target = home / ".omp" / "agent" / "mcp.json"
+            target.parent.mkdir(parents=True)
+            target.write_text(
+                json.dumps(
+                    {
+                        "mcpServers": {
+                            "local-alias": {
+                                "type": "stdio", "command": "python3", "args": ["-m", "example"],
+                                "cwd": "/workspace/old", "timeout": 5,
+                                "env": {"TOKEN": "TOKEN_FROM_ENV", "LOCAL_SETTING": "keep"},
+                                "providerOptions": {"retry": 2},
+                            },
+                            "personal": {"type": "http", "url": "https://personal.example/mcp"},
+                        },
+                        "customTopLevel": {"owner": "user"},
+                    }
+                ),
+                encoding="utf-8",
+            )
+            manifest = self.minimal_manifest("~/.omp/agent/mcp.json")
+            manifest["mcp"]["servers"] = {
+                "local": {
+                    "type": "stdio", "command": "python3", "args": ["-m", "example"],
+                    "cwd": "/workspace/current", "timeout": 30, "env": {"TOKEN": "TOKEN_FROM_ENV"},
+                }
+            }
+            with mock.patch.dict(os.environ, {"DOTAI_HOME": str(home)}):
+                self.assertFalse(DOTAI.mcp_status(manifest)[0])
+                with contextlib.redirect_stdout(io.StringIO()):
+                    self.assertTrue(DOTAI.sync_mcp(manifest, DOTAI.Runner("ubuntu")))
+                merged = json.loads(target.read_text(encoding="utf-8"))
+                self.assertEqual(set(merged["mcpServers"]), {"local-alias", "personal"})
+                self.assertEqual(merged["mcpServers"]["local-alias"]["cwd"], "/workspace/current")
+                self.assertEqual(merged["mcpServers"]["local-alias"]["timeout"], 30)
+                self.assertEqual(
+                    merged["mcpServers"]["local-alias"]["env"],
+                    {"TOKEN": "TOKEN_FROM_ENV", "LOCAL_SETTING": "keep"},
+                )
+                self.assertEqual(merged["mcpServers"]["local-alias"]["providerOptions"], {"retry": 2})
+                self.assertEqual(merged["customTopLevel"], {"owner": "user"})
+                self.assertTrue(DOTAI.mcp_status(manifest)[0])
+                after = target.read_bytes()
+                with contextlib.redirect_stdout(io.StringIO()):
+                    self.assertFalse(DOTAI.sync_mcp(manifest, DOTAI.Runner("ubuntu")))
+                self.assertEqual(target.read_bytes(), after)
+                self.assertEqual(len(list(target.parent.glob("mcp.json.bak.*"))), 1)
+
+    def test_mcp_sync_reconciles_remote_timeout_while_preserving_extra_headers(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            target = home / ".omp" / "agent" / "mcp.json"
+            target.parent.mkdir(parents=True)
+            target.write_text(
+                json.dumps(
+                    {
+                        "mcpServers": {
+                            "remote-alias": {
+                                "type": "remote", "url": "https://mcp.example.test/mcp", "timeout": 5,
+                                "enabled": True, "headers": {"X-Extra": "EXTRA_FROM_ENV"},
+                                "providerOptions": {"keep": True},
+                            }
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+            manifest = self.minimal_manifest("~/.omp/agent/mcp.json")
+            manifest["mcp"]["servers"] = {
+                "remote": {
+                    "type": "http", "url": "https://mcp.example.test/mcp",
+                    "timeout": 20, "enabled": True,
+                }
+            }
+            with mock.patch.dict(os.environ, {"DOTAI_HOME": str(home)}):
+                self.assertFalse(DOTAI.mcp_status(manifest)[0])
+                with contextlib.redirect_stdout(io.StringIO()):
+                    self.assertTrue(DOTAI.sync_mcp(manifest, DOTAI.Runner("ubuntu")))
+                merged = json.loads(target.read_text(encoding="utf-8"))["mcpServers"]
+                self.assertEqual(set(merged), {"remote-alias"})
+                self.assertEqual(merged["remote-alias"]["timeout"], 20)
+                self.assertEqual(merged["remote-alias"]["headers"], {"X-Extra": "EXTRA_FROM_ENV"})
+                self.assertEqual(merged["remote-alias"]["providerOptions"], {"keep": True})
+                self.assertTrue(DOTAI.mcp_status(manifest)[0])
 
     def test_selector_identity_removes_one_recognized_thinking_suffix(self) -> None:
         self.assertEqual(DOTAI.selector_identity("openai-codex/gpt-5.6-sol:high"), "openai-codex/gpt-5.6-sol")
@@ -1892,6 +2390,138 @@ class DotAiTests(unittest.TestCase):
             self.assertNotIn("\033[", plain.getvalue())
             self.assertIn("[OK]", plain.getvalue())
             self.assertNotIn("Legacy Pi skill targets", plain.getvalue())
+
+    def test_add_mcp_invalid_port_preserves_manifest_and_allows_valid_retry(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "stack.json"
+            manifest = self.minimal_manifest("mcp.json")
+            manifest["localOnly"] = {"owner": "user"}
+            manifest["mcp"]["servers"]["custom"] = {
+                "command": "npx", "env": {"TOKEN": "LOCAL_API_TOKEN"},
+                "providerSetting": {"keep": True},
+            }
+            original = (json.dumps(manifest, indent=4) + "\n\n").encode("utf-8")
+            path.write_bytes(original)
+            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                self.assertEqual(
+                    DOTAI.main([
+                        "--manifest", str(path), "add", "mcp", "bad", "--url",
+                        "https://example.test:not-a-port/mcp",
+                    ]),
+                    2,
+                )
+                self.assertEqual(path.read_bytes(), original)
+                self.assertEqual(
+                    DOTAI.main([
+                        "--manifest", str(path), "add", "mcp", "bad", "--url",
+                        "https://example.test:443/mcp", "--header", "Authorization=API_TOKEN",
+                    ]),
+                    0,
+                )
+            updated = DOTAI.load_manifest(path)
+            self.assertEqual(updated["mcp"]["servers"]["bad"], {
+                "type": "http", "url": "https://example.test:443/mcp",
+                "headers": {"Authorization": "API_TOKEN"},
+            })
+            self.assertEqual(updated["localOnly"], {"owner": "user"})
+            self.assertEqual(updated["mcp"]["servers"]["custom"], manifest["mcp"]["servers"]["custom"])
+
+    def test_add_plugin_invalid_id_preserves_manifest_and_allows_valid_retry(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "stack.json"
+            original = json.dumps(self.minimal_manifest("mcp.json"), indent=4).encode("utf-8")
+            path.write_bytes(original)
+            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                self.assertEqual(DOTAI.main(["--manifest", str(path), "add", "plugin", "bad"]), 2)
+                self.assertEqual(path.read_bytes(), original)
+                self.assertEqual(DOTAI.main(["--manifest", str(path), "add", "plugin", "review@team"]), 0)
+            self.assertEqual(DOTAI.load_manifest(path)["plugins"], [{"id": "review@team", "scope": "user"}])
+
+    def test_add_tool_empty_check_preserves_manifest_and_allows_valid_retry(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "stack.json"
+            manifest = self.minimal_manifest("mcp.json")
+            manifest["packages"] = [{"name": "sample", "check": "sample --version", "install": []}]
+            original = json.dumps(manifest, indent=4).encode("utf-8")
+            path.write_bytes(original)
+            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                self.assertEqual(DOTAI.main([
+                    "--manifest", str(path), "add", "tool", "sample", "--check", "",
+                    "--install", "default=sample install",
+                ]), 2)
+                self.assertEqual(path.read_bytes(), original)
+                self.assertEqual(DOTAI.main([
+                    "--manifest", str(path), "add", "tool", "sample", "--check", "sample --version",
+                    "--install", "default=sample install",
+                ]), 0)
+            self.assertEqual(DOTAI.load_manifest(path)["packages"], [{
+                "name": "sample", "check": "sample --version", "install": {"default": ["sample install"]},
+            }])
+
+    def test_add_empty_integration_values_do_not_write_manifest(self) -> None:
+        commands = [
+            ["add", "skill", ""],
+            ["add", "marketplace", "team", ""],
+            ["add", "mcp", "local", "--command", ""],
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "stack.json"
+            original = json.dumps(self.minimal_manifest("mcp.json"), indent=4).encode("utf-8")
+            for command in commands:
+                with self.subTest(command=command):
+                    path.write_bytes(original)
+                    with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                        self.assertEqual(DOTAI.main(["--manifest", str(path), *command]), 2)
+                    self.assertEqual(path.read_bytes(), original)
+
+    def test_add_preserves_unconfigured_routing_for_subsequent_commands(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "stack.json"
+            manifest = self.minimal_manifest("mcp.json")
+            manifest["ompRouting"] = None
+            path.write_text(json.dumps(manifest), encoding="utf-8")
+            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                self.assertEqual(DOTAI.main(["--manifest", str(path), "add", "plugin", "review@team"]), 0)
+                self.assertEqual(DOTAI.main(["--manifest", str(path), "add", "skill", "owner/skills"]), 0)
+                self.assertEqual(DOTAI.main(["--manifest", str(path), "validate"]), 0)
+            self.assertIsNone(json.loads(path.read_text(encoding="utf-8"))["ompRouting"])
+            self.assertEqual(DOTAI.load_manifest(path)["skills"][0]["source"], "owner/skills")
+
+    def test_write_manifest_rejects_invalid_candidate_before_creating_files(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            path = root / "stack.json"
+            manifest = self.minimal_manifest("mcp.json")
+            original = json.dumps(manifest, indent=4).encode("utf-8")
+            path.write_bytes(original)
+            manifest["plugins"] = [{"id": "bad"}]
+            with self.assertRaises(DOTAI.DotAiError):
+                DOTAI.write_manifest(path, manifest)
+            self.assertEqual(path.read_bytes(), original)
+            missing = root / "new" / "stack.json"
+            with self.assertRaises(DOTAI.DotAiError):
+                DOTAI.write_manifest(missing, manifest)
+            self.assertFalse(missing.parent.exists())
+            self.assertEqual(set(root.iterdir()), {path})
+
+    def test_init_rejects_invalid_template_before_creating_manifest(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            example = root / "stack.example.json"
+            invalid = self.minimal_manifest("mcp.json")
+            invalid["plugins"] = [{"id": "bad"}]
+            example.write_text(json.dumps(invalid), encoding="utf-8")
+            target = root / "new" / "stack.json"
+            with (
+                mock.patch.object(DOTAI, "EXAMPLE_MANIFEST", example),
+                contextlib.redirect_stdout(io.StringIO()),
+                contextlib.redirect_stderr(io.StringIO()),
+            ):
+                self.assertEqual(DOTAI.main(["--manifest", str(target), "init"]), 2)
+                self.assertFalse(target.parent.exists())
+                example.write_text(json.dumps(self.minimal_manifest("mcp.json")), encoding="utf-8")
+                self.assertEqual(DOTAI.main(["--manifest", str(target), "init"]), 0)
+            self.assertEqual(DOTAI.load_manifest(target)["plugins"], [])
 
     def test_added_named_skill_reports_installed_only_after_skill_file_exists(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

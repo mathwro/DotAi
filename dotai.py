@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any
 from urllib import error as urlerror
 from urllib import request as urlrequest
+from urllib.parse import urlsplit
 
 VERSION = "0.3.5"
 ROOT = Path(__file__).resolve().parent
@@ -29,6 +30,8 @@ ROUTING_ROLES = ("default", "task", "smol", "slow")
 SUPPORTED_ROUTING_PROVIDERS = frozenset({"github-copilot", "openai-codex", "anthropic"})
 DEFAULT_AGENT_MODEL_OVERRIDES = {"sonic": "@smol", "task": "@task"}
 SERVER_NAME = re.compile(r"^[a-zA-Z0-9_.-]{1,100}$")
+PLUGIN_ID = re.compile(r"[a-z0-9.-]+@[a-z0-9.-]+")
+PLATFORMS = frozenset({"windows", "wsl", "ubuntu", "arch", "macos", "linux", "unix", "default"})
 HEADER_NAME = re.compile(r"^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$")
 ENV_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 RELEASE_URL = "https://api.github.com/repos/mathwro/DotAi/releases/latest"
@@ -192,8 +195,14 @@ def initialize_manifest(path: Path, *, allow_custom: bool = False) -> bool:
         return False
     try:
         payload = EXAMPLE_MANIFEST.read_text(encoding="utf-8")
+        data = json.loads(payload)
     except FileNotFoundError as exc:
         raise DotAiError(f"Example manifest not found: {EXAMPLE_MANIFEST}") from exc
+    except json.JSONDecodeError as exc:
+        raise DotAiError(f"Invalid JSON in {EXAMPLE_MANIFEST}: {exc}") from exc
+    except UnicodeError as exc:
+        raise DotAiError(f"Manifest is not UTF-8: {EXAMPLE_MANIFEST}: {exc}") from exc
+    validate_manifest(data)
     path.parent.mkdir(parents=True, exist_ok=True)
     try:
         descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
@@ -341,6 +350,88 @@ def validate_omp_routing(value: Any, *, allow_legacy: bool = False) -> dict[str,
     }
 
 
+def require_nonempty_string(value: Any, path: str) -> None:
+    if not isinstance(value, str) or not value:
+        raise DotAiError(f"Manifest '{path}' must be a non-empty string")
+
+
+def validate_command(value: Any, path: str) -> None:
+    if isinstance(value, str):
+        require_nonempty_string(value, path)
+    elif not isinstance(value, list) or not value or any(not isinstance(part, str) for part in value):
+        raise DotAiError(f"Manifest '{path}' must be a non-empty command string or array of strings")
+    else:
+        require_nonempty_string(value[0], f"{path}[0]")
+
+
+def validate_platform_commands(value: Any, path: str, *, check: bool = False) -> None:
+    def validate_entry(commands: Any, entry_path: str) -> None:
+        if check:
+            validate_command(commands, entry_path)
+        else:
+            if not isinstance(commands, list):
+                raise DotAiError(f"Manifest '{entry_path}' must be an array of commands")
+            for index, command in enumerate(commands):
+                validate_command(command, f"{entry_path}[{index}]")
+
+    if isinstance(value, dict):
+        for platform, commands in value.items():
+            if platform not in PLATFORMS:
+                raise DotAiError(f"Manifest '{path}' has an unsupported platform: {platform}")
+            validate_entry(commands, f"{path}.{platform}")
+    else:
+        validate_entry(value, path)
+
+
+def validate_mcp_server(server: Any, path: str) -> None:
+    if not isinstance(server, dict):
+        raise DotAiError(f"Manifest '{path}' must be an object")
+    transport = server.get("type", "stdio")
+    if not isinstance(transport, str):
+        raise DotAiError(f"Manifest '{path}.type' must be 'stdio', 'http', or 'sse'")
+    if transport == "stdio":
+        require_nonempty_string(server.get("command"), f"{path}.command")
+        if "args" in server and (
+            not isinstance(server["args"], list)
+            or any(not isinstance(arg, str) for arg in server["args"])
+        ):
+            raise DotAiError(f"Manifest '{path}.args' must be an array of strings")
+        if "env" in server and (
+            not isinstance(server["env"], dict)
+            or any(not isinstance(val, str) for val in server["env"].values())
+        ):
+            raise DotAiError(f"Manifest '{path}.env' must map names to strings")
+        if "cwd" in server and not isinstance(server["cwd"], str):
+            raise DotAiError(f"Manifest '{path}.cwd' must be a string")
+    elif transport in {"http", "sse"}:
+        url = server.get("url")
+        if not isinstance(url, str) or any(char.isspace() for char in url):
+            raise DotAiError(f"Manifest '{path}.url' must be an HTTP(S) URL")
+        try:
+            parsed = urlsplit(url)
+            _ = parsed.port  # Accessing the port validates its syntax and range.
+            valid = parsed.scheme in {"http", "https"} and parsed.hostname is not None
+        except ValueError:
+            valid = False
+        if not valid:
+            raise DotAiError(f"Manifest '{path}.url' must be an HTTP(S) URL")
+        if "headers" in server and (
+            not isinstance(server["headers"], dict)
+            or any(not isinstance(val, str) for val in server["headers"].values())
+        ):
+            raise DotAiError(f"Manifest '{path}.headers' must map names to strings")
+    else:
+        raise DotAiError(f"Manifest '{path}.type' must be 'stdio', 'http', or 'sse'")
+    if "enabled" in server and not isinstance(server["enabled"], bool):
+        raise DotAiError(f"Manifest '{path}.enabled' must be a boolean")
+    if "timeout" in server and (
+        isinstance(server["timeout"], bool)
+        or not isinstance(server["timeout"], int)
+        or server["timeout"] < 0
+    ):
+        raise DotAiError(f"Manifest '{path}.timeout' must be a non-negative integer")
+
+
 def load_manifest(path: Path, *, allow_legacy_routing: bool = False) -> dict[str, Any]:
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
@@ -348,34 +439,90 @@ def load_manifest(path: Path, *, allow_legacy_routing: bool = False) -> dict[str
         raise DotAiError(f"Manifest not found: {path}") from exc
     except json.JSONDecodeError as exc:
         raise DotAiError(f"Invalid JSON in {path}: {exc}") from exc
-    if data.get("version") != 1:
+    except OSError as exc:
+        raise DotAiError(f"Unable to read manifest {path}: {exc}") from exc
+    except UnicodeError as exc:
+        raise DotAiError(f"Manifest is not UTF-8: {path}: {exc}") from exc
+    return validate_manifest(data, allow_legacy_routing=allow_legacy_routing)
+
+
+def validate_manifest(data: Any, *, allow_legacy_routing: bool = False) -> dict[str, Any]:
+    if not isinstance(data, dict):
+        raise DotAiError("Manifest root must be an object")
+    if type(data.get("version")) is not int or data["version"] != 1:
         raise DotAiError("Manifest 'version' must be 1")
     for section in ("packages", "skills", "marketplaces", "plugins"):
-        if not isinstance(data.get(section, []), list):
+        if not isinstance(data.get(section), list):
             raise DotAiError(f"Manifest '{section}' must be an array")
-    for package in data.get("packages", []):
+    for index, package in enumerate(data["packages"]):
+        path_name = f"packages[{index}]"
         if not isinstance(package, dict):
-            raise DotAiError("Manifest 'packages' entries must be objects")
-        if package.get("updateGroup", "core") not in {"core", "dependency"}:
-            raise DotAiError("Manifest package 'updateGroup' must be 'core' or 'dependency'")
+            raise DotAiError(f"Manifest '{path_name}' must be an object")
+        require_nonempty_string(package.get("name"), f"{path_name}.name")
+        if package.get("updateGroup", "core") not in ("core", "dependency"):
+            raise DotAiError(f"Manifest '{path_name}.updateGroup' must be 'core' or 'dependency'")
+        for field in ("check", "install"):
+            if field not in package:
+                raise DotAiError(f"Manifest '{path_name}.{field}' is required")
+        validate_platform_commands(package["check"], f"{path_name}.check", check=True)
+        for field in ("install", "update", "configure"):
+            if field in package:
+                validate_platform_commands(package[field], f"{path_name}.{field}")
         minimum_version = package.get("minimumVersion")
         if "minimumVersion" in package and (
             not isinstance(minimum_version, str) or not VERSION_MINIMUM_PATTERN.fullmatch(minimum_version)
         ):
             raise DotAiError("Manifest package 'minimumVersion' must be a major.minor or major.minor.patch version")
+    for index, skill in enumerate(data["skills"]):
+        path_name = f"skills[{index}]"
+        if not isinstance(skill, dict):
+            raise DotAiError(f"Manifest '{path_name}' must be an object")
+        require_nonempty_string(skill.get("source"), f"{path_name}.source")
+        if "agent" in skill and not isinstance(skill["agent"], str):
+            raise DotAiError(f"Manifest '{path_name}.agent' must be a string")
+        for field in ("skills", "checkSkills"):
+            if field in skill and (
+                not isinstance(skill[field], list)
+                or any(not isinstance(item, str) for item in skill[field])
+            ):
+                raise DotAiError(f"Manifest '{path_name}.{field}' must be an array of strings")
+    for index, marketplace in enumerate(data["marketplaces"]):
+        path_name = f"marketplaces[{index}]"
+        if not isinstance(marketplace, dict):
+            raise DotAiError(f"Manifest '{path_name}' must be an object")
+        for field in ("name", "source"):
+            require_nonempty_string(marketplace.get(field), f"{path_name}.{field}")
+    for index, plugin in enumerate(data["plugins"]):
+        path_name = f"plugins[{index}]"
+        if not isinstance(plugin, dict):
+            raise DotAiError(f"Manifest '{path_name}' must be an object")
+        if not isinstance(plugin.get("id"), str) or not PLUGIN_ID.fullmatch(plugin["id"]):
+            raise DotAiError(f"Manifest '{path_name}.id' must be a plugin@marketplace ID")
+        if "scope" in plugin and plugin["scope"] not in ("user", "project"):
+            raise DotAiError(f"Manifest '{path_name}.scope' must be 'user' or 'project'")
     extensions = data.get("ompExtensions", [])
     if not isinstance(extensions, list) or any(not isinstance(item, str) or not item for item in extensions):
         raise DotAiError("Manifest 'ompExtensions' must be an array of non-empty strings")
+    if len(extensions) != len(set(extensions)):
+        raise DotAiError("Manifest 'ompExtensions' entries must be unique")
     if "ompRouting" in data:
-        data["ompRouting"] = validate_omp_routing(
-            data["ompRouting"], allow_legacy=allow_legacy_routing
-        )
-    mcp = data.get("mcp", {})
-    if not isinstance(mcp, dict) or not isinstance(mcp.get("servers", {}), dict):
+        data = {
+            **data,
+            "ompRouting": validate_omp_routing(
+                data["ompRouting"], allow_legacy=allow_legacy_routing
+            ),
+        }
+    mcp = data.get("mcp")
+    if not isinstance(mcp, dict):
+        raise DotAiError("Manifest 'mcp' must be an object")
+    require_nonempty_string(mcp.get("target"), "mcp.target")
+    servers = mcp.get("servers")
+    if not isinstance(servers, dict):
         raise DotAiError("Manifest 'mcp.servers' must be an object")
-    for name in mcp.get("servers", {}):
+    for name, server in servers.items():
         if not SERVER_NAME.fullmatch(name):
             raise DotAiError(f"Invalid MCP server name: {name}")
+        validate_mcp_server(server, f"mcp.servers.{name}")
     return data
 
 
@@ -975,9 +1122,8 @@ def review_recommended_skills(
     updated, accepted = apply_recommended_skill_changes(manifest, managed, selected)
     backup = None
     if not runner.dry_run:
-        backup = backup_manifest(manifest_path)
+        backup = write_manifest(manifest_path, updated, backup=True)
         print(f"{badge('OK')} Manifest backup written to {backup}")
-        write_manifest(manifest_path, updated)
     remove_retired_skills(selected, runner)
     if runner.failures:
         if backup is not None:
@@ -1271,8 +1417,7 @@ def configure_omp_routing(
 
     manifest_changed = manifest != updated
     if manifest_changed:
-        backup = backup_manifest(path)
-        write_manifest(path, updated)
+        backup = write_manifest(path, updated, backup=True)
         print(f"{badge('OK')} Manifest backup written to {backup}")
 
     failures_before = len(runner.failures)
@@ -1386,8 +1531,8 @@ def mcp_config_paths(target: Path) -> list[Path]:
     return unique
 
 
-def discover_mcp_servers(target: Path) -> list[tuple[str, dict[str, Any], Path]]:
-    discovered: list[tuple[str, dict[str, Any], Path]] = []
+def discover_mcp_servers(target: Path) -> list[tuple[str, dict[str, Any], Path, str, bool]]:
+    discovered: list[tuple[str, dict[str, Any], Path, str, bool]] = []
     for path in mcp_config_paths(target):
         if not path.is_file():
             continue
@@ -1401,13 +1546,13 @@ def discover_mcp_servers(target: Path) -> list[tuple[str, dict[str, Any], Path]]
             if not isinstance(servers, dict):
                 continue
             for name, server in servers.items():
-                if name in disabled or not isinstance(server, dict) or server.get("enabled") is False:
+                if not isinstance(server, dict):
                     continue
-                discovered.append((name, server, path))
+                discovered.append((name, server, path, section, name not in disabled and server.get("enabled") is not False))
     return discovered
 
 
-def server_satisfies(found: dict[str, Any], required: dict[str, Any]) -> bool:
+def server_identity_matches(found: dict[str, Any], required: dict[str, Any]) -> bool:
     found_type = found.get("type", "http" if "url" in found else "stdio")
     required_type = required.get("type", "http" if "url" in required else "stdio")
     if found_type == "remote":
@@ -1417,12 +1562,19 @@ def server_satisfies(found: dict[str, Any], required: dict[str, Any]) -> bool:
     if found_type != required_type:
         return False
     if "url" in required:
-        if str(found.get("url", "")).rstrip("/") != str(required["url"]).rstrip("/"):
-            return False
-    else:
-        if found.get("command") != required.get("command"):
-            return False
-        if list(found.get("args", [])) != list(required.get("args", [])):
+        return str(found.get("url", "")).rstrip("/") == str(required["url"]).rstrip("/")
+    found_args = found.get("args", [])
+    required_args = required.get("args", [])
+    if not isinstance(found_args, list) or not isinstance(required_args, list):
+        return False
+    return found.get("command") == required.get("command") and found_args == required_args
+
+
+def server_satisfies(found: dict[str, Any], required: dict[str, Any]) -> bool:
+    if not server_identity_matches(found, required):
+        return False
+    for field in ("cwd", "timeout", "enabled"):
+        if field in required and found.get(field, True if field == "enabled" else None) != required[field]:
             return False
     for section in ("env", "headers"):
         expected = required.get(section, {})
@@ -1439,31 +1591,96 @@ def sync_mcp(manifest: dict[str, Any], runner: Runner) -> bool:
     existing = load_json_object(target)
     servers = dict(existing.get("mcpServers", {}))
     discovered = discover_mcp_servers(target)
-    additions = 0
+    changes = 0
+    conflicts: list[str] = []
+    used: set[tuple[Path, str, str]] = set()
     for name, required in mcp["servers"].items():
-        if any(server_satisfies(found, required) for _, found, _ in discovered):
+        match = next(
+            ((path, section, alias) for alias, found, path, section, enabled in discovered if enabled and server_satisfies(found, required)),
+            None,
+        )
+        if match is not None:
+            used.add(match)
             continue
-        servers[name] = required
-        additions += 1
-    if additions == 0:
+        available = [
+            entry for entry in discovered
+            if (entry[2], entry[3], entry[0]) not in used
+            and not (entry[2] == target and entry[3] == "mcpServers" and entry[0] in mcp["servers"] and entry[0] != name)
+        ]
+        if required.get("enabled") is False or any(
+            not enabled and (alias == name or server_identity_matches(found, required))
+            for alias, found, _, _, enabled in discovered
+        ):
+            conflicts.append(name)
+            continue
+
+        alias = name if name in servers else None
+        if alias is not None and (target, "mcpServers", alias) in used:
+            conflicts.append(name)
+            continue
+        if alias is None:
+            candidates = [
+                (alias, found) for alias, found, path, section, _ in available
+                if path == target and section == "mcpServers" and server_identity_matches(found, required)
+            ]
+            if "cwd" in required:
+                cwd_matches = [(alias, found) for alias, found in candidates if found.get("cwd") == required["cwd"]]
+                if cwd_matches:
+                    candidates = cwd_matches
+            if len(candidates) > 1:
+                conflicts.append(name)
+                continue
+            if candidates:
+                alias = candidates[0][0]
+        if alias is None:
+            if any(server_identity_matches(found, required) for _, found, _, _, _ in available):
+                conflicts.append(name)
+                continue
+            servers[name] = required
+            used.add((target, "mcpServers", name))
+            discovered.append((name, required, target, "mcpServers", True))
+            changes += 1
+            continue
+
+        used.add((target, "mcpServers", alias))
+        current = servers[alias]
+        same_server = isinstance(current, dict) and server_identity_matches(current, required)
+        updated = dict(current) if same_server else {}
+        for key, value in required.items():
+            if key == "type" and same_server and current.get("type") == "remote" and value == "http":
+                continue
+            if key in ("env", "headers") and isinstance(updated.get(key), dict):
+                updated[key] = {**updated[key], **value}
+            else:
+                updated[key] = value
+        if updated != current:
+            servers[alias] = updated
+            for index, (found_alias, _, path, section, _) in enumerate(discovered):
+                if path == target and section == "mcpServers" and found_alias == alias:
+                    discovered[index] = (alias, updated, target, "mcpServers", True)
+                    break
+            else:
+                discovered.append((alias, updated, target, "mcpServers", True))
+            changes += 1
+    if conflicts:
+        detail = f"MCP servers unavailable or disabled: {', '.join(conflicts)}; resolve the provider configuration manually"
+        runner.failures.append(detail)
+        print(f"{badge('DRIFT')} {detail}")
+        return False
+    if changes == 0:
         print(f"{badge('OK')} MCP: all managed servers are available through discovered provider configs")
         return False
     merged = dict(existing)
-    merged["$schema"] = mcp.get(
-        "$schema", "https://raw.githubusercontent.com/can1357/oh-my-pi/main/packages/coding-agent/src/config/mcp-schema.json"
+    merged.setdefault(
+        "$schema", mcp.get("$schema", "https://raw.githubusercontent.com/can1357/oh-my-pi/main/packages/coding-agent/src/config/mcp-schema.json")
     )
     merged["mcpServers"] = servers
-    if merged == existing:
-        print(f"{badge('OK')} MCP: already synchronized at {target}")
-        return False
     if runner.dry_run:
-        print(f"{badge('RUN')} MCP: add {additions} unavailable managed servers to {target}")
+        print(f"{badge('RUN')} MCP: reconcile {changes} unavailable managed servers at {target}")
         return True
     target.parent.mkdir(parents=True, exist_ok=True)
     if target.exists():
-        stamp = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
-        backup = target.with_name(f"{target.name}.bak.{stamp}")
-        shutil.copy2(target, backup)
+        backup = backup_manifest(target)
         print(f"{badge('OK')} MCP: backup written to {backup}")
     payload = json.dumps(merged, indent=2, sort_keys=True) + "\n"
     with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=target.parent, delete=False) as handle:
@@ -1530,7 +1747,7 @@ def mcp_status(manifest: dict[str, Any]) -> tuple[bool, str]:
     missing: list[str] = []
     sources: set[Path] = set()
     for name, required in mcp["servers"].items():
-        matches = [(found, path) for _, found, path in discovered if server_satisfies(found, required)]
+        matches = [(found, path) for _, found, path, _, enabled in discovered if enabled and server_satisfies(found, required)]
         if not matches:
             missing.append(name)
         else:
@@ -1825,7 +2042,10 @@ def manifest_diff(before: dict[str, Any], after: dict[str, Any], path: Path) -> 
 def backup_manifest(path: Path) -> Path:
     stamp = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
     backup = path.with_name(f"{path.name}.bak.{stamp}")
-    shutil.copy2(path, backup)
+    with path.open("rb") as source, os.fdopen(
+        os.open(backup, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "wb"
+    ) as destination:
+        shutil.copyfileobj(source, destination)
     return backup
 
 
@@ -1850,8 +2070,7 @@ def fix_legacy_skills(manifest: dict[str, Any], path: Path, runner: Runner) -> i
         print(f"{badge('OK')} No changes applied.")
         return 0
 
-    backup = backup_manifest(path)
-    write_manifest(path, updated)
+    backup = write_manifest(path, updated, backup=True)
     print(f"{badge('OK')} Manifest backup written to {backup}")
     reconcile_skills(updated, runner)
     if runner.failures:
@@ -1862,13 +2081,21 @@ def fix_legacy_skills(manifest: dict[str, Any], path: Path, runner: Runner) -> i
     print(f"{styled('Skill migration complete.', 'green', 'bold')}")
     return 0
 
-def write_manifest(path: Path, manifest: dict[str, Any]) -> None:
+def write_manifest(
+    path: Path, manifest: dict[str, Any], *, backup: bool = False
+) -> Path | None:
+    # The loader represents unconfigured routing as {}; persist its schema form.
+    if manifest.get("ompRouting") == {}:
+        manifest = {**manifest, "ompRouting": None}
+    validate_manifest(manifest)
     payload = json.dumps(manifest, indent=2) + "\n"
+    backup_path = backup_manifest(path) if backup else None
     path.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=path.parent, delete=False) as handle:
         handle.write(payload)
         temp_path = Path(handle.name)
     os.replace(temp_path, path)
+    return backup_path
 
 
 def installed_skill_name(name: str) -> str:
@@ -1930,9 +2157,6 @@ def add_integration(args: argparse.Namespace, manifest: dict[str, Any], path: Pa
         upsert(manifest["packages"], "name", value)
     else:
         raise DotAiError(f"Unsupported integration kind: {kind}")
-    load_check = dict(manifest)
-    if load_check.get("version") != 1:
-        raise DotAiError("Generated manifest is invalid")
     write_manifest(path, manifest)
     print(f"{badge('OK')} Added {kind} to {path}. Run 'dotai sync' or 'dotai install' to apply it.")
     return 0
@@ -2101,7 +2325,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "fix":
         try:
             return fix_legacy_skills(manifest, args.manifest, runner)
-        except OSError as exc:
+        except (OSError, DotAiError) as exc:
             print(f"{styled('dotai:', 'red', 'bold')} {exc}", file=sys.stderr)
             return 2
     if args.command == "status":
