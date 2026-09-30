@@ -2094,6 +2094,27 @@ class DotAiTests(unittest.TestCase):
             self.assertEqual(updated["skills"][0]["agent"], "universal")
             self.assertEqual(updated["skills"][1], manifest["skills"][1])
 
+    def test_sync_reports_invalid_mcp_config_and_exits_unsuccessfully(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            target = root / "mcp.json"
+            target.write_text("{not valid JSON", encoding="utf-8")
+            path = root / "stack.json"
+            path.write_text(json.dumps(self.minimal_manifest(str(target))), encoding="utf-8")
+            output = io.StringIO()
+            with (
+                mock.patch.dict(os.environ, {"DOTAI_HOME": str(root), "DOTAI_STATE_DIR": str(root / "state")}),
+                mock.patch.object(DOTAI, "latest_release_version", return_value=None),
+                contextlib.redirect_stdout(output),
+                contextlib.redirect_stderr(output),
+            ):
+                result = DOTAI.main(["--manifest", str(path), "sync"])
+            self.assertEqual(result, 1)
+            self.assertIn("MCP", output.getvalue())
+            self.assertIn("invalid json", output.getvalue().lower())
+            self.assertIn(str(target), output.getvalue())
+            self.assertEqual(target.read_text(encoding="utf-8"), "{not valid JSON")
+
     def test_sync_does_not_rewrite_existing_skill_agent_selection(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "stack.json"
