@@ -1738,11 +1738,19 @@ def write_manifest(path: Path, manifest: dict[str, Any]) -> None:
     os.replace(temp_path, path)
 
 
+def installed_skill_name(name: str) -> str:
+    """Match the skills installer's directory normalization for named selections."""
+    sanitized = re.sub(r"[^a-z0-9._]+", "-", name.lower()).strip(".-")
+    return sanitized[:255] or "unnamed-skill"
+
+
 def add_integration(args: argparse.Namespace, manifest: dict[str, Any], path: Path) -> int:
     kind = args.kind
     if kind == "skill":
         skills = args.skills or ["*"]
-        check_skills = args.check_skills if args.check_skills is not None else ([] if "*" in skills else skills)
+        check_skills = args.check_skills if args.check_skills is not None else (
+            [] if "*" in skills else [installed_skill_name(name) for name in skills]
+        )
         value = {
             "source": args.source,
             "agent": args.agent,
