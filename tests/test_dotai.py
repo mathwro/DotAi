@@ -47,6 +47,43 @@ class DotAiTests(unittest.TestCase):
             "fallbackRevertPolicy": "cooldown-expiry",
         }
 
+    def routing_recommendations(self) -> dict:
+        return {
+            "version": 1,
+            "agentModelOverrides": {"sonic": "@smol", "task": "@task"},
+            "providers": {
+                "github-copilot": {
+                    "roles": {
+                        "default": ["github-copilot/reasoning-model", "github-copilot/interactive-model", "github-copilot/unavailable"],
+                        "task": ["github-copilot/worker-model", "github-copilot/small-model"],
+                        "smol": ["github-copilot/small-model", "github-copilot/worker-model"],
+                        "slow": ["github-copilot/reasoning-model:high", "github-copilot/interactive-model:high", "github-copilot/worker-model:high", "github-copilot/small-model:high"],
+                    }
+                },
+                "anthropic": {
+                    "roles": {
+                        "default": ["anthropic/interactive-model", "anthropic/legacy-interactive-model", "anthropic/unavailable"],
+                        "task": ["anthropic/worker-model", "anthropic/interactive-model", "anthropic/legacy-interactive-model"],
+                        "smol": ["anthropic/small-model", "anthropic/worker-model"],
+                        "slow": ["anthropic/reasoning-model:high", "anthropic/interactive-model:high", "anthropic/legacy-interactive-model:high"],
+                    }
+                },
+                "openai-codex": {
+                    "roles": {
+                        "default": ["openai-codex/reasoning-model", "openai-codex/interactive-model", "openai-codex/unavailable"],
+                        "task": ["openai-codex/worker-model", "openai-codex/interactive-model"],
+                        "smol": ["openai-codex/small-model", "openai-codex/utility-model"],
+                        "slow": ["openai-codex/reasoning-model:high", "openai-codex/interactive-model:high"],
+                    }
+                },
+            },
+        }
+
+    def mock_routing_catalog(self):
+        return mock.patch.object(
+            DOTAI, "load_routing_recommendations", return_value=self.routing_recommendations()
+        )
+
     def omp_output(self, selectors: list[str], values: dict[str, object]):
         catalog = json.dumps({"models": [{"selector": selector} for selector in selectors]})
 
@@ -63,37 +100,37 @@ class DotAiTests(unittest.TestCase):
             ["anthropic", "github-copilot"], "anthropic"
         )
         selectors = [
-            "anthropic/claude-opus-4-8",
-            "anthropic/claude-haiku-4-5",
-            "github-copilot/gpt-5.6-terra",
-            "github-copilot/gpt-5.6-sol",
+            "anthropic/legacy-interactive-model",
+            "anthropic/small-model",
+            "github-copilot/worker-model",
+            "github-copilot/interactive-model",
         ]
         values = {
             "modelRoles": {
                 "custom": "private/keep",
-                "default": "anthropic/claude-opus-4-8",
-                "task": "github-copilot/gpt-5.6-terra",
-                "smol": "github-copilot/gpt-5.6-terra",
-                "slow": "anthropic/claude-opus-4-8:high",
+                "default": "anthropic/legacy-interactive-model",
+                "task": "github-copilot/worker-model",
+                "smol": "github-copilot/worker-model",
+                "slow": "anthropic/legacy-interactive-model:high",
             },
             "retry.fallbackChains": {
                 "custom": ["private/keep"],
                 "default": [
-                    "anthropic/claude-opus-4-8",
-                    "github-copilot/gpt-5.6-sol",
+                    "anthropic/legacy-interactive-model",
+                    "github-copilot/interactive-model",
                 ],
                 "task": [
-                    "github-copilot/gpt-5.6-terra",
-                    "anthropic/claude-opus-4-8",
+                    "github-copilot/worker-model",
+                    "anthropic/legacy-interactive-model",
                 ],
                 "smol": [
-                    "github-copilot/gpt-5.6-terra",
-                    "anthropic/claude-haiku-4-5",
+                    "github-copilot/worker-model",
+                    "anthropic/small-model",
                 ],
                 "slow": [
-                    "anthropic/claude-opus-4-8:high",
-                    "github-copilot/gpt-5.6-sol:high",
-                    "github-copilot/gpt-5.6-terra:high",
+                    "anthropic/legacy-interactive-model:high",
+                    "github-copilot/interactive-model:high",
+                    "github-copilot/worker-model:high",
                 ],
             },
             "task.agentModelOverrides": {
@@ -109,74 +146,6 @@ class DotAiTests(unittest.TestCase):
         }
         return manifest, selectors, values
 
-    def test_routing_recommendation_catalog_is_exact_and_valid(self) -> None:
-        recommendations = DOTAI.load_routing_recommendations()
-        self.assertEqual(recommendations["version"], 1)
-        self.assertEqual(
-            set(recommendations["providers"]),
-            {"github-copilot", "openai-codex", "anthropic"},
-        )
-        self.assertEqual(
-            recommendations["providers"]["anthropic"]["roles"],
-            {
-                "default": [
-                    "anthropic/claude-opus-5",
-                    "anthropic/claude-opus-4-8",
-                    "anthropic/claude-opus-4-7",
-                    "anthropic/claude-opus-4-6",
-                ],
-                "task": [
-                    "anthropic/claude-sonnet-5",
-                    "anthropic/claude-sonnet-4-6",
-                    "anthropic/claude-opus-5",
-                    "anthropic/claude-opus-4-8",
-                ],
-                "smol": [
-                    "anthropic/claude-haiku-4-5",
-                    "anthropic/claude-sonnet-5",
-                    "anthropic/claude-sonnet-4-6",
-                ],
-                "slow": [
-                    "anthropic/claude-fable-5-1:high",
-                    "anthropic/claude-opus-5:high",
-                    "anthropic/claude-opus-4-8:high",
-                    "anthropic/claude-opus-4-7:high",
-                    "anthropic/claude-opus-4-6:high",
-                ],
-            },
-        )
-        self.assertEqual(
-            recommendations["providers"]["github-copilot"]["roles"]["default"][0],
-            "github-copilot/gpt-6-astra",
-        )
-        self.assertEqual(
-            recommendations["providers"]["github-copilot"]["roles"]["slow"][:2],
-            [
-                "github-copilot/gpt-6-astra:high",
-                "github-copilot/gpt-5.6-sol:high",
-            ],
-        )
-        self.assertEqual(
-            recommendations["providers"]["openai-codex"]["roles"],
-            {
-                "default": [
-                    "openai-codex/gpt-6-astra",
-                    "openai-codex/gpt-5.6-sol",
-                ],
-                "task": [
-                    "openai-codex/gpt-5.6-terra",
-                    "openai-codex/gpt-5.6-sol",
-                ],
-                "smol": [
-                    "openai-codex/gpt-5.6-luna",
-                    "openai-codex/gpt-5.4-mini",
-                ],
-                "slow": [
-                    "openai-codex/gpt-6-astra:high",
-                    "openai-codex/gpt-5.6-sol:high",
-                ],
-            },
-        )
 
     def test_validate_omp_routing_accepts_compact_intent_and_null(self) -> None:
         routing = self.compact_routing(["anthropic", "github-copilot"], "anthropic")
@@ -240,15 +209,30 @@ class DotAiTests(unittest.TestCase):
                     ("FAIL", "unable to read routing recommendations"),
                 )
 
+    def test_repository_routing_catalog_covers_all_managed_roles(self) -> None:
+        recommendations = DOTAI.load_routing_recommendations()
+        for provider, entry in recommendations["providers"].items():
+            with self.subTest(provider=provider):
+                available = {
+                    DOTAI.selector_identity(selector)
+                    for selectors in entry["roles"].values()
+                    for selector in selectors
+                }
+                primaries, _, unavailable = DOTAI.resolve_omp_routing(
+                    recommendations, [provider], provider, available
+                )
+                self.assertEqual(set(primaries), {"default", "task", "smol", "slow"})
+                self.assertEqual(unavailable, [])
+
     def test_validate_routing_recommendations_rejects_malformed_data(self) -> None:
-        valid = DOTAI.load_routing_recommendations()
+        valid = self.routing_recommendations()
         missing_role = json.loads(json.dumps(valid))
         del missing_role["providers"]["anthropic"]["roles"]["smol"]
         empty_role = json.loads(json.dumps(valid))
         empty_role["providers"]["anthropic"]["roles"]["smol"] = []
         cross_provider = json.loads(json.dumps(valid))
         cross_provider["providers"]["anthropic"]["roles"]["smol"] = [
-            "openai-codex/gpt-5.4-mini"
+            "openai-codex/utility-model"
         ]
         missing_provider = json.loads(json.dumps(valid))
         del missing_provider["providers"]["anthropic"]
@@ -281,7 +265,7 @@ class DotAiTests(unittest.TestCase):
                 DOTAI.load_routing_recommendations(path)
 
     def test_static_routing_is_only_accepted_for_configure_migration(self) -> None:
-        legacy = {"roles": {"default": ["openai-codex/gpt-5.6-sol"]}}
+        legacy = {"roles": {"default": ["openai-codex/interactive-model"]}}
         with self.assertRaisesRegex(DOTAI.DotAiError, "configure omp-routing"):
             DOTAI.validate_omp_routing(legacy)
         self.assertEqual(
@@ -909,18 +893,18 @@ class DotAiTests(unittest.TestCase):
                 self.assertTrue(DOTAI.mcp_status(manifest)[0])
 
     def test_selector_identity_removes_one_recognized_thinking_suffix(self) -> None:
-        self.assertEqual(DOTAI.selector_identity("openai-codex/gpt-5.6-sol:high"), "openai-codex/gpt-5.6-sol")
-        self.assertEqual(DOTAI.selector_identity("openai-codex/gpt-5.6-sol:high:auto"), "openai-codex/gpt-5.6-sol:high")
-        self.assertEqual(DOTAI.selector_identity("openai-codex/gpt-5.6-sol:custom"), "openai-codex/gpt-5.6-sol:custom")
+        self.assertEqual(DOTAI.selector_identity("openai-codex/interactive-model:high"), "openai-codex/interactive-model")
+        self.assertEqual(DOTAI.selector_identity("openai-codex/interactive-model:high:auto"), "openai-codex/interactive-model:high")
+        self.assertEqual(DOTAI.selector_identity("openai-codex/interactive-model:custom"), "openai-codex/interactive-model:custom")
 
     def test_available_omp_models_parses_only_complete_catalogs(self) -> None:
         runner = DOTAI.Runner("ubuntu")
         catalog = json.dumps(
             {
                 "models": [
-                    {"selector": "openai-codex/gpt-5.6-sol"},
-                    {"selector": "github-copilot/gpt-5.6-sol"},
-                    {"selector": "github-copilot/gpt-5.4-mini"},
+                    {"selector": "openai-codex/interactive-model"},
+                    {"selector": "github-copilot/interactive-model"},
+                    {"selector": "github-copilot/utility-model"},
                 ]
             }
         )
@@ -929,9 +913,9 @@ class DotAiTests(unittest.TestCase):
             self.assertEqual(
                 DOTAI.available_omp_models(runner),
                 {
-                    "openai-codex/gpt-5.6-sol",
-                    "github-copilot/gpt-5.6-sol",
-                    "github-copilot/gpt-5.4-mini",
+                    "openai-codex/interactive-model",
+                    "github-copilot/interactive-model",
+                    "github-copilot/utility-model",
                 },
             )
         output.assert_called_once_with(["omp", "models", "--json"])
@@ -944,10 +928,10 @@ class DotAiTests(unittest.TestCase):
             self.assertEqual(DOTAI.available_omp_models(runner), set())
 
     def test_detected_routing_providers_require_supported_recommendations(self) -> None:
-        recommendations = DOTAI.load_routing_recommendations()
+        recommendations = self.routing_recommendations()
         available = {
-            "github-copilot/gpt-5.6-terra",
-            "openai-codex/gpt-5.6-sol",
+            "github-copilot/worker-model",
+            "openai-codex/interactive-model",
             "private/model",
         }
         self.assertEqual(
@@ -957,7 +941,7 @@ class DotAiTests(unittest.TestCase):
         with self.assertRaisesRegex(DOTAI.DotAiError, "no recommended models"):
             DOTAI.detected_routing_providers(
                 recommendations,
-                {"anthropic/claude-unknown"},
+                {"anthropic/unknown-model"},
             )
         self.assertEqual(
             DOTAI.detected_routing_providers(recommendations, {"private/model"}),
@@ -1042,7 +1026,7 @@ class DotAiTests(unittest.TestCase):
         self.assertEqual(cancellation_errors, ["Primary selection cancelled"] * 2)
 
     def test_resolve_omp_routing_handles_provider_combinations(self) -> None:
-        recommendations = DOTAI.load_routing_recommendations()
+        recommendations = self.routing_recommendations()
         provider_roles = recommendations["providers"]
 
         def available_for(providers: list[str]) -> set[str]:
@@ -1053,22 +1037,22 @@ class DotAiTests(unittest.TestCase):
             }
 
         copilot = {
-            "default": "github-copilot/gpt-6-astra",
-            "task": "github-copilot/gpt-5.6-terra",
-            "smol": "github-copilot/gpt-5.6-luna",
-            "slow": "github-copilot/gpt-6-astra:high",
+            "default": "github-copilot/reasoning-model",
+            "task": "github-copilot/worker-model",
+            "smol": "github-copilot/small-model",
+            "slow": "github-copilot/reasoning-model:high",
         }
         anthropic = {
-            "default": "anthropic/claude-opus-5",
-            "task": "anthropic/claude-sonnet-5",
-            "smol": "anthropic/claude-haiku-4-5",
-            "slow": "anthropic/claude-fable-5-1:high",
+            "default": "anthropic/interactive-model",
+            "task": "anthropic/worker-model",
+            "smol": "anthropic/small-model",
+            "slow": "anthropic/reasoning-model:high",
         }
         codex = {
-            "default": "openai-codex/gpt-6-astra",
-            "task": "openai-codex/gpt-5.6-terra",
-            "smol": "openai-codex/gpt-5.6-luna",
-            "slow": "openai-codex/gpt-6-astra:high",
+            "default": "openai-codex/reasoning-model",
+            "task": "openai-codex/worker-model",
+            "smol": "openai-codex/small-model",
+            "slow": "openai-codex/reasoning-model:high",
         }
         cases = [
             (["github-copilot"], "github-copilot", copilot),
@@ -1113,8 +1097,8 @@ class DotAiTests(unittest.TestCase):
                 "smol": [copilot["smol"], copilot["task"]],
                 "slow": [
                     copilot["slow"],
-                    "github-copilot/gpt-5.6-terra:high",
-                    "github-copilot/gpt-5.6-luna:high",
+                    "github-copilot/worker-model:high",
+                    "github-copilot/small-model:high",
                 ],
             },
             "anthropic": {
@@ -1123,7 +1107,7 @@ class DotAiTests(unittest.TestCase):
                 "smol": [anthropic["smol"], anthropic["task"]],
                 "slow": [
                     anthropic["slow"],
-                    "anthropic/claude-opus-5:high",
+                    "anthropic/interactive-model:high",
                 ],
             },
             "openai-codex": {
@@ -1203,11 +1187,11 @@ class DotAiTests(unittest.TestCase):
 
     def test_configure_omp_routing_persists_compact_intent_and_preserves_omp_values(self) -> None:
         selectors = [
-            "github-copilot/gpt-5.6-sol",
-            "github-copilot/gpt-5.6-terra",
-            "github-copilot/gpt-5.6-luna",
-            "openai-codex/gpt-5.6-sol",
-            "openai-codex/gpt-5.4-mini",
+            "github-copilot/interactive-model",
+            "github-copilot/worker-model",
+            "github-copilot/small-model",
+            "openai-codex/interactive-model",
+            "openai-codex/utility-model",
         ]
         values = {
             "modelRoles": {"custom": "private/keep", "default": "old/model"},
@@ -1231,6 +1215,7 @@ class DotAiTests(unittest.TestCase):
                 self.assertEqual(saved["primaryProvider"], "openai-codex")
 
             with (
+                self.mock_routing_catalog(),
                 mock.patch.object(runner, "output", side_effect=self.omp_output(selectors, values)),
                 mock.patch.object(runner, "run", side_effect=persisted_before_omp) as run,
                 contextlib.redirect_stdout(io.StringIO()),
@@ -1249,32 +1234,32 @@ class DotAiTests(unittest.TestCase):
                 payloads["modelRoles"],
                 {
                     "custom": "private/keep",
-                    "default": "openai-codex/gpt-5.6-sol",
-                    "task": "github-copilot/gpt-5.6-terra",
-                    "smol": "github-copilot/gpt-5.6-luna",
-                    "slow": "openai-codex/gpt-5.6-sol:high",
+                    "default": "openai-codex/interactive-model",
+                    "task": "github-copilot/worker-model",
+                    "smol": "github-copilot/small-model",
+                    "slow": "openai-codex/interactive-model:high",
                 },
             )
             self.assertEqual(
                 payloads["retry.fallbackChains"],
                 {
                     "custom": ["private/keep"],
-                    "default": ["openai-codex/gpt-5.6-sol", "github-copilot/gpt-5.6-sol"],
+                    "default": ["openai-codex/interactive-model", "github-copilot/interactive-model"],
                     "task": [
-                        "github-copilot/gpt-5.6-terra",
-                        "github-copilot/gpt-5.6-luna",
-                        "openai-codex/gpt-5.6-sol",
+                        "github-copilot/worker-model",
+                        "github-copilot/small-model",
+                        "openai-codex/interactive-model",
                     ],
                     "smol": [
-                        "github-copilot/gpt-5.6-luna",
-                        "github-copilot/gpt-5.6-terra",
-                        "openai-codex/gpt-5.4-mini",
+                        "github-copilot/small-model",
+                        "github-copilot/worker-model",
+                        "openai-codex/utility-model",
                     ],
                     "slow": [
-                        "openai-codex/gpt-5.6-sol:high",
-                        "github-copilot/gpt-5.6-sol:high",
-                        "github-copilot/gpt-5.6-terra:high",
-                        "github-copilot/gpt-5.6-luna:high",
+                        "openai-codex/interactive-model:high",
+                        "github-copilot/interactive-model:high",
+                        "github-copilot/worker-model:high",
+                        "github-copilot/small-model:high",
                     ],
                 },
             )
@@ -1285,11 +1270,11 @@ class DotAiTests(unittest.TestCase):
 
     def test_configure_omp_routing_dry_run_changes_nothing(self) -> None:
         selectors = [
-            "github-copilot/gpt-5.6-sol",
-            "github-copilot/gpt-5.6-terra",
-            "github-copilot/gpt-5.6-luna",
-            "openai-codex/gpt-5.6-sol",
-            "openai-codex/gpt-5.4-mini",
+            "github-copilot/interactive-model",
+            "github-copilot/worker-model",
+            "github-copilot/small-model",
+            "openai-codex/interactive-model",
+            "openai-codex/utility-model",
         ]
         values = {
             "modelRoles": {},
@@ -1310,6 +1295,7 @@ class DotAiTests(unittest.TestCase):
             runner = DOTAI.Runner("ubuntu", dry_run=True)
             report = io.StringIO()
             with (
+                self.mock_routing_catalog(),
                 mock.patch.object(runner, "output", side_effect=self.omp_output(selectors, values)),
                 mock.patch.object(runner, "run") as run,
                 contextlib.redirect_stdout(report),
@@ -1334,39 +1320,39 @@ class DotAiTests(unittest.TestCase):
 
     def test_configure_omp_routing_is_idempotent(self) -> None:
         selectors = [
-            "github-copilot/gpt-5.6-sol",
-            "github-copilot/gpt-5.6-terra",
-            "github-copilot/gpt-5.6-luna",
-            "openai-codex/gpt-5.6-sol",
-            "openai-codex/gpt-5.4-mini",
+            "github-copilot/interactive-model",
+            "github-copilot/worker-model",
+            "github-copilot/small-model",
+            "openai-codex/interactive-model",
+            "openai-codex/utility-model",
         ]
         routing = self.compact_routing(["github-copilot", "openai-codex"], "openai-codex")
         values = {
             "modelRoles": {
                 "custom": "private/keep",
-                "default": "openai-codex/gpt-5.6-sol",
-                "task": "github-copilot/gpt-5.6-terra",
-                "smol": "github-copilot/gpt-5.6-luna",
-                "slow": "openai-codex/gpt-5.6-sol:high",
+                "default": "openai-codex/interactive-model",
+                "task": "github-copilot/worker-model",
+                "smol": "github-copilot/small-model",
+                "slow": "openai-codex/interactive-model:high",
             },
             "retry.fallbackChains": {
                 "custom": ["private/keep"],
-                "default": ["openai-codex/gpt-5.6-sol", "github-copilot/gpt-5.6-sol"],
+                "default": ["openai-codex/interactive-model", "github-copilot/interactive-model"],
                 "task": [
-                    "github-copilot/gpt-5.6-terra",
-                    "github-copilot/gpt-5.6-luna",
-                    "openai-codex/gpt-5.6-sol",
+                    "github-copilot/worker-model",
+                    "github-copilot/small-model",
+                    "openai-codex/interactive-model",
                 ],
                 "smol": [
-                    "github-copilot/gpt-5.6-luna",
-                    "github-copilot/gpt-5.6-terra",
-                    "openai-codex/gpt-5.4-mini",
+                    "github-copilot/small-model",
+                    "github-copilot/worker-model",
+                    "openai-codex/utility-model",
                 ],
                 "slow": [
-                    "openai-codex/gpt-5.6-sol:high",
-                    "github-copilot/gpt-5.6-sol:high",
-                    "github-copilot/gpt-5.6-terra:high",
-                    "github-copilot/gpt-5.6-luna:high",
+                    "openai-codex/interactive-model:high",
+                    "github-copilot/interactive-model:high",
+                    "github-copilot/worker-model:high",
+                    "github-copilot/small-model:high",
                 ],
             },
             "task.agentModelOverrides": {"reviewer": "@slow", **routing["agentModelOverrides"]},
@@ -1384,6 +1370,7 @@ class DotAiTests(unittest.TestCase):
             before = path.read_bytes()
             runner = DOTAI.Runner("ubuntu")
             with (
+                self.mock_routing_catalog(),
                 mock.patch.object(runner, "output", side_effect=self.omp_output(selectors, values)),
                 mock.patch.object(runner, "run") as run,
                 contextlib.redirect_stdout(io.StringIO()),
@@ -1394,19 +1381,19 @@ class DotAiTests(unittest.TestCase):
             run.assert_not_called()
 
     def test_configure_omp_routing_migrates_static_roles(self) -> None:
-        selectors = ["openai-codex/gpt-5.6-sol", "openai-codex/gpt-5.4-mini"]
+        selectors = ["openai-codex/interactive-model", "openai-codex/utility-model"]
         values = {
             "modelRoles": {
-                "default": "openai-codex/gpt-5.6-sol",
-                "task": "openai-codex/gpt-5.6-sol",
-                "smol": "openai-codex/gpt-5.4-mini",
-                "slow": "openai-codex/gpt-5.6-sol:high",
+                "default": "openai-codex/interactive-model",
+                "task": "openai-codex/interactive-model",
+                "smol": "openai-codex/utility-model",
+                "slow": "openai-codex/interactive-model:high",
             },
             "retry.fallbackChains": {
-                "default": ["openai-codex/gpt-5.6-sol"],
-                "task": ["openai-codex/gpt-5.6-sol"],
-                "smol": ["openai-codex/gpt-5.4-mini"],
-                "slow": ["openai-codex/gpt-5.6-sol:high"],
+                "default": ["openai-codex/interactive-model"],
+                "task": ["openai-codex/interactive-model"],
+                "smol": ["openai-codex/utility-model"],
+                "slow": ["openai-codex/interactive-model:high"],
             },
             "task.agentModelOverrides": {"sonic": "@slow", "reviewer": "@task"},
             "retry.modelFallback": True,
@@ -1429,6 +1416,7 @@ class DotAiTests(unittest.TestCase):
             manifest = DOTAI.load_manifest(path, allow_legacy_routing=True)
             runner = DOTAI.Runner("ubuntu")
             with (
+                self.mock_routing_catalog(),
                 mock.patch.object(runner, "output", side_effect=self.omp_output(selectors, values)),
                 mock.patch.object(runner, "run") as run,
                 contextlib.redirect_stdout(io.StringIO()),
@@ -1453,8 +1441,8 @@ class DotAiTests(unittest.TestCase):
         valid_codex = json.dumps(
             {
                 "models": [
-                    {"selector": "openai-codex/gpt-5.6-sol"},
-                    {"selector": "openai-codex/gpt-5.4-mini"},
+                    {"selector": "openai-codex/interactive-model"},
+                    {"selector": "openai-codex/utility-model"},
                 ]
             }
         )
@@ -1470,14 +1458,14 @@ class DotAiTests(unittest.TestCase):
             ),
             (
                 "stale recommendations",
-                lambda _command: json.dumps({"models": [{"selector": "anthropic/claude-unknown"}]}),
+                lambda _command: json.dumps({"models": [{"selector": "anthropic/unknown-model"}]}),
                 None,
                 None,
                 True,
             ),
             (
                 "unavailable managed role",
-                lambda _command: json.dumps({"models": [{"selector": "openai-codex/gpt-5.6-sol"}]}),
+                lambda _command: json.dumps({"models": [{"selector": "openai-codex/interactive-model"}]}),
                 None,
                 None,
                 False,
@@ -1502,7 +1490,7 @@ class DotAiTests(unittest.TestCase):
                 loader = (
                     mock.patch.object(DOTAI, "load_routing_recommendations", side_effect=catalog_error)
                     if catalog_error
-                    else contextlib.nullcontext()
+                    else self.mock_routing_catalog()
                 )
                 with (
                     loader,
@@ -1528,7 +1516,7 @@ class DotAiTests(unittest.TestCase):
                 self.assertIsNone(DOTAI.configured_omp_value(runner, "modelRoles"))
 
     def test_configure_omp_routing_returns_failure_after_manifest_persistence(self) -> None:
-        selectors = ["openai-codex/gpt-5.6-sol", "openai-codex/gpt-5.4-mini"]
+        selectors = ["openai-codex/interactive-model", "openai-codex/utility-model"]
         values = {
             "modelRoles": {},
             "retry.fallbackChains": {},
@@ -1551,6 +1539,7 @@ class DotAiTests(unittest.TestCase):
                     runner.failures.append(label)
 
             with (
+                self.mock_routing_catalog(),
                 mock.patch.object(runner, "output", side_effect=self.omp_output(selectors, values)),
                 mock.patch.object(runner, "run", side_effect=fail_first_write),
                 contextlib.redirect_stdout(io.StringIO()),
@@ -1586,7 +1575,7 @@ class DotAiTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "stack.json"
             manifest = self.minimal_manifest("~/.omp/agent/mcp.json")
-            manifest["ompRouting"] = {"roles": {"default": ["openai-codex/gpt-5.6-sol"]}}
+            manifest["ompRouting"] = {"roles": {"default": ["openai-codex/interactive-model"]}}
             path.write_text(json.dumps(manifest), encoding="utf-8")
             with mock.patch.object(DOTAI, "configure_omp_routing", return_value=7) as configure:
                 self.assertEqual(
@@ -1659,6 +1648,7 @@ class DotAiTests(unittest.TestCase):
         original_manifest = json.loads(json.dumps(manifest))
         runner = DOTAI.Runner("ubuntu")
         with (
+            self.mock_routing_catalog(),
             mock.patch.object(
                 runner, "output", side_effect=self.omp_output(selectors, values)
             ),
@@ -1679,13 +1669,14 @@ class DotAiTests(unittest.TestCase):
     def test_omp_routing_status_reports_provider_selection_drift(self) -> None:
         manifest, selectors, _ = self.compact_status_case()
         cases = {
-            "provider added": [*selectors, "openai-codex/gpt-5.6-sol"],
+            "provider added": [*selectors, "openai-codex/interactive-model"],
             "provider removed": selectors[:2],
         }
         for name, available in cases.items():
             with self.subTest(name=name):
                 runner = DOTAI.Runner("ubuntu")
                 with (
+                    self.mock_routing_catalog(),
                     mock.patch.object(
                         runner,
                         "output",
@@ -1755,6 +1746,7 @@ class DotAiTests(unittest.TestCase):
                 runner = DOTAI.Runner("ubuntu")
                 current = {**values, key: changed}
                 with (
+                    self.mock_routing_catalog(),
                     mock.patch.object(
                         runner,
                         "output",
@@ -1777,11 +1769,12 @@ class DotAiTests(unittest.TestCase):
         manifest["ompRouting"] = self.compact_routing(["anthropic"], "anthropic")
         runner = DOTAI.Runner("ubuntu")
         with (
+            self.mock_routing_catalog(),
             mock.patch.object(
                 runner,
                 "output",
                 return_value=json.dumps(
-                    {"models": [{"selector": "anthropic/claude-opus-4-8"}]}
+                    {"models": [{"selector": "anthropic/legacy-interactive-model"}]}
                 ),
             ) as output,
             mock.patch.object(runner, "run") as run,
@@ -1803,11 +1796,12 @@ class DotAiTests(unittest.TestCase):
         runner = DOTAI.Runner("ubuntu")
 
         with (
+            self.mock_routing_catalog(),
             mock.patch.object(
                 runner,
                 "output",
                 return_value=json.dumps(
-                    {"models": [{"selector": "openai-codex/gpt-5.6-sol"}]}
+                    {"models": [{"selector": "openai-codex/interactive-model"}]}
                 ),
             ) as output,
             mock.patch.object(runner, "run") as run,
@@ -1830,12 +1824,12 @@ class DotAiTests(unittest.TestCase):
                 ("FAIL", "unable to read routing recommendations"),
             ),
             (
-                contextlib.nullcontext(),
+                self.mock_routing_catalog(),
                 mock.patch.object(runner, "output", return_value="{"),
                 ("FAIL", "unable to read OMP model catalog"),
             ),
             (
-                contextlib.nullcontext(),
+                self.mock_routing_catalog(),
                 mock.patch.object(
                     runner,
                     "output",
