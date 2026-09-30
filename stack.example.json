@@ -91,9 +91,6 @@
       "update": {
         "windows": ["uv tool upgrade graphifyy; if ($LASTEXITCODE -ne 0) { uv tool install --upgrade graphifyy }"],
         "default": ["uv tool upgrade graphifyy || uv tool install --upgrade graphifyy"]
-      },
-      "configure": {
-        "default": [["graphify", "install", "--platform", "pi"]]
       }
     }
   ],
@@ -113,8 +110,8 @@
     {
       "source": "mattpocock/skills",
       "agent": "universal",
-      "skills": ["grill-me", "grill-with-docs", "grilling", "writing-for-agents"],
-      "checkSkills": ["grill-me", "grill-with-docs", "grilling", "writing-for-agents"]
+      "skills": ["grilling", "writing-for-agents"],
+      "checkSkills": ["grilling", "writing-for-agents"]
     },
     {
       "source": "mathwro/Skills",

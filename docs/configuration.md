@@ -53,6 +53,12 @@ For packages with `updateGroup: "dependency"`, normal `update` leaves a present 
 
 The Pi extension is independent of RTK's optional Codex integration. DotAi also enables OMP's **Hide Secrets** privacy setting (`secrets.enabled`) during installation and updates, so configured secrets are obfuscated before prompts are sent to providers.
 
+## Optional Graphify
+
+The recommended stack installs the Graphify CLI, but does not install its Pi skill or generate project graphs automatically. Invoke `graphify extract . --code-only` in a project only when you want a graph; it writes `graphify-out/` there.
+
+Existing `stack.json` files are user-owned and are not updated from `stack.example.json` by `sync` or `sync --recommended-skills`. If your Graphify package still has a `configure` command that runs `graphify install --platform pi`, remove that command from your local manifest before your next `install` or `update`. To retire the previously installed broad Pi skill, run `graphify pi uninstall` yourself. These steps leave the CLI available for explicit use.
+
 ## Configure OMP provider routing
 
 After installation, configure routing from the providers already authenticated in OMP:
