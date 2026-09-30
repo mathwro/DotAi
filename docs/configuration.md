@@ -22,6 +22,7 @@ DotAi updates configuration conservatively:
 - Existing MCP files receive timestamped backups before a managed change.
 - MCP servers are matched semantically across configurations OMP can discover, so aliases and provider-specific fields such as authentication headers do not create duplicates.
 - Repeated synchronization is idempotent and does not create another backup when nothing changes.
+- `install`, `update`, and `sync` report MCP configuration errors as failures and exit nonzero without overwriting invalid JSON.
 - Managed `ompExtensions` are appended to OMP's global extension list; unrelated user extensions are retained.
 - Skill health is agent-scoped. A skill found only in a Codex plugin cache is reported as `INACTIVE` until installed for the configured OMP skill target.
 - Avoiding skill fetches requires matching source metadata and a matching GitHub folder tree hash for the configured agent's installed files; the name-only global lock cannot establish ownership of another agent's independent copy. Missing or uncertain provenance triggers a refresh, not a silent skip.

@@ -1974,6 +1974,27 @@ class DotAiTests(unittest.TestCase):
             self.assertEqual(updated["skills"][0]["agent"], "universal")
             self.assertEqual(updated["skills"][1], manifest["skills"][1])
 
+    def test_sync_reports_invalid_mcp_config_and_exits_unsuccessfully(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            target = root / "mcp.json"
+            target.write_text("{not valid JSON", encoding="utf-8")
+            path = root / "stack.json"
+            path.write_text(json.dumps(self.minimal_manifest(str(target))), encoding="utf-8")
+            output = io.StringIO()
+            with (
+                mock.patch.dict(os.environ, {"DOTAI_HOME": str(root), "DOTAI_STATE_DIR": str(root / "state")}),
+                mock.patch.object(DOTAI, "latest_release_version", return_value=None),
+                contextlib.redirect_stdout(output),
+                contextlib.redirect_stderr(output),
+            ):
+                result = DOTAI.main(["--manifest", str(path), "sync"])
+            self.assertEqual(result, 1)
+            self.assertIn("MCP", output.getvalue())
+            self.assertIn("invalid json", output.getvalue().lower())
+            self.assertIn(str(target), output.getvalue())
+            self.assertEqual(target.read_text(encoding="utf-8"), "{not valid JSON")
+
     def test_sync_does_not_rewrite_existing_skill_agent_selection(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "stack.json"
@@ -2012,9 +2033,15 @@ class DotAiTests(unittest.TestCase):
             skill_file = home / ".agents" / "skills" / "keep" / "SKILL.md"
             skill_file.parent.mkdir(parents=True)
             skill_file.write_text("# keep\n", encoding="utf-8")
+            (home / ".agents" / ".skill-lock.json").write_text(json.dumps({
+                "version": 3,
+                "skills": {"keep": self.github_skill_lock_entry(
+                    "owner/recommended", "999550e4425ecd9ea5aeb58fef9f1a05ddf50d86", "keep",
+                )},
+            }), encoding="utf-8")
             output = io.StringIO()
             with (
-                mock.patch.dict(os.environ, {"DOTAI_HOME": str(home), "DOTAI_STATE_DIR": str(home / "state")}),
+                mock.patch.dict(os.environ, {"DOTAI_HOME": str(home), "DOTAI_STATE_DIR": str(home / "state"), "XDG_STATE_HOME": "", "GH_HOST": "github.com"}),
                 mock.patch.object(DOTAI, "EXAMPLE_MANIFEST", example_path),
                 mock.patch.object(DOTAI, "latest_release_version", return_value=None),
                 contextlib.redirect_stdout(output),
