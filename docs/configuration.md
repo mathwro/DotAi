@@ -33,6 +33,8 @@ DotAi updates configuration conservatively:
 - `install`, `update`, and `sync` report MCP configuration errors as failures and exit nonzero without overwriting invalid JSON.
 - Managed `ompExtensions` are appended to OMP's global extension list; unrelated user extensions are retained.
 - Skill health is agent-scoped. A skill found only in a Codex plugin cache is reported as `INACTIVE` until installed for the configured OMP skill target.
+- Avoiding skill fetches requires matching source metadata and a matching GitHub folder tree hash for the configured agent's installed files; the name-only global lock cannot establish ownership of another agent's independent copy. Missing or uncertain provenance triggers a refresh, not a silent skip.
+- The skills.sh lock is read from `$XDG_STATE_HOME/skills/.skill-lock.json` when set, otherwise from `~/.agents/.skill-lock.json`. Installed universal skills remain in `~/.agents/skills/`; DotAi adds no separate ownership database. See [skill refresh behavior and limits](extending.md#add-a-skill-source).
 - Recommended skill synchronization preserves user-added and locally modified sources, backs up `stack.json`, and removes installed files only for accepted retirements.
 - Release checks run for `install`, `sync`, `status`, and `version`; an available newer release is shown as a warning, while network failures are ignored.
 - Dry runs do not modify files or machine state.
@@ -42,6 +44,8 @@ Backups retain the previous complete file, including any literal credentials alr
 ## Managed OMP extensions
 
 RTK 0.43 or newer is configured through `rtk init -g --agent pi`. This creates `~/.pi/agent/extensions/rtk.ts`, which DotAi appends to OMP's global extensions without removing user-configured entries. Restart OMP after the first installation; `dotai status` verifies both registration and source availability.
+
+The Linux RTK commands in `stack.example.json` use the reviewed v0.50.0 binary archives and architecture-specific SHA-256 digests. Updating the pinned release requires updating its version and archive digests together; existing user-owned `stack.json` files never receive such baseline changes automatically. Windows and macOS continue to use Scoop and Homebrew.
 
 The manifest declares RTK's `minimumVersion` as `0.43`. Package checks compare the command's reported `major.minor[.patch]` version from stdout or stderr; an older installed binary is upgraded, while a missing binary is installed. Status does not silently accept an unsupported or unparseable RTK. Other packages may declare the same optional constraint.
 

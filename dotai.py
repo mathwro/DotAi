@@ -6,10 +6,12 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import difflib
+import hashlib
 import json
 import os
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -735,8 +737,95 @@ def skill_command(skill: dict[str, Any]) -> list[str]:
     return command
 
 
-def reconcile_skills(manifest: dict[str, Any], runner: Runner) -> None:
+def skill_root(skill: dict[str, Any]) -> Path:
+    agent = skill.get("agent", "universal")
+    roots = {
+        "pi": home_dir() / ".pi" / "agent" / "skills",
+        "universal": home_dir() / ".agents" / "skills",
+    }
+    return roots.get(agent, home_dir() / f".{agent}" / "skills")
+
+
+def github_repository_source(source: Any) -> str | None:
+    """Normalize only public GitHub repository roots, not refs, subpaths or other hosts."""
+    if not isinstance(source, str):
+        return None
+    if source.startswith("https://github.com/"):
+        source = source[len("https://github.com/"):].removesuffix("/").removesuffix(".git")
+    else:
+        source = source.removeprefix("github:").removesuffix("/")
+    if not re.fullmatch(r"[A-Za-z0-9-]+/[A-Za-z0-9_.-]+", source):
+        return None
+    return source.lower()
+
+
+def installed_skill_tree_hash(folder: Path) -> str:
+    """Reconstruct the Git tree SHA recorded by skills.sh for GitHub skill folders."""
+    entries = []
+    for path in folder.iterdir():
+        mode = path.lstat().st_mode
+        name = path.name.encode("utf-8")
+        if stat.S_ISDIR(mode):
+            digest = bytes.fromhex(installed_skill_tree_hash(path))
+            entry_mode, sort_name = b"40000", name + b"/"
+        elif stat.S_ISREG(mode):
+            content = path.read_bytes()
+            digest = hashlib.sha1(b"blob " + str(len(content)).encode("ascii") + b"\0" + content).digest()
+            entry_mode, sort_name = (b"100755" if mode & stat.S_IXUSR else b"100644"), name
+        else:
+            # Copies dereference symlinks; their original tree cannot be proven locally.
+            raise ValueError("unsupported installed skill file type")
+        entries.append((sort_name, entry_mode + b" " + name + b"\0" + digest))
+    content = b"".join(entry for _, entry in sorted(entries))
+    return hashlib.sha1(b"tree " + str(len(content)).encode("ascii") + b"\0" + content).hexdigest()
+
+
+def skill_source_owned(skill: dict[str, Any], owners: dict[str, Any]) -> bool:
+    source = github_repository_source(skill["source"])
+    checks = skill.get("checkSkills", [])
+    if source is None or not checks:
+        return False
+    # Shorthand can select an Enterprise host; never attribute it to a public GitHub lock.
+    if not skill["source"].startswith("https://github.com/") and os.environ.get("GH_HOST", "").strip().lower() not in {"", "github.com"}:
+        return False
+    root = skill_root(skill)
+    for name in checks:
+        entry = owners.get(name)
+        if not isinstance(entry, dict) or (
+            entry.get("sourceType") != "github"
+            or github_repository_source(entry.get("source")) != source
+            or github_repository_source(entry.get("sourceUrl")) != source
+            or entry.get("ref") is not None
+        ):
+            return False
+        folder_hash = entry.get("skillFolderHash")
+        if not isinstance(folder_hash, str) or not re.fullmatch(r"[0-9a-f]{40}", folder_hash):
+            return False
+        try:
+            if installed_skill_tree_hash(root / name) != folder_hash:
+                return False
+        except (OSError, ValueError, UnicodeError):
+            return False
+    return True
+
+
+def reconcile_skills(
+    manifest: dict[str, Any], runner: Runner, *, update_skills: bool = False,
+    refresh_sources: set[str] | None = None,
+) -> None:
+    xdg_state = os.environ.get("XDG_STATE_HOME")
+    lock_path = Path(xdg_state) / "skills" / ".skill-lock.json" if xdg_state else home_dir() / ".agents" / ".skill-lock.json"
+    try:
+        lock = load_json_object(lock_path)
+    except (OSError, DotAiError):
+        lock = {}
+    owned = lock.get("skills") if lock.get("version") == 3 else None
+    owners = owned if isinstance(owned, dict) else {}
     for skill in manifest["skills"]:
+        refresh = update_skills or (refresh_sources is not None and skill["source"] in refresh_sources)
+        if not refresh and skill_status(skill)[0] and skill_source_owned(skill, owners):
+            print(f"{badge('OK')} Skills from {skill['source']}: already installed")
+            continue
         runner.run(skill_command(skill), f"Reconcile skills from {skill['source']}")
 
 def read_state(manifest_path: Path) -> dict[str, Any]:
@@ -1617,11 +1706,7 @@ def print_legacy_skill_notice(manifest: dict[str, Any]) -> bool:
 
 def skill_status(skill: dict[str, Any]) -> tuple[bool, str]:
     agent = skill.get("agent", "universal")
-    roots = {
-        "pi": home_dir() / ".pi" / "agent" / "skills",
-        "universal": home_dir() / ".agents" / "skills",
-    }
-    root = roots.get(agent, home_dir() / f".{agent}" / "skills")
+    root = skill_root(skill)
     checks = skill.get("checkSkills", [])
     if not checks:
         return False, f"unverified for {agent}: no named skills configured to check"
@@ -1864,11 +1949,15 @@ def reconcile(
     force: bool = False,
     include_dependencies: bool = False,
     managed_skills: list[dict[str, Any]] | None = None,
+    update_skills: bool = False,
+    refresh_sources: set[str] | None = None,
 ) -> int:
     if mode != "sync":
         reconcile_packages(manifest, runner, mode, force, include_dependencies)
     reconcile_omp_extensions(manifest, runner)
-    reconcile_skills(manifest, runner)
+    reconcile_skills(
+        manifest, runner, update_skills=force or update_skills, refresh_sources=refresh_sources
+    )
     reconcile_plugins(manifest, runner, "install" if mode == "sync" else mode)
     try:
         sync_mcp(manifest, runner)
@@ -2097,6 +2186,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     sync = sub.add_parser("sync", help="Synchronize skills, plugins, and MCP configuration")
     sync.add_argument("--dry-run", action="store_true")
+    sync.add_argument("--update-skills", action="store_true", help="Refresh already installed skills")
     sync.add_argument(
         "--recommended-skills",
         action="store_true",
@@ -2244,15 +2334,25 @@ def main(argv: list[str] | None = None) -> int:
         return 0 if doctor(manifest, runner) else 1
     if args.command == "sync":
         managed_skills = None
+        refresh_sources: set[str] = set()
         if args.recommended_skills:
             try:
+                old_skills = manifest["skills"]
                 manifest, managed_skills = review_recommended_skills(
                     manifest, args.manifest, runner, args.enforce
                 )
+                previous = {skill["source"]: skill for skill in old_skills}
+                refresh_sources = {
+                    skill["source"] for skill in manifest["skills"]
+                    if previous.get(skill["source"]) != skill
+                }
             except (OSError, DotAiError) as exc:
                 print(f"{styled('dotai:', 'red', 'bold')} {exc}", file=sys.stderr)
                 return 2
-        return reconcile(manifest, args.manifest, runner, "sync", managed_skills=managed_skills)
+        return reconcile(
+            manifest, args.manifest, runner, "sync", managed_skills=managed_skills,
+            update_skills=args.update_skills, refresh_sources=refresh_sources,
+        )
     if args.command == "update":
         print_legacy_skill_notice(manifest)
     return reconcile(

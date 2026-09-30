@@ -2018,10 +2018,316 @@ class DotAiTests(unittest.TestCase):
                 installed, detail = DOTAI.skill_status(skill)
             self.assertTrue(installed)
             self.assertEqual(detail, "installed for universal")
-        self.assertEqual(
-            DOTAI.skill_command(skill)[:9],
-            ["npx", "--yes", "skills@latest", "add", "owner/skills", "--global", "--agent", "universal", "--skill"],
+
+    def github_skill_lock_entry(self, source: str, folder_hash: str, name: str = "alpha") -> dict:
+        return {
+            "source": source,
+            "sourceType": "github",
+            "sourceUrl": f"https://github.com/{source}.git",
+            "skillPath": f"skills/{name}/SKILL.md",
+            "skillFolderHash": folder_hash,
+            "installedAt": "2026-01-01T00:00:00Z",
+            "updatedAt": "2026-01-01T00:00:00Z",
+        }
+
+    def test_sync_uses_xdg_skill_lock_for_healthy_installation(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            target = home / ".agents" / "skills" / "alpha" / "SKILL.md"
+            target.parent.mkdir(parents=True)
+            target.write_text("# Alpha\n", encoding="utf-8")
+            entry = self.github_skill_lock_entry("owner/skills", "0ae35bdd602b22221c7503baa29f72fd9f115298")
+            xdg = home / "state"
+            lock = xdg / "skills" / ".skill-lock.json"
+            lock.parent.mkdir(parents=True)
+            lock.write_text(json.dumps({"version": 3, "skills": {"alpha": entry}}), encoding="utf-8")
+            (home / ".agents" / ".skill-lock.json").write_text(json.dumps({
+                "version": 3,
+                "skills": {"alpha": self.github_skill_lock_entry("owner/old", entry["skillFolderHash"])},
+            }), encoding="utf-8")
+            manifest = self.minimal_manifest("~/.omp/agent/mcp.json")
+            manifest["skills"] = [{"source": "owner/skills", "checkSkills": ["alpha"]}]
+            output = io.StringIO()
+            with (
+                mock.patch.dict(os.environ, {"DOTAI_HOME": str(home), "XDG_STATE_HOME": str(xdg), "GH_HOST": "github.com"}),
+                contextlib.redirect_stdout(output),
+            ):
+                DOTAI.reconcile_skills(manifest, DOTAI.Runner("linux", dry_run=True))
+            self.assertNotIn("npx", output.getvalue())
+            self.assertIn("already installed", output.getvalue())
+
+    def test_sync_recognizes_equivalent_github_repository_sources(self) -> None:
+        sources = (
+            "https://github.com/owner/skills",
+            "https://github.com/owner/skills.git",
+            "https://github.com/owner/skills/",
+            "github:owner/skills",
         )
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            target = home / ".agents" / "skills" / "alpha" / "SKILL.md"
+            target.parent.mkdir(parents=True)
+            target.write_text("# Alpha\n", encoding="utf-8")
+            (home / ".agents" / ".skill-lock.json").write_text(json.dumps({
+                "version": 3,
+                "skills": {"alpha": self.github_skill_lock_entry(
+                    "owner/skills", "0ae35bdd602b22221c7503baa29f72fd9f115298",
+                )},
+            }), encoding="utf-8")
+            for source in sources:
+                with self.subTest(source=source):
+                    manifest = self.minimal_manifest("~/.omp/agent/mcp.json")
+                    manifest["skills"] = [{"source": source, "checkSkills": ["alpha"]}]
+                    output = io.StringIO()
+                    with (
+                        mock.patch.dict(os.environ, {"DOTAI_HOME": str(home), "XDG_STATE_HOME": "", "GH_HOST": "github.com"}),
+                        contextlib.redirect_stdout(output),
+                    ):
+                        DOTAI.reconcile_skills(manifest, DOTAI.Runner("linux", dry_run=True))
+                    self.assertNotIn("npx", output.getvalue())
+                    self.assertIn("already installed", output.getvalue())
+
+    def test_sync_does_not_attribute_another_agents_copy_from_global_lock(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            universal = home / ".agents" / "skills" / "alpha" / "SKILL.md"
+            codex = home / ".codex" / "skills" / "alpha" / "SKILL.md"
+            for target, content in ((universal, "# Old alpha\n"), (codex, "# New alpha\n")):
+                target.parent.mkdir(parents=True)
+                target.write_text(content, encoding="utf-8")
+            (home / ".agents" / ".skill-lock.json").write_text(json.dumps({
+                "version": 3,
+                "skills": {"alpha": self.github_skill_lock_entry(
+                    "owner/new", "c7c75786a2a668d0a7dcd9964d3e0ce15ba5f7a2",
+                )},
+                "lastSelectedAgents": ["codex"],
+            }), encoding="utf-8")
+            manifest = self.minimal_manifest("~/.omp/agent/mcp.json")
+            manifest["skills"] = [{"source": "owner/new", "agent": "universal", "checkSkills": ["alpha"]}]
+            output = io.StringIO()
+            with (
+                mock.patch.dict(os.environ, {"DOTAI_HOME": str(home), "XDG_STATE_HOME": "", "GH_HOST": "github.com"}),
+                contextlib.redirect_stdout(output),
+            ):
+                DOTAI.reconcile_skills(manifest, DOTAI.Runner("linux", dry_run=True))
+            self.assertIn("Reconcile skills from owner/new", output.getvalue())
+            self.assertIn("--agent universal", output.getvalue())
+            self.assertEqual(codex.read_text(encoding="utf-8"), "# New alpha\n")
+            self.assertEqual(universal.read_text(encoding="utf-8"), "# Old alpha\n")
+
+    def test_sync_does_not_merge_distinct_hosts_refs_or_subpaths(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            target = home / ".agents" / "skills" / "alpha" / "SKILL.md"
+            target.parent.mkdir(parents=True)
+            target.write_text("# Alpha\n", encoding="utf-8")
+            cases = [
+                ("owner/skills", {
+                    "source": "owner/skills", "sourceType": "gitlab",
+                    "sourceUrl": "https://gitlab.com/owner/skills.git",
+                }),
+                ("owner/skills", {"ref": "old-branch"}),
+                ("owner/skills/other-subpath", {}),
+                ("https://github.com/owner/skills/tree/main/other-subpath", {}),
+                ("https://example.com/owner/skills.git", {}),
+                ("https://github.com/owner/other", {}),
+            ]
+            for source, fields in cases:
+                with self.subTest(source=source, fields=fields):
+                    entry = self.github_skill_lock_entry("owner/skills", "0ae35bdd602b22221c7503baa29f72fd9f115298")
+                    entry.update(fields)
+                    (home / ".agents" / ".skill-lock.json").write_text(json.dumps({
+                        "version": 3, "skills": {"alpha": entry},
+                    }), encoding="utf-8")
+                    manifest = self.minimal_manifest("~/.omp/agent/mcp.json")
+                    manifest["skills"] = [{"source": source, "checkSkills": ["alpha"]}]
+                    output = io.StringIO()
+                    with (
+                        mock.patch.dict(os.environ, {"DOTAI_HOME": str(home), "XDG_STATE_HOME": "", "GH_HOST": "github.com"}),
+                        contextlib.redirect_stdout(output),
+                    ):
+                        DOTAI.reconcile_skills(manifest, DOTAI.Runner("linux", dry_run=True))
+                    self.assertIn("Reconcile skills from", output.getvalue())
+
+    def test_sync_checks_supporting_files_before_skipping_owned_skill(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            folder = home / ".agents" / "skills" / "alpha"
+            (folder / "references").mkdir(parents=True)
+            (folder / "SKILL.md").write_text("# Alpha\n", encoding="utf-8")
+            guide = folder / "references" / "guide.md"
+            guide.write_text("old\n", encoding="utf-8")
+            (home / ".agents" / ".skill-lock.json").write_text(json.dumps({
+                "version": 3,
+                "skills": {"alpha": self.github_skill_lock_entry(
+                    "owner/skills", "920656539539d9ffa86223950d6b3883e72b0e32",
+                )},
+            }), encoding="utf-8")
+            manifest = self.minimal_manifest("~/.omp/agent/mcp.json")
+            manifest["skills"] = [{"source": "owner/skills", "checkSkills": ["alpha"]}]
+            for content, refresh in (("old\n", True), ("new\n", False)):
+                with self.subTest(content=content):
+                    guide.write_text(content, encoding="utf-8")
+                    output = io.StringIO()
+                    with (
+                        mock.patch.dict(os.environ, {"DOTAI_HOME": str(home), "XDG_STATE_HOME": "", "GH_HOST": "github.com"}),
+                        contextlib.redirect_stdout(output),
+                    ):
+                        DOTAI.reconcile_skills(manifest, DOTAI.Runner("linux", dry_run=True))
+                    self.assertEqual("Reconcile skills from" in output.getvalue(), refresh)
+
+    def test_sync_refreshes_when_recorded_content_hash_cannot_prove_ownership(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            target = home / ".agents" / "skills" / "alpha" / "SKILL.md"
+            target.parent.mkdir(parents=True)
+            target.write_text("# Alpha\n", encoding="utf-8")
+            manifest = self.minimal_manifest("~/.omp/agent/mcp.json")
+            manifest["skills"] = [{"source": "owner/skills", "checkSkills": ["alpha"]}]
+            for folder_hash in ("", "not-a-tree-hash"):
+                with self.subTest(folder_hash=folder_hash):
+                    (home / ".agents" / ".skill-lock.json").write_text(json.dumps({
+                        "version": 3,
+                        "skills": {"alpha": self.github_skill_lock_entry("owner/skills", folder_hash)},
+                    }), encoding="utf-8")
+                    output = io.StringIO()
+                    with (
+                        mock.patch.dict(os.environ, {"DOTAI_HOME": str(home), "XDG_STATE_HOME": "", "GH_HOST": "github.com"}),
+                        contextlib.redirect_stdout(output),
+                    ):
+                        DOTAI.reconcile_skills(manifest, DOTAI.Runner("linux", dry_run=True))
+                    self.assertIn("Reconcile skills from owner/skills", output.getvalue())
+
+    def test_sync_leaves_healthy_skills_untouched_by_default(self) -> None:
+        manifest = self.minimal_manifest("~/.omp/agent/mcp.json")
+        manifest["skills"] = [{
+            "source": "owner/skills",
+            "agent": "universal",
+            "skills": ["alpha", "beta"],
+            "checkSkills": ["alpha", "beta"],
+        }]
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            for name in ("alpha", "beta"):
+                target = home / ".agents" / "skills" / name / "SKILL.md"
+                target.parent.mkdir(parents=True)
+                target.write_text(f"# {name}\n", encoding="utf-8")
+            (home / ".agents" / ".skill-lock.json").write_text(json.dumps({
+                "version": 3,
+                "skills": {
+                    "alpha": self.github_skill_lock_entry("owner/skills", "51937797c336f38c66ecfb342d9cc37ac2c56a74"),
+                    "beta": self.github_skill_lock_entry("owner/skills", "d4228d69961f61bf69edc471a90918494661c475", "beta"),
+                },
+            }), encoding="utf-8")
+            plan = io.StringIO()
+            with (
+                mock.patch.dict(os.environ, {"DOTAI_HOME": str(home), "XDG_STATE_HOME": "", "GH_HOST": "github.com"}),
+                mock.patch.object(DOTAI.subprocess, "run", side_effect=AssertionError("healthy skills must not fetch")),
+                contextlib.redirect_stdout(plan),
+            ):
+                DOTAI.reconcile_skills(manifest, DOTAI.Runner("linux"))
+            self.assertNotIn("Reconcile skills from", plan.getvalue())
+            self.assertNotIn("npx", plan.getvalue())
+
+    def test_sync_refreshes_existing_skill_owned_by_another_source(self) -> None:
+        manifest = self.minimal_manifest("~/.omp/agent/mcp.json")
+        manifest["skills"] = [{
+            "source": "owner/new", "agent": "universal", "skills": ["alpha"], "checkSkills": ["alpha"],
+        }]
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            target = home / ".agents" / "skills" / "alpha" / "SKILL.md"
+            target.parent.mkdir(parents=True)
+            target.write_text("# Old alpha\n", encoding="utf-8")
+            (home / ".agents" / ".skill-lock.json").write_text(json.dumps({
+                "version": 3,
+                "skills": {"alpha": self.github_skill_lock_entry(
+                    "owner/old", "5536fe3d742b7fa77283d2551b2af2166451a702",
+                )},
+            }), encoding="utf-8")
+            plan = io.StringIO()
+            with mock.patch.dict(os.environ, {"DOTAI_HOME": str(home), "XDG_STATE_HOME": "", "GH_HOST": "github.com"}), contextlib.redirect_stdout(plan):
+                DOTAI.reconcile_skills(manifest, DOTAI.Runner("ubuntu", dry_run=True))
+            self.assertIn("Reconcile skills from owner/new", plan.getvalue())
+
+    def test_install_force_refreshes_an_existing_skill_source(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            target = home / ".agents" / "skills" / "alpha" / "SKILL.md"
+            target.parent.mkdir(parents=True)
+            target.write_text("# Alpha\n", encoding="utf-8")
+            (home / ".agents" / ".skill-lock.json").write_text(json.dumps({
+                "version": 3, "skills": {"alpha": self.github_skill_lock_entry(
+                    "owner/skills", "0ae35bdd602b22221c7503baa29f72fd9f115298",
+                )},
+            }), encoding="utf-8")
+            manifest_path = home / "stack.json"
+            manifest = self.minimal_manifest(str(home / "mcp.json"))
+            manifest["mcp"]["servers"] = {}
+            manifest["skills"] = [{
+                "source": "owner/skills", "agent": "universal", "skills": ["alpha"], "checkSkills": ["alpha"],
+            }]
+            plan = io.StringIO()
+            with mock.patch.dict(os.environ, {"DOTAI_HOME": str(home), "XDG_STATE_HOME": "", "GH_HOST": "github.com"}), contextlib.redirect_stdout(plan):
+                self.assertEqual(DOTAI.reconcile(
+                    manifest, manifest_path, DOTAI.Runner("ubuntu", dry_run=True), "install", force=True,
+                ), 0)
+            self.assertIn("Reconcile skills from owner/skills", plan.getvalue())
+
+    def test_sync_installs_skills_when_any_required_skill_is_missing(self) -> None:
+        manifest = self.minimal_manifest("~/.omp/agent/mcp.json")
+        manifest["skills"] = [{
+            "source": "owner/skills",
+            "agent": "universal",
+            "skills": ["alpha", "beta"],
+            "checkSkills": ["alpha", "beta"],
+        }]
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            target = home / ".agents" / "skills" / "alpha" / "SKILL.md"
+            target.parent.mkdir(parents=True)
+            target.write_text("# alpha\n", encoding="utf-8")
+            plan = io.StringIO()
+            with mock.patch.dict(os.environ, {"DOTAI_HOME": str(home)}), contextlib.redirect_stdout(plan):
+                DOTAI.reconcile_skills(manifest, DOTAI.Runner("linux", dry_run=True))
+            self.assertIn("Reconcile skills from owner/skills", plan.getvalue())
+            self.assertIn("--skill beta", plan.getvalue())
+
+    def test_sync_update_skills_explicitly_refreshes_healthy_installations(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            target = home / ".agents" / "skills" / "alpha" / "SKILL.md"
+            target.parent.mkdir(parents=True)
+            target.write_text("# alpha\n", encoding="utf-8")
+            (home / ".agents" / ".skill-lock.json").write_text(json.dumps({
+                "version": 3, "skills": {"alpha": self.github_skill_lock_entry(
+                    "owner/skills", "51937797c336f38c66ecfb342d9cc37ac2c56a74",
+                )},
+            }), encoding="utf-8")
+            manifest = self.minimal_manifest(str(home / "mcp.json"))
+            manifest["mcp"]["servers"] = {}
+            manifest["skills"] = [{
+                "source": "owner/skills",
+                "agent": "universal",
+                "skills": ["alpha"],
+                "checkSkills": ["alpha"],
+            }]
+            path = home / "stack.json"
+            path.write_text(json.dumps(manifest), encoding="utf-8")
+            plan = io.StringIO()
+            with (
+                mock.patch.dict(os.environ, {"DOTAI_HOME": str(home), "XDG_STATE_HOME": "", "GH_HOST": "github.com"}),
+                mock.patch.object(DOTAI, "print_release_notice"),
+                contextlib.redirect_stdout(plan),
+            ):
+                with contextlib.redirect_stderr(io.StringIO()):
+                    try:
+                        result = DOTAI.main(["--manifest", str(path), "sync", "--update-skills", "--dry-run"])
+                    except SystemExit as exc:
+                        result = exc.code
+                self.assertEqual(result, 0)
+            self.assertIn("Reconcile skills from owner/skills", plan.getvalue())
+
 
     def test_status_highlights_legacy_pi_skill_targets(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -2482,6 +2788,39 @@ class DotAiTests(unittest.TestCase):
                 )
             self.assertEqual(json.loads(path.read_text(encoding="utf-8")), manifest)
             self.assertIn("--agent pi", output.getvalue())
+
+    def test_accepted_recommendation_refreshes_a_healthy_skill_source(self) -> None:
+        before = {"source": "owner/recommended", "agent": "universal", "skills": ["*"], "checkSkills": ["keep"]}
+        after = {**before, "skills": ["keep"]}
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            manifest_path = home / "stack.json"
+            example_path = home / "stack.example.json"
+            manifest = self.minimal_manifest(str(home / "mcp.json"))
+            manifest["skills"] = [before]
+            manifest["mcp"]["servers"] = {}
+            manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+            example = {**manifest, "skills": [after]}
+            example_path.write_text(json.dumps(example), encoding="utf-8")
+            skill_file = home / ".agents" / "skills" / "keep" / "SKILL.md"
+            skill_file.parent.mkdir(parents=True)
+            skill_file.write_text("# keep\n", encoding="utf-8")
+            (home / ".agents" / ".skill-lock.json").write_text(json.dumps({
+                "version": 3,
+                "skills": {"keep": self.github_skill_lock_entry(
+                    "owner/recommended", "999550e4425ecd9ea5aeb58fef9f1a05ddf50d86", "keep",
+                )},
+            }), encoding="utf-8")
+            output = io.StringIO()
+            with (
+                mock.patch.dict(os.environ, {"DOTAI_HOME": str(home), "DOTAI_STATE_DIR": str(home / "state"), "XDG_STATE_HOME": "", "GH_HOST": "github.com"}),
+                mock.patch.object(DOTAI, "EXAMPLE_MANIFEST", example_path),
+                mock.patch.object(DOTAI, "latest_release_version", return_value=None),
+                contextlib.redirect_stdout(output),
+            ):
+                result = DOTAI.main(["--manifest", str(manifest_path), "sync", "--recommended-skills", "--enforce", "--dry-run"])
+            self.assertEqual(result, 0)
+            self.assertIn("Reconcile skills from owner/recommended", output.getvalue())
 
     def test_recommended_skill_sync_accepts_all_without_overwriting_custom_skills(self) -> None:
         retired = {
@@ -3282,10 +3621,54 @@ class DotAiTests(unittest.TestCase):
             DOTAI.reconcile_packages(manifest, runner, "update", include_dependencies=True)
         self.assertIn("Check/update Dependency", output.getvalue())
 
-    def test_default_omp_update_uses_omp_updater_and_marks_dependencies(self) -> None:
+    def test_linux_update_keeps_omp_updater_and_pinned_rtk_update(self) -> None:
+        manifest = DOTAI.load_manifest(ROOT / "stack.example.json")
+        manifest["packages"] = [
+            package for package in manifest["packages"] if package["name"] in {"RTK", "Oh My Pi"}
+        ]
+        plan = io.StringIO()
+        with (
+            mock.patch.object(DOTAI, "package_check", return_value=True),
+            contextlib.redirect_stdout(plan),
+        ):
+            DOTAI.reconcile_packages(manifest, DOTAI.Runner("wsl", dry_run=True), "update")
+        self.assertIn("omp update", plan.getvalue())
+        self.assertIn("Check/update RTK", plan.getvalue())
+        self.assertIn("releases/download/v0.50.0/rtk-", plan.getvalue())
+        self.assertIn("sha256sum -c -", plan.getvalue())
+        self.assertNotIn("install.sh", plan.getvalue())
+
+    def test_update_installs_a_missing_versioned_core_package(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            marker = Path(directory) / "operation"
+            check = [
+                sys.executable, "-c",
+                "import pathlib, sys; "
+                f"present = pathlib.Path({str(marker)!r}).exists(); "
+                "print('tool 0.50.0' if present else ''); "
+                "sys.exit(0 if present else 127)",
+            ]
+            manifest = self.minimal_manifest("mcp.json")
+            manifest["packages"] = [{
+                "name": "Versioned core tool", "minimumVersion": "0.43", "check": check,
+                "install": {"linux": [[
+                    sys.executable, "-c",
+                    f"from pathlib import Path; Path({str(marker)!r}).write_text('install')",
+                ]]},
+                "update": {"linux": [[
+                    sys.executable, "-c",
+                    f"from pathlib import Path; Path({str(marker)!r}).write_text('update')",
+                ]]},
+            }]
+            runner = DOTAI.Runner("ubuntu")
+            with contextlib.redirect_stdout(io.StringIO()):
+                DOTAI.reconcile_packages(manifest, runner, "update")
+            self.assertEqual(marker.read_text(), "install")
+            self.assertEqual(runner.failures, [])
+
+    def test_default_omp_privacy_configuration_and_dependencies(self) -> None:
         manifest = DOTAI.load_manifest(ROOT / "stack.example.json")
         packages = {package["name"]: package for package in manifest["packages"]}
-        self.assertEqual(DOTAI.selected(packages["Oh My Pi"]["update"], "wsl"), [["omp", "update"]])
         self.assertEqual(
             packages["Oh My Pi"]["configure"]["default"],
             [["omp", "config", "set", "secrets.enabled", "true"]],

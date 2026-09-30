@@ -56,12 +56,12 @@
       "install": {
         "windows": [["scoop", "install", "rtk"]],
         "macos": [["brew", "install", "rtk"]],
-        "linux": ["curl -fsSL https://raw.githubusercontent.com/rtk-ai/rtk/refs/heads/master/install.sh | sh"]
+        "linux": ["set -eu; case \"$(uname -m)\" in x86_64|amd64) target=x86_64-unknown-linux-musl; digest=bc2b8902b0d9c796c82ef45f16ae2307e17757afeca5ee156235a3dc7bda5f89;; arm64|aarch64) target=aarch64-unknown-linux-gnu; digest=d1cc49dfa2cd443fc32625444b59fe616b6c80478cca210985118347174dd758;; *) printf \"Unsupported RTK architecture\\n\" >&2; exit 1;; esac; tmp=$(mktemp -d); trap 'rm -rf \"$tmp\"' EXIT; curl -fsSL \"https://github.com/rtk-ai/rtk/releases/download/v0.50.0/rtk-${target}.tar.gz\" -o \"$tmp/rtk.tar.gz\"; printf '%s  %s\\n' \"$digest\" \"$tmp/rtk.tar.gz\" | sha256sum -c -; tar -xzf \"$tmp/rtk.tar.gz\" -C \"$tmp\" rtk; install_dir=${RTK_INSTALL_DIR:-$HOME/.local/bin}; mkdir -p \"$install_dir\"; install -m 755 \"$tmp/rtk\" \"$install_dir/rtk\""]
       },
       "update": {
         "windows": ["scoop update rtk; if ($LASTEXITCODE -ne 0) { scoop install rtk }"],
         "macos": ["brew upgrade rtk || brew install rtk"],
-        "linux": ["curl -fsSL https://raw.githubusercontent.com/rtk-ai/rtk/refs/heads/master/install.sh | sh"]
+        "linux": ["current=$(rtk --version 2>/dev/null || true); current=${current#rtk }; if [ -n \"$current\" ] && [ \"$(printf '%s\\n' '0.50.0' \"$current\" | sort -V | sed -n '1p')\" = '0.50.0' ]; then printf 'RTK %s is already at least 0.50.0\\n' \"$current\"; else set -eu; case \"$(uname -m)\" in x86_64|amd64) target=x86_64-unknown-linux-musl; digest=bc2b8902b0d9c796c82ef45f16ae2307e17757afeca5ee156235a3dc7bda5f89;; arm64|aarch64) target=aarch64-unknown-linux-gnu; digest=d1cc49dfa2cd443fc32625444b59fe616b6c80478cca210985118347174dd758;; *) printf \"Unsupported RTK architecture\\n\" >&2; exit 1;; esac; tmp=$(mktemp -d); trap 'rm -rf \"$tmp\"' EXIT; curl -fsSL \"https://github.com/rtk-ai/rtk/releases/download/v0.50.0/rtk-${target}.tar.gz\" -o \"$tmp/rtk.tar.gz\"; printf '%s  %s\\n' \"$digest\" \"$tmp/rtk.tar.gz\" | sha256sum -c -; tar -xzf \"$tmp/rtk.tar.gz\" -C \"$tmp\" rtk; install_dir=${RTK_INSTALL_DIR:-$HOME/.local/bin}; mkdir -p \"$install_dir\"; install -m 755 \"$tmp/rtk\" \"$install_dir/rtk\"; fi"]
       },
       "configure": {
         "default": [["rtk", "init", "-g", "--agent", "pi"]]
