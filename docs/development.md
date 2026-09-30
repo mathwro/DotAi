@@ -42,6 +42,8 @@ When changing the manifest format or shared defaults, keep `stack.example.json`,
 
 Routing behavior tests use the shared synthetic catalog in `tests/test_dotai.py`, not current GPT or Claude versions. Keep expected provider precedence, fallback chains, and configuration effects explicit; do not calculate expected results with the production resolver. The repository catalog is validated separately and exercised for coverage of every managed role without pinning model IDs. Model refreshes should update `routing-recommendations.json` and the routing documentation, not the behavioral fixtures.
 
+Release-notice tests use explicit synthetic current and available versions, including numeric ordering, equal/older releases, and network failures. Keep these behavioral fixtures independent of `dotai.py`'s release version and exact notice wording; verify a release's real version with `./dotai version` before tagging it.
+
 ## Behavioral fixtures and CLI smoke checks
 
 For package-presence or minimum-version tests, use isolated commands that report known versions and exit codes. Mocking only `package_check` as false does not simulate a missing binary: reconciliation can separately probe command success to distinguish missing from outdated packages.

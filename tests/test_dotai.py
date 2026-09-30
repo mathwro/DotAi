@@ -3797,59 +3797,66 @@ class DotAiTests(unittest.TestCase):
         self.assertIn("/stack.json", (ROOT / ".gitignore").read_text(encoding="utf-8").splitlines())
         self.assertEqual(DOTAI.detect_platform(), os.environ.get("DOTAI_PLATFORM", DOTAI.detect_platform()))
 
-    def test_version_warns_when_newer_release_exists(self) -> None:
-        response = mock.MagicMock()
-        response.__enter__.return_value = response
-        response.read.return_value = b'{"tag_name": "v0.4.0"}'
-        output = io.StringIO()
-        with mock.patch("urllib.request.urlopen", return_value=response), contextlib.redirect_stdout(output):
-            self.assertEqual(DOTAI.main(["version"]), 0)
-        self.assertEqual(
-            output.getvalue(),
-            "0.3.5\n[UPDATE] DotAi 0.4.0 is available (current: 0.3.5); pull the repository to update.\n",
-        )
+    def test_release_notice_warns_only_for_newer_numeric_versions(self) -> None:
+        for current, tag, warns in (
+            ("1.9.0", "v1.10.0", True),
+            ("1.2.3", "v1.2.3", False),
+            ("1.2.3", "1.2.3", False),
+            ("1.2.3", "v1.2.2", False),
+        ):
+            with self.subTest(current=current, tag=tag):
+                response = mock.MagicMock()
+                response.__enter__.return_value = response
+                response.read.return_value = json.dumps({"tag_name": tag}).encode("utf-8")
+                output = io.StringIO()
+                with (
+                    mock.patch.object(DOTAI, "VERSION", current),
+                    mock.patch("urllib.request.urlopen", return_value=response),
+                    contextlib.redirect_stdout(output),
+                ):
+                    self.assertEqual(DOTAI.main(["--color", "never", "version"]), 0)
+                if warns:
+                    self.assertIn("[UPDATE]", output.getvalue())
+                    self.assertIn("1.10.0", output.getvalue())
+                    self.assertIn("1.9.0", output.getvalue())
+                else:
+                    self.assertNotIn("[UPDATE]", output.getvalue())
 
     def test_release_warning_is_checked_by_status_sync_and_install(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "stack.json"
-            manifest = self.minimal_manifest("~/.omp/agent/mcp.json")
+            manifest = self.minimal_manifest(str(Path(directory) / "mcp.json"))
             manifest["mcp"]["servers"] = {}
             path.write_text(json.dumps(manifest), encoding="utf-8")
             for command in ("status", "sync", "install"):
                 response = mock.MagicMock()
                 response.__enter__.return_value = response
-                response.read.return_value = b'{"tag_name": "v0.4.0"}'
+                response.read.return_value = b'{"tag_name": "v1.3.0"}'
                 output = io.StringIO()
-                argv = ["--manifest", str(path), command]
+                argv = ["--manifest", str(path), "--color", "never", command]
                 if command != "status":
                     argv.append("--dry-run")
                 with (
+                    mock.patch.object(DOTAI, "VERSION", "1.2.3"),
+                    mock.patch.dict(os.environ, {"DOTAI_HOME": directory, "DOTAI_STATE_DIR": str(Path(directory) / "state")}),
                     mock.patch("urllib.request.urlopen", return_value=response),
-                    mock.patch.object(DOTAI, "print_status", return_value=True),
-                    mock.patch.object(DOTAI, "reconcile", return_value=0),
-                    mock.patch.object(DOTAI, "reconcile_omp_extensions"),
-                    mock.patch.object(DOTAI, "reconcile_skills"),
-                    mock.patch.object(DOTAI, "reconcile_plugins"),
-                    mock.patch.object(DOTAI, "sync_mcp", return_value=True),
                     contextlib.redirect_stdout(output),
                 ):
                     self.assertEqual(DOTAI.main(argv), 0)
-                self.assertIn("[UPDATE] DotAi 0.4.0", output.getvalue())
+                self.assertIn("[UPDATE]", output.getvalue())
+                self.assertIn("1.3.0", output.getvalue())
 
-    def test_release_warning_is_silent_when_current_version_is_latest(self) -> None:
-        response = mock.MagicMock()
-        response.__enter__.return_value = response
-        response.read.return_value = b'{"tag_name": "0.3.5"}'
-        output = io.StringIO()
-        with mock.patch("urllib.request.urlopen", return_value=response), contextlib.redirect_stdout(output):
-            self.assertEqual(DOTAI.main(["version"]), 0)
-        self.assertEqual(output.getvalue(), "0.3.5\n")
 
-    def test_release_check_failure_does_not_change_version_output(self) -> None:
+    def test_release_check_failure_keeps_version_command_available(self) -> None:
         output = io.StringIO()
-        with mock.patch("urllib.request.urlopen", side_effect=OSError("offline")), contextlib.redirect_stdout(output):
-            self.assertEqual(DOTAI.main(["version"]), 0)
-        self.assertEqual(output.getvalue(), "0.3.5\n")
+        with (
+            mock.patch.object(DOTAI, "VERSION", "1.2.3"),
+            mock.patch("urllib.request.urlopen", side_effect=OSError("offline")),
+            contextlib.redirect_stdout(output),
+        ):
+            self.assertEqual(DOTAI.main(["--color", "never", "version"]), 0)
+        self.assertIn("1.2.3", output.getvalue())
+        self.assertNotIn("[UPDATE]", output.getvalue())
 
     def test_malformed_release_response_is_ignored(self) -> None:
         response = mock.MagicMock()
@@ -3858,15 +3865,6 @@ class DotAiTests(unittest.TestCase):
         with mock.patch("urllib.request.urlopen", return_value=response):
             self.assertIsNone(DOTAI.latest_release_version())
 
-    def test_version_command_prints_current_version(self) -> None:
-        result = subprocess.run(
-            [sys.executable, str(ROOT / "dotai.py"), "version"],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        self.assertEqual(result.returncode, 0)
-        self.assertEqual(result.stdout, "0.3.5\n")
 
 
 
