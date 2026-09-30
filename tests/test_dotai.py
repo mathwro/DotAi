@@ -2392,6 +2392,54 @@ class DotAiTests(unittest.TestCase):
                     DOTAI.reconcile_packages(manifest, runner, "install")
                 self.assertIn("Check/update RTK", output.getvalue())
 
+    def test_update_dependency_minimum_respects_presence_and_opt_in(self) -> None:
+        for reported_version, returncode, include_dependencies, expected_operation in (
+            ("dependency 0.42.9", 0, False, None),
+            ("dependency version unknown", 0, False, None),
+            ("dependency 0.42.9", 0, True, "update"),
+            ("dependency version unknown", 0, True, "update"),
+            ("", 127, False, "install"),
+            ("", 127, True, "install"),
+        ):
+            with self.subTest(
+                reported_version=reported_version,
+                include_dependencies=include_dependencies,
+                expected_operation=expected_operation,
+            ), tempfile.TemporaryDirectory() as directory:
+                marker = Path(directory) / "operation"
+                check = [
+                    sys.executable, "-c",
+                    "import pathlib, sys; "
+                    f"changed = pathlib.Path({str(marker)!r}).exists(); "
+                    f"print('dependency 0.50.0' if changed else {reported_version!r}); "
+                    f"sys.exit(0 if changed else {returncode})",
+                ]
+                manifest = self.minimal_manifest("~/.omp/agent/mcp.json")
+                manifest["packages"] = [{
+                    "name": "Dependency",
+                    "updateGroup": "dependency",
+                    "minimumVersion": "0.43",
+                    "check": check,
+                    "install": {"default": [[
+                        sys.executable, "-c",
+                        f"from pathlib import Path; Path({str(marker)!r}).write_text('install')",
+                    ]]},
+                    "update": {"default": [[
+                        sys.executable, "-c",
+                        f"from pathlib import Path; Path({str(marker)!r}).write_text('update')",
+                    ]]},
+                }]
+                runner = DOTAI.Runner("ubuntu")
+                with contextlib.redirect_stdout(io.StringIO()):
+                    DOTAI.reconcile_packages(
+                        manifest, runner, "update", include_dependencies=include_dependencies,
+                    )
+                if expected_operation is None:
+                    self.assertFalse(marker.exists(), "Dependency update requires explicit opt-in")
+                else:
+                    self.assertEqual(marker.read_text(), expected_operation)
+                    self.assertEqual(runner.failures, [])
+
     def test_update_skips_dependency_group_unless_explicitly_included(self) -> None:
         manifest = self.minimal_manifest("~/.omp/agent/mcp.json")
         manifest["packages"] = [

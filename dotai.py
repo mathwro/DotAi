@@ -543,7 +543,7 @@ def reconcile_packages(
         )
         if (
             mode == "update"
-            and installed
+            and present
             and package.get("updateGroup", "core") == "dependency"
             and not include_dependencies
         ):
