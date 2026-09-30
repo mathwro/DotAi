@@ -1715,6 +1715,138 @@ class DotAiTests(unittest.TestCase):
             self.assertIn("[OK]", plain.getvalue())
             self.assertNotIn("Legacy Pi skill targets", plain.getvalue())
 
+    def test_add_mcp_invalid_port_preserves_manifest_and_allows_valid_retry(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "stack.json"
+            manifest = self.minimal_manifest("mcp.json")
+            manifest["localOnly"] = {"owner": "user"}
+            manifest["mcp"]["servers"]["custom"] = {
+                "command": "npx", "env": {"TOKEN": "LOCAL_API_TOKEN"},
+                "providerSetting": {"keep": True},
+            }
+            original = (json.dumps(manifest, indent=4) + "\n\n").encode("utf-8")
+            path.write_bytes(original)
+            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                self.assertEqual(
+                    DOTAI.main([
+                        "--manifest", str(path), "add", "mcp", "bad", "--url",
+                        "https://example.test:not-a-port/mcp",
+                    ]),
+                    2,
+                )
+                self.assertEqual(path.read_bytes(), original)
+                self.assertEqual(
+                    DOTAI.main([
+                        "--manifest", str(path), "add", "mcp", "bad", "--url",
+                        "https://example.test:443/mcp", "--header", "Authorization=API_TOKEN",
+                    ]),
+                    0,
+                )
+            updated = DOTAI.load_manifest(path)
+            self.assertEqual(updated["mcp"]["servers"]["bad"], {
+                "type": "http", "url": "https://example.test:443/mcp",
+                "headers": {"Authorization": "API_TOKEN"},
+            })
+            self.assertEqual(updated["localOnly"], {"owner": "user"})
+            self.assertEqual(updated["mcp"]["servers"]["custom"], manifest["mcp"]["servers"]["custom"])
+
+    def test_add_plugin_invalid_id_preserves_manifest_and_allows_valid_retry(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "stack.json"
+            original = json.dumps(self.minimal_manifest("mcp.json"), indent=4).encode("utf-8")
+            path.write_bytes(original)
+            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                self.assertEqual(DOTAI.main(["--manifest", str(path), "add", "plugin", "bad"]), 2)
+                self.assertEqual(path.read_bytes(), original)
+                self.assertEqual(DOTAI.main(["--manifest", str(path), "add", "plugin", "review@team"]), 0)
+            self.assertEqual(DOTAI.load_manifest(path)["plugins"], [{"id": "review@team", "scope": "user"}])
+
+    def test_add_tool_empty_check_preserves_manifest_and_allows_valid_retry(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "stack.json"
+            manifest = self.minimal_manifest("mcp.json")
+            manifest["packages"] = [{"name": "sample", "check": "sample --version", "install": []}]
+            original = json.dumps(manifest, indent=4).encode("utf-8")
+            path.write_bytes(original)
+            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                self.assertEqual(DOTAI.main([
+                    "--manifest", str(path), "add", "tool", "sample", "--check", "",
+                    "--install", "default=sample install",
+                ]), 2)
+                self.assertEqual(path.read_bytes(), original)
+                self.assertEqual(DOTAI.main([
+                    "--manifest", str(path), "add", "tool", "sample", "--check", "sample --version",
+                    "--install", "default=sample install",
+                ]), 0)
+            self.assertEqual(DOTAI.load_manifest(path)["packages"], [{
+                "name": "sample", "check": "sample --version", "install": {"default": ["sample install"]},
+            }])
+
+    def test_add_empty_integration_values_do_not_write_manifest(self) -> None:
+        commands = [
+            ["add", "skill", ""],
+            ["add", "marketplace", "team", ""],
+            ["add", "mcp", "local", "--command", ""],
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "stack.json"
+            original = json.dumps(self.minimal_manifest("mcp.json"), indent=4).encode("utf-8")
+            for command in commands:
+                with self.subTest(command=command):
+                    path.write_bytes(original)
+                    with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                        self.assertEqual(DOTAI.main(["--manifest", str(path), *command]), 2)
+                    self.assertEqual(path.read_bytes(), original)
+
+    def test_add_preserves_unconfigured_routing_for_subsequent_commands(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "stack.json"
+            manifest = self.minimal_manifest("mcp.json")
+            manifest["ompRouting"] = None
+            path.write_text(json.dumps(manifest), encoding="utf-8")
+            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                self.assertEqual(DOTAI.main(["--manifest", str(path), "add", "plugin", "review@team"]), 0)
+                self.assertEqual(DOTAI.main(["--manifest", str(path), "add", "skill", "owner/skills"]), 0)
+                self.assertEqual(DOTAI.main(["--manifest", str(path), "validate"]), 0)
+            self.assertIsNone(json.loads(path.read_text(encoding="utf-8"))["ompRouting"])
+            self.assertEqual(DOTAI.load_manifest(path)["skills"][0]["source"], "owner/skills")
+
+    def test_write_manifest_rejects_invalid_candidate_before_creating_files(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            path = root / "stack.json"
+            manifest = self.minimal_manifest("mcp.json")
+            original = json.dumps(manifest, indent=4).encode("utf-8")
+            path.write_bytes(original)
+            manifest["plugins"] = [{"id": "bad"}]
+            with self.assertRaises(DOTAI.DotAiError):
+                DOTAI.write_manifest(path, manifest)
+            self.assertEqual(path.read_bytes(), original)
+            missing = root / "new" / "stack.json"
+            with self.assertRaises(DOTAI.DotAiError):
+                DOTAI.write_manifest(missing, manifest)
+            self.assertFalse(missing.parent.exists())
+            self.assertEqual(set(root.iterdir()), {path})
+
+    def test_init_rejects_invalid_template_before_creating_manifest(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            example = root / "stack.example.json"
+            invalid = self.minimal_manifest("mcp.json")
+            invalid["plugins"] = [{"id": "bad"}]
+            example.write_text(json.dumps(invalid), encoding="utf-8")
+            target = root / "new" / "stack.json"
+            with (
+                mock.patch.object(DOTAI, "EXAMPLE_MANIFEST", example),
+                contextlib.redirect_stdout(io.StringIO()),
+                contextlib.redirect_stderr(io.StringIO()),
+            ):
+                self.assertEqual(DOTAI.main(["--manifest", str(target), "init"]), 2)
+                self.assertFalse(target.parent.exists())
+                example.write_text(json.dumps(self.minimal_manifest("mcp.json")), encoding="utf-8")
+                self.assertEqual(DOTAI.main(["--manifest", str(target), "init"]), 0)
+            self.assertEqual(DOTAI.load_manifest(target)["plugins"], [])
+
     def test_add_commands_extend_every_supported_integration_kind(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "stack.json"

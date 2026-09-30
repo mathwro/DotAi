@@ -190,8 +190,14 @@ def initialize_manifest(path: Path, *, allow_custom: bool = False) -> bool:
         return False
     try:
         payload = EXAMPLE_MANIFEST.read_text(encoding="utf-8")
+        data = json.loads(payload)
     except FileNotFoundError as exc:
         raise DotAiError(f"Example manifest not found: {EXAMPLE_MANIFEST}") from exc
+    except json.JSONDecodeError as exc:
+        raise DotAiError(f"Invalid JSON in {EXAMPLE_MANIFEST}: {exc}") from exc
+    except UnicodeError as exc:
+        raise DotAiError(f"Manifest is not UTF-8: {EXAMPLE_MANIFEST}: {exc}") from exc
+    validate_manifest(data)
     path.parent.mkdir(parents=True, exist_ok=True)
     try:
         descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
@@ -432,6 +438,10 @@ def load_manifest(path: Path, *, allow_legacy_routing: bool = False) -> dict[str
         raise DotAiError(f"Unable to read manifest {path}: {exc}") from exc
     except UnicodeError as exc:
         raise DotAiError(f"Manifest is not UTF-8: {path}: {exc}") from exc
+    return validate_manifest(data, allow_legacy_routing=allow_legacy_routing)
+
+
+def validate_manifest(data: Any, *, allow_legacy_routing: bool = False) -> dict[str, Any]:
     if not isinstance(data, dict):
         raise DotAiError("Manifest root must be an object")
     if type(data.get("version")) is not int or data["version"] != 1:
@@ -486,9 +496,12 @@ def load_manifest(path: Path, *, allow_legacy_routing: bool = False) -> dict[str
     if len(extensions) != len(set(extensions)):
         raise DotAiError("Manifest 'ompExtensions' entries must be unique")
     if "ompRouting" in data:
-        data["ompRouting"] = validate_omp_routing(
-            data["ompRouting"], allow_legacy=allow_legacy_routing
-        )
+        data = {
+            **data,
+            "ompRouting": validate_omp_routing(
+                data["ompRouting"], allow_legacy=allow_legacy_routing
+            ),
+        }
     mcp = data.get("mcp")
     if not isinstance(mcp, dict):
         raise DotAiError("Manifest 'mcp' must be an object")
@@ -980,9 +993,8 @@ def review_recommended_skills(
     updated, accepted = apply_recommended_skill_changes(manifest, managed, selected)
     backup = None
     if not runner.dry_run:
-        backup = backup_manifest(manifest_path)
+        backup = write_manifest(manifest_path, updated, backup=True)
         print(f"{badge('OK')} Manifest backup written to {backup}")
-        write_manifest(manifest_path, updated)
     remove_retired_skills(selected, runner)
     if runner.failures:
         if backup is not None:
@@ -1276,8 +1288,7 @@ def configure_omp_routing(
 
     manifest_changed = manifest != updated
     if manifest_changed:
-        backup = backup_manifest(path)
-        write_manifest(path, updated)
+        backup = write_manifest(path, updated, backup=True)
         print(f"{badge('OK')} Manifest backup written to {backup}")
 
     failures_before = len(runner.failures)
@@ -1837,8 +1848,7 @@ def fix_legacy_skills(manifest: dict[str, Any], path: Path, runner: Runner) -> i
         print(f"{badge('OK')} No changes applied.")
         return 0
 
-    backup = backup_manifest(path)
-    write_manifest(path, updated)
+    backup = write_manifest(path, updated, backup=True)
     print(f"{badge('OK')} Manifest backup written to {backup}")
     reconcile_skills(updated, runner)
     if runner.failures:
@@ -1849,13 +1859,21 @@ def fix_legacy_skills(manifest: dict[str, Any], path: Path, runner: Runner) -> i
     print(f"{styled('Skill migration complete.', 'green', 'bold')}")
     return 0
 
-def write_manifest(path: Path, manifest: dict[str, Any]) -> None:
+def write_manifest(
+    path: Path, manifest: dict[str, Any], *, backup: bool = False
+) -> Path | None:
+    # The loader represents unconfigured routing as {}; persist its schema form.
+    if manifest.get("ompRouting") == {}:
+        manifest = {**manifest, "ompRouting": None}
+    validate_manifest(manifest)
     payload = json.dumps(manifest, indent=2) + "\n"
+    backup_path = backup_manifest(path) if backup else None
     path.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=path.parent, delete=False) as handle:
         handle.write(payload)
         temp_path = Path(handle.name)
     os.replace(temp_path, path)
+    return backup_path
 
 
 def add_integration(args: argparse.Namespace, manifest: dict[str, Any], path: Path) -> int:
@@ -1907,9 +1925,6 @@ def add_integration(args: argparse.Namespace, manifest: dict[str, Any], path: Pa
         upsert(manifest["packages"], "name", value)
     else:
         raise DotAiError(f"Unsupported integration kind: {kind}")
-    load_check = dict(manifest)
-    if load_check.get("version") != 1:
-        raise DotAiError("Generated manifest is invalid")
     write_manifest(path, manifest)
     print(f"{badge('OK')} Added {kind} to {path}. Run 'dotai sync' or 'dotai install' to apply it.")
     return 0
@@ -2077,7 +2092,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "fix":
         try:
             return fix_legacy_skills(manifest, args.manifest, runner)
-        except OSError as exc:
+        except (OSError, DotAiError) as exc:
             print(f"{styled('dotai:', 'red', 'bold')} {exc}", file=sys.stderr)
             return 2
     if args.command == "status":
