@@ -1,5 +1,7 @@
 # OMP multi-provider routing design
 
+> **Historical design record — August 26, 2026.** This snapshot describes the original static routing format, not the current manifest contract or model recommendations. Use [Configuration](../../configuration.md), [Development](../../development.md), and the tracked [routing catalog](../../../routing-recommendations.json) for current behavior.
+
 ## Goal
 
 Add an explicit, manifest-driven DotAi workflow that configures Oh My Pi (OMP) model roles and retry fallbacks from the models available after a user authenticates providers. The workflow must make Codex the preferred interactive model when available, route ordinary concurrent subagents through GitHub Copilot, and fail over safely when either provider is unavailable or reaches a quota limit.

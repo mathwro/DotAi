@@ -1,6 +1,8 @@
 # Extending the stack
 
-The `add` commands update `stack.json`. Run `dotai sync` or `dotai install` afterward to apply the new entry.
+Use `./dotai` on Linux, WSL, and macOS, or `.\dotai.ps1` in PowerShell. The `add` commands validate and save entries in your user-owned `stack.json`; they do not install or start integrations. Reusing a skill source, MCP or marketplace name, plugin ID, or tool name replaces that entire manifest entry, so repeat every skill selection or option you want to retain.
+
+For skills, MCP servers, marketplaces, and plugins, preview with `./dotai sync --dry-run`, then apply with `./dotai sync`. For command-line tools, use `./dotai install --dry-run` and `./dotai install`; `sync` skips package checks, installation, updates, and package configuration. Invalid additions leave the existing manifest unchanged, so correct the input and retry. On a fresh clone, initialize the default manifest with `./dotai validate` before previews if you want to separate first-use initialization from a dry run.
 
 ## Add a skill source
 
@@ -91,6 +93,8 @@ OMP resolves a header value as an environment-variable name first and uses a lit
 
 Use repeatable `--env NAME=VALUE` options to define the environment passed to the stdio server. Values may be environment-variable references, secret commands supported by OMP, or non-sensitive literals.
 
+Define referenced variables in the environment where OMP starts; adding a reference to the manifest does not define the variable. Keep credential values out of command arguments and version control.
+
 `--header` is valid only with `--url`; `--env` is valid only with `--command`. Both options are repeatable, reject duplicate names, and preserve values containing additional `=` characters.
 
 ## Add an OMP marketplace and plugin
@@ -116,7 +120,7 @@ Add repeatable `--update PLATFORM=COMMAND` options when the tool has a separate 
 
 Use `--update-group dependency` for supporting tools that should be installed when missing but updated only by `dotai update --include-dependencies`.
 
-For more complex entries, edit the local `stack.json` directly and validate it against [`stack.schema.json`](../stack.schema.json):
+For more complex entries, edit the local `stack.json` directly and run the runtime validator; [`stack.schema.json`](../stack.schema.json) also describes the format for editors:
 
 ```sh
 ./dotai validate

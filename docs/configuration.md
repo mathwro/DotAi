@@ -2,11 +2,11 @@
 
 ## Local stack configuration
 
-`stack.example.json` is the version-controlled baseline for new users. `stack.json` is created automatically from it when `install`, `update`, `sync`, `status`, `doctor`, `validate`, or `add` first needs the default manifest.
+`stack.example.json` is the version-controlled baseline for new users. Any command that needs the default manifest initializes a missing `stack.json` once from that example; `version`, `platform`, and help do not need a manifest. This initialization also occurs before a first-use dry run. Run `./dotai validate` first to initialize and check the manifest separately from previewing changes.
 
 The generated `stack.json` is ignored by Git. Pulling repository updates therefore cannot replace personal tools, skills, plugins, MCP servers, or credential references. Changes to `stack.example.json` affect new configurations automatically; existing users can opt into recommended skill changes with `./dotai sync --recommended-skills`.
 
-To recreate the defaults, remove the local `stack.json` and run:
+To recreate the defaults, first back up your local `stack.json`, then remove it and run:
 
 ```sh
 ./dotai validate
@@ -37,7 +37,7 @@ DotAi updates configuration conservatively:
 - The skills.sh lock is read from `$XDG_STATE_HOME/skills/.skill-lock.json` when set, otherwise from `~/.agents/.skill-lock.json`. Installed universal skills remain in `~/.agents/skills/`; DotAi adds no separate ownership database. See [skill refresh behavior and limits](extending.md#add-a-skill-source).
 - Recommended skill synchronization preserves user-added and locally modified sources, backs up `stack.json`, and removes installed files only for accepted retirements.
 - Release checks run for `install`, `sync`, `status`, and `version`; an available newer release is shown as a warning, while network failures are ignored.
-- Dry runs do not modify files or machine state.
+- After manifest initialization, dry runs do not modify existing files or managed machine state.
 
 Backups retain the previous complete file, including any literal credentials already present. Newly created backups are private to the current user on POSIX, but DotAi does not delete historical backups: after rotating a credential, review and remove old `mcp.json.bak.*` and `stack.json.bak.*` copies yourself. Custom manifest names and backup paths inside other Git repositories need their own ignore rules; keep credentials as environment or secret-manager references rather than literals.
 
@@ -61,24 +61,27 @@ Existing `stack.json` files are user-owned and are not updated from `stack.examp
 
 ## Configure OMP provider routing
 
-After installation, configure routing from the providers already authenticated in OMP:
+**Optional, post-authentication setup:** run the routing commands only after installing the stack, opening OMP for the first time, and authenticating at least one supported provider. DotAi does not perform provider login.
 
-Routing is optional and never enabled automatically. Until it is configured, `status` and `doctor` display a non-failing `INACTIVE` hint with the preview command; they do not inspect credentials or change OMP configuration.
+Routing is never enabled automatically by `install`, `update`, or `sync`. Until it is configured, `status` and `doctor` display a non-failing `INACTIVE` hint with the preview command; they do not inspect credentials or change OMP configuration.
 
-1. Run `./dotai install`.
-2. Authenticate GitHub Copilot, OpenAI Codex, Anthropic, or any combination of them inside OMP.
-3. Preview the detected providers, resolved roles, manifest diff, and pending OMP commands:
+1. Run `./dotai install` (or `.\dotai.ps1 install` on Windows).
+2. Run `omp` to open OMP for the first time.
+3. Inside OMP, use `/login` to authenticate GitHub Copilot, OpenAI Codex, Anthropic, or any combination of them, then return to your shell. See [OMP's provider authentication guide](https://github.com/can1357/oh-my-pi/blob/main/packages/ai/README.md#oauth-providers) for supported login flows. Authentication belongs to OMP, not to `stack.json`.
+4. Only after those prerequisites, preview the detected providers, resolved roles, manifest diff, and pending OMP commands:
 
    ```sh
    ./dotai configure omp-routing --dry-run
    ```
 
-4. If both Anthropic and OpenAI Codex are authenticated, choose the interactive primary when prompted or pass `--primary anthropic` or `--primary openai-codex`. Use the same flag while previewing and applying when a non-interactive shell cannot prompt.
-5. Apply the routing:
+5. If both Anthropic and OpenAI Codex are authenticated, choose the interactive primary when prompted or pass `--primary anthropic` or `--primary openai-codex`. Use the same flag while previewing and applying when a non-interactive shell cannot prompt.
+6. Apply the routing only if you want DotAi to manage it:
 
    ```sh
    ./dotai configure omp-routing
    ```
+
+In PowerShell, substitute `.\dotai.ps1` for `./dotai`; `omp` is the same command on all supported platforms.
 
 The `default` and `slow` interactive roles prefer the selected premium primary, then the other available premium provider, then Copilot. The `task` and `smol` worker roles prefer Copilot, then Anthropic, then Codex. When no premium provider is available, Copilot serves as the primary.
 

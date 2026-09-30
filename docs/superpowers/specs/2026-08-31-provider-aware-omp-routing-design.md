@@ -1,5 +1,7 @@
 # Provider-Aware OMP Routing Design
 
+> **Historical design record — August 31, 2026.** This snapshot records the provider-aware design at that date; examples are not current defaults. Use [Configuration](../../configuration.md), [Development](../../development.md), and the tracked [routing catalog](../../../routing-recommendations.json) for current behavior and recommendations.
+
 ## Goal
 
 Replace the static Codex-plus-Copilot routing manifest with an explicit post-authentication workflow that discovers the user's available OMP providers, selects curated recommendations for that actual provider set, and configures role-based fallback routing. Copilot-only, Anthropic-only, and mixed Anthropic/Codex/Copilot setups must work without storing irrelevant model lists in the user-owned manifest.
