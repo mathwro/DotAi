@@ -1257,8 +1257,8 @@ def mcp_config_paths(target: Path) -> list[Path]:
     return unique
 
 
-def discover_mcp_servers(target: Path) -> list[tuple[str, dict[str, Any], Path, bool]]:
-    discovered: list[tuple[str, dict[str, Any], Path, bool]] = []
+def discover_mcp_servers(target: Path) -> list[tuple[str, dict[str, Any], Path, str, bool]]:
+    discovered: list[tuple[str, dict[str, Any], Path, str, bool]] = []
     for path in mcp_config_paths(target):
         if not path.is_file():
             continue
@@ -1274,7 +1274,7 @@ def discover_mcp_servers(target: Path) -> list[tuple[str, dict[str, Any], Path, 
             for name, server in servers.items():
                 if not isinstance(server, dict):
                     continue
-                discovered.append((name, server, path, name not in disabled and server.get("enabled") is not False))
+                discovered.append((name, server, path, section, name not in disabled and server.get("enabled") is not False))
     return discovered
 
 
@@ -1289,7 +1289,11 @@ def server_identity_matches(found: dict[str, Any], required: dict[str, Any]) -> 
         return False
     if "url" in required:
         return str(found.get("url", "")).rstrip("/") == str(required["url"]).rstrip("/")
-    return found.get("command") == required.get("command") and list(found.get("args", [])) == list(required.get("args", []))
+    found_args = found.get("args", [])
+    required_args = required.get("args", [])
+    if not isinstance(found_args, list) or not isinstance(required_args, list):
+        return False
+    return found.get("command") == required.get("command") and found_args == required_args
 
 
 def server_satisfies(found: dict[str, Any], required: dict[str, Any]) -> bool:
@@ -1315,33 +1319,56 @@ def sync_mcp(manifest: dict[str, Any], runner: Runner) -> bool:
     discovered = discover_mcp_servers(target)
     changes = 0
     conflicts: list[str] = []
+    used: set[tuple[Path, str, str]] = set()
     for name, required in mcp["servers"].items():
-        if any(enabled and server_satisfies(found, required) for _, found, _, enabled in discovered):
+        match = next(
+            ((path, section, alias) for alias, found, path, section, enabled in discovered if enabled and server_satisfies(found, required)),
+            None,
+        )
+        if match is not None:
+            used.add(match)
             continue
+        available = [
+            entry for entry in discovered
+            if (entry[2], entry[3], entry[0]) not in used
+            and not (entry[2] == target and entry[3] == "mcpServers" and entry[0] in mcp["servers"] and entry[0] != name)
+        ]
         if required.get("enabled") is False or any(
             not enabled and (alias == name or server_identity_matches(found, required))
-            for alias, found, _, enabled in discovered
+            for alias, found, _, _, enabled in discovered
         ):
             conflicts.append(name)
             continue
 
-        alias = next(
-            (
-                alias for alias, found, path, _ in discovered
-                if path == target and alias in servers and server_identity_matches(found, required)
-            ),
-            None,
-        )
-        if alias is None and name in servers:
-            alias = name
+        alias = name if name in servers else None
+        if alias is not None and (target, "mcpServers", alias) in used:
+            conflicts.append(name)
+            continue
         if alias is None:
-            if any(server_identity_matches(found, required) for _, found, _, _ in discovered):
+            candidates = [
+                (alias, found) for alias, found, path, section, _ in available
+                if path == target and section == "mcpServers" and server_identity_matches(found, required)
+            ]
+            if "cwd" in required:
+                cwd_matches = [(alias, found) for alias, found in candidates if found.get("cwd") == required["cwd"]]
+                if cwd_matches:
+                    candidates = cwd_matches
+            if len(candidates) > 1:
+                conflicts.append(name)
+                continue
+            if candidates:
+                alias = candidates[0][0]
+        if alias is None:
+            if any(server_identity_matches(found, required) for _, found, _, _, _ in available):
                 conflicts.append(name)
                 continue
             servers[name] = required
+            used.add((target, "mcpServers", name))
+            discovered.append((name, required, target, "mcpServers", True))
             changes += 1
             continue
 
+        used.add((target, "mcpServers", alias))
         current = servers[alias]
         same_server = isinstance(current, dict) and server_identity_matches(current, required)
         updated = dict(current) if same_server else {}
@@ -1354,6 +1381,12 @@ def sync_mcp(manifest: dict[str, Any], runner: Runner) -> bool:
                 updated[key] = value
         if updated != current:
             servers[alias] = updated
+            for index, (found_alias, _, path, section, _) in enumerate(discovered):
+                if path == target and section == "mcpServers" and found_alias == alias:
+                    discovered[index] = (alias, updated, target, "mcpServers", True)
+                    break
+            else:
+                discovered.append((alias, updated, target, "mcpServers", True))
             changes += 1
     if conflicts:
         detail = f"MCP servers unavailable or disabled: {', '.join(conflicts)}; resolve the provider configuration manually"
@@ -1442,7 +1475,7 @@ def mcp_status(manifest: dict[str, Any]) -> tuple[bool, str]:
     missing: list[str] = []
     sources: set[Path] = set()
     for name, required in mcp["servers"].items():
-        matches = [(found, path) for _, found, path, enabled in discovered if enabled and server_satisfies(found, required)]
+        matches = [(found, path) for _, found, path, _, enabled in discovered if enabled and server_satisfies(found, required)]
         if not matches:
             missing.append(name)
         else:
