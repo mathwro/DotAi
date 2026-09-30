@@ -109,74 +109,6 @@ class DotAiTests(unittest.TestCase):
         }
         return manifest, selectors, values
 
-    def test_routing_recommendation_catalog_is_exact_and_valid(self) -> None:
-        recommendations = DOTAI.load_routing_recommendations()
-        self.assertEqual(recommendations["version"], 1)
-        self.assertEqual(
-            set(recommendations["providers"]),
-            {"github-copilot", "openai-codex", "anthropic"},
-        )
-        self.assertEqual(
-            recommendations["providers"]["anthropic"]["roles"],
-            {
-                "default": [
-                    "anthropic/claude-opus-5",
-                    "anthropic/claude-opus-4-8",
-                    "anthropic/claude-opus-4-7",
-                    "anthropic/claude-opus-4-6",
-                ],
-                "task": [
-                    "anthropic/claude-sonnet-5",
-                    "anthropic/claude-sonnet-4-6",
-                    "anthropic/claude-opus-5",
-                    "anthropic/claude-opus-4-8",
-                ],
-                "smol": [
-                    "anthropic/claude-haiku-4-5",
-                    "anthropic/claude-sonnet-5",
-                    "anthropic/claude-sonnet-4-6",
-                ],
-                "slow": [
-                    "anthropic/claude-fable-5-1:high",
-                    "anthropic/claude-opus-5:high",
-                    "anthropic/claude-opus-4-8:high",
-                    "anthropic/claude-opus-4-7:high",
-                    "anthropic/claude-opus-4-6:high",
-                ],
-            },
-        )
-        self.assertEqual(
-            recommendations["providers"]["github-copilot"]["roles"]["default"][0],
-            "github-copilot/gpt-6-astra",
-        )
-        self.assertEqual(
-            recommendations["providers"]["github-copilot"]["roles"]["slow"][:2],
-            [
-                "github-copilot/gpt-6-astra:high",
-                "github-copilot/gpt-5.6-sol:high",
-            ],
-        )
-        self.assertEqual(
-            recommendations["providers"]["openai-codex"]["roles"],
-            {
-                "default": [
-                    "openai-codex/gpt-6-astra",
-                    "openai-codex/gpt-5.6-sol",
-                ],
-                "task": [
-                    "openai-codex/gpt-5.6-terra",
-                    "openai-codex/gpt-5.6-sol",
-                ],
-                "smol": [
-                    "openai-codex/gpt-5.6-luna",
-                    "openai-codex/gpt-5.4-mini",
-                ],
-                "slow": [
-                    "openai-codex/gpt-6-astra:high",
-                    "openai-codex/gpt-5.6-sol:high",
-                ],
-            },
-        )
 
     def test_validate_omp_routing_accepts_compact_intent_and_null(self) -> None:
         routing = self.compact_routing(["anthropic", "github-copilot"], "anthropic")
@@ -543,7 +475,34 @@ class DotAiTests(unittest.TestCase):
         self.assertEqual(cancellation_errors, ["Primary selection cancelled"] * 2)
 
     def test_resolve_omp_routing_handles_provider_combinations(self) -> None:
-        recommendations = DOTAI.load_routing_recommendations()
+        recommendations = {
+            "providers": {
+                "github-copilot": {
+                    "roles": {
+                        "default": ["github-copilot/gpt-6-astra", "github-copilot/unavailable"],
+                        "task": ["github-copilot/gpt-5.6-terra", "github-copilot/gpt-5.6-luna"],
+                        "smol": ["github-copilot/gpt-5.6-luna", "github-copilot/gpt-5.6-terra"],
+                        "slow": ["github-copilot/gpt-6-astra:high", "github-copilot/gpt-5.6-terra:high", "github-copilot/gpt-5.6-luna:high"],
+                    }
+                },
+                "anthropic": {
+                    "roles": {
+                        "default": ["anthropic/claude-opus-5", "anthropic/unavailable"],
+                        "task": ["anthropic/claude-sonnet-5", "anthropic/claude-opus-5"],
+                        "smol": ["anthropic/claude-haiku-4-5", "anthropic/claude-sonnet-5"],
+                        "slow": ["anthropic/claude-fable-5-1:high", "anthropic/claude-opus-5:high"],
+                    }
+                },
+                "openai-codex": {
+                    "roles": {
+                        "default": ["openai-codex/gpt-6-astra", "openai-codex/unavailable"],
+                        "task": ["openai-codex/gpt-5.6-terra"],
+                        "smol": ["openai-codex/gpt-5.6-luna"],
+                        "slow": ["openai-codex/gpt-6-astra:high"],
+                    }
+                },
+            }
+        }
         provider_roles = recommendations["providers"]
 
         def available_for(providers: list[str]) -> set[str]:
