@@ -1517,9 +1517,7 @@ def sync_mcp(manifest: dict[str, Any], runner: Runner) -> bool:
         return True
     target.parent.mkdir(parents=True, exist_ok=True)
     if target.exists():
-        stamp = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
-        backup = target.with_name(f"{target.name}.bak.{stamp}")
-        shutil.copy2(target, backup)
+        backup = backup_manifest(target)
         print(f"{badge('OK')} MCP: backup written to {backup}")
     payload = json.dumps(merged, indent=2, sort_keys=True) + "\n"
     with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=target.parent, delete=False) as handle:
@@ -1879,7 +1877,10 @@ def manifest_diff(before: dict[str, Any], after: dict[str, Any], path: Path) -> 
 def backup_manifest(path: Path) -> Path:
     stamp = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
     backup = path.with_name(f"{path.name}.bak.{stamp}")
-    shutil.copy2(path, backup)
+    with path.open("rb") as source, os.fdopen(
+        os.open(backup, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "wb"
+    ) as destination:
+        shutil.copyfileobj(source, destination)
     return backup
 
 

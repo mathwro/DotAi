@@ -494,6 +494,30 @@ class DotAiTests(unittest.TestCase):
                 self.assertFalse(DOTAI.sync_mcp(manifest, runner))
                 self.assertEqual(len(list(target.parent.glob("mcp.json.bak.*"))), 1)
 
+    @unittest.skipIf(os.name == "nt", "POSIX permissions are not Windows ACLs")
+    def test_config_backups_are_private_even_when_sources_are_readable(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            target = home / ".omp" / "agent" / "mcp.json"
+            target.parent.mkdir(parents=True)
+            target.write_text(
+                json.dumps({"mcpServers": {"context7": {"type": "http", "url": "https://old.example/mcp", "headers": {"X-Key": "old-reference"}}}}),
+                encoding="utf-8",
+            )
+            target.chmod(0o644)
+            with mock.patch.dict(os.environ, {"DOTAI_HOME": str(home)}):
+                self.assertTrue(DOTAI.sync_mcp(self.minimal_manifest("~/.omp/agent/mcp.json"), DOTAI.Runner("ubuntu")))
+            backup = next(target.parent.glob("mcp.json.bak.*"))
+            self.assertIn("old-reference", backup.read_text(encoding="utf-8"))
+            self.assertEqual(backup.stat().st_mode & 0o777, 0o600)
+
+            custom = home / "custom-stack.json"
+            custom.write_text('{"env":"OLD_TOKEN"}', encoding="utf-8")
+            custom.chmod(0o644)
+            prior = DOTAI.backup_manifest(custom)
+            self.assertEqual(prior.read_text(encoding="utf-8"), custom.read_text(encoding="utf-8"))
+            self.assertEqual(prior.stat().st_mode & 0o777, 0o600)
+
     def test_mcp_status_accepts_alias_headers_and_external_provider_config(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             home = Path(directory)
