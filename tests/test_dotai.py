@@ -462,7 +462,8 @@ class DotAiTests(unittest.TestCase):
                 self.assertTrue(DOTAI.print_status(loaded, runner))
         output.assert_not_called()
         run.assert_not_called()
-        self.assertNotIn("OMP routing:", report.getvalue())
+        self.assertIn("[INACTIVE]", report.getvalue())
+        self.assertIn("configure omp-routing --dry-run", report.getvalue())
 
     def test_mcp_merge_preserves_unmanaged_values_backs_up_and_is_idempotent(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -1877,23 +1878,9 @@ class DotAiTests(unittest.TestCase):
                     )
                 run.assert_not_called()
 
-    def test_print_status_renders_routing_only_when_configured_and_uses_its_health(self) -> None:
+    def test_print_status_reports_configured_routing_health(self) -> None:
         manifest = self.minimal_manifest("~/.omp/agent/mcp.json")
         runner = DOTAI.Runner("ubuntu")
-        output = io.StringIO()
-        with (
-            mock.patch.object(DOTAI, "mcp_status", return_value=(True, "managed")),
-            mock.patch.object(
-                DOTAI,
-                "omp_routing_status",
-                return_value=("DRIFT", "model role differs: default"),
-            ) as routing_status,
-            contextlib.redirect_stdout(output),
-        ):
-            self.assertTrue(DOTAI.print_status(manifest, runner))
-        routing_status.assert_not_called()
-        self.assertNotIn("OMP routing:", output.getvalue())
-
         manifest["ompRouting"] = self.compact_routing(["anthropic"], "anthropic")
         DOTAI.configure_color("always")
         self.addCleanup(DOTAI.configure_color, "never")

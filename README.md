@@ -66,7 +66,7 @@ Linux RTK installs and updates use the reviewed v0.50.0 release archives with pi
 | --- | --- | --- |
 | `OK` | Green | Installed and active in the intended agent |
 | `RUN` | Cyan | An operation is planned or running |
-| `INACTIVE` | Yellow | Installed elsewhere, but not active in OMP |
+| `INACTIVE` | Yellow | Installed elsewhere but inactive in OMP, or optional routing not configured |
 | `DRIFT` | Yellow | Managed configuration is unavailable or differs |
 | `UNVERIFIED` | Yellow | No named skill checks; installation cannot be confirmed |
 | `MISSING` | Red | A declared component is not installed |
