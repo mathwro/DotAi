@@ -133,6 +133,16 @@ RTK 0.43 or newer is configured for Pi and registered as an OMP global extension
 
 DotAi installs the Graphify CLI, but its Pi skill and project graph generation are opt-in. Run `graphify extract . --code-only` in a project when you want a graph. Existing local manifests retain their earlier Graphify configuration; see [Optional Graphify](docs/configuration.md#optional-graphify) before your next `install` or `update`.
 
+## Tests
+
+Run all unit tests from the repository root:
+
+```sh
+rtk python3 -m unittest discover -s tests -v
+```
+
+RTK is optional for running tests; omit `rtk` if it is not installed. On Windows, replace `python3` with `python` or `py -3`, depending on your installed interpreter.
+
 ## Guides
 
 - [Configuration](docs/configuration.md) — manifest lifecycle, safety guarantees, and OMP provider routing
