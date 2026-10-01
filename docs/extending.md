@@ -16,7 +16,7 @@ Use `--check-skill NAME` to override inferred checks when the installed director
 
 If no skills are named (or `--skill '*'` is used), status reports `UNVERIFIED` rather than guessing whether the source installed correctly, and exits nonzero. Specify `--check-skill NAME` for each expected installed skill to make the health check actionable.
 
-After synchronization, restart OMP so it discovers newly installed skills. With OMP's default `skills.enableSkillCommands` setting, invoke them as `/skill:<name>` commands, for example `/skill:grilling` or `/skill:commit-and-document`; the shorter `/<name>` form is not the registered command syntax.
+After synchronization, restart OMP so it discovers newly installed skills. With OMP's default `skills.enableSkillCommands` setting, invoke them as `/skill:<name>` commands, for example `/skill:think`, `/skill:gh-stack`, or `/skill:commit-and-document`; the shorter `/<name>` form is not the registered command syntax.
 
 Normal `install`, `update`, and `sync` leave named skills untouched only when their configured-agent files match the GitHub folder tree hash in the skills.sh v3 global lock and its source metadata matches the requested repository. The lock is keyed by skill name, not agent: another agent's independent copy does not prove ownership of the configured target. DotAi checks the entire installed folder, including supporting files and executable modes, rather than trusting a matching name or `SKILL.md` alone.
 
@@ -27,6 +27,8 @@ Public GitHub repository-root spellings such as `owner/repo`, `github:owner/repo
 Use `./dotai.py sync --update-skills` to refresh healthy skills explicitly; `./dotai.py install --force` refreshes them too. Accepting a changed recommended source also refreshes it.
 
 Sources without named `checkSkills` cannot be confirmed installed and are still reconciled on each run. Naming the expected skills enables source and content verification; it does not override missing or ambiguous ownership evidence.
+
+The default stack assigns one skill to each workflow phase: `think` plans new work, `gh-stack` manages dependent pull-request layers, `hunt` investigates defects, verification and review skills provide evidence gates, and `commit-and-document` finalizes an explicitly requested commit. `ponytail-review`, `grilling`, and design-audit skills are explicit review tools, not always-on implementation governors.
 
 To review skill recommendations added, changed, or removed from `stack.example.json`, run:
 
@@ -47,6 +49,20 @@ Normal `sync` runs do not rewrite existing `stack.json` skill entries. To migrat
 DotAi shows the exact manifest diff and skill installation commands, then waits for confirmation. Answer `y` to apply the changes. Use `./dotai.py fix --dry-run` to preview the diff and commands without modifying the manifest or machine. The command changes only `"agent": "pi"` skill entries to `"agent": "universal"`, creates a timestamped manifest backup, and leaves the old Pi-installed files in place.
 
 After the migration, future `./dotai.py sync` runs use `~/.agents/skills/`. `sync` alone intentionally does not change an existing manifest's agent selections.
+
+## Work with stacked pull requests
+
+`gh-stack` is installed with the GitHub CLI. Use it only for dependent, independently reviewable layers; keep unrelated work in separate stacks. Plan layers before editing, then create the stack from the bottom layer:
+
+```sh
+gh stack init feature/foundation
+# Commit the foundational layer.
+gh stack add feature/dependent-behavior
+# Commit the dependent layer.
+gh stack submit --auto
+```
+
+Run `gh stack rebase` after changing a lower layer, `gh stack sync` after merges, and `gh stack view --json` to inspect the current stack. A one-PR change remains an ordinary branch and pull request.
 
 ## Add a remote MCP server
 

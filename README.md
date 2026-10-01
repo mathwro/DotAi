@@ -125,8 +125,8 @@ Reusing a skill source, MCP or marketplace name, plugin ID, or tool name replace
 | Type | Components |
 | --- | --- |
 | Harness | [Oh My Pi](https://github.com/can1357/oh-my-pi) |
-| Tools | [RTK](https://github.com/rtk-ai/rtk), [Graphify](https://github.com/Graphify-Labs/graphify), Node.js, `uv`, `curl` |
-| Skills | [Ponytail](https://github.com/DietrichGebert/ponytail), [Superpowers](https://github.com/obra/superpowers), [Grilling and Writing for Agents](https://github.com/mattpocock/skills), [Choose Branch Structure](https://github.com/mathwro/Skills/tree/main/skills/choosing-branch-structure), [Commit and Document](https://github.com/mathwro/Skills), installed through [skills.sh](https://skills.sh/) |
+| Tools | [RTK](https://github.com/rtk-ai/rtk), [Graphify](https://github.com/Graphify-Labs/graphify), [GitHub CLI](https://cli.github.com/), [GitHub Stacked PRs](https://github.com/github/gh-stack), Node.js, `uv`, `curl` |
+| Skills | Curated through [skills.sh](https://skills.sh/): Ponytail Review; Verification Before Completion; Receiving Code Review; Grilling; Writing for Agents; Think; Hunt; gh-stack; Find Skills; Frontend Design; Web Design Guidelines; Choose Branch Structure; Commit and Document |
 | MCP servers | [Context7](https://context7.com/), [Microsoft Learn](https://learn.microsoft.com/training/support/mcp) |
 
 RTK 0.43 or newer is configured for Pi and registered as an OMP global extension without replacing unrelated extensions. DotAi also enables OMP's **Hide Secrets** privacy setting during installation and updates.
