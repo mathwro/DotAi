@@ -149,4 +149,5 @@ RTK is optional for running tests; omit `rtk` if it is not installed. On Windows
 
 - [Configuration](docs/configuration.md) — manifest lifecycle, safety guarantees, and OMP provider routing
 - [Extending the stack](docs/extending.md) — add skills, MCP servers, plugins, and command-line tools
+- [Vetted project skills](docs/project-skills.md) — conditional recommendations, project-local installation commands, and runtime boundaries
 - [Development](docs/development.md) — repository layout and contributor verification
