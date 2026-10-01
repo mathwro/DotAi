@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import contextlib
-import importlib.util
 import io
 import json
 import os
@@ -13,10 +12,25 @@ from pathlib import Path
 from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
-SPEC = importlib.util.spec_from_file_location("dotai_module", ROOT / "dotai.py")
-assert SPEC and SPEC.loader
-DOTAI = importlib.util.module_from_spec(SPEC)
-SPEC.loader.exec_module(DOTAI)
+if __name__ == "__main__":
+    sys.path.insert(0, str(ROOT))
+
+from dotai_app import (
+    cli,
+    health,
+    manifest as manifests,
+    mcp as mcp_config,
+    omp as omp_config,
+    packages as package_manager,
+    recommendations as skill_recommendations,
+    reconcile as reconciliation,
+    releases,
+    routing as model_routing,
+    runtime,
+    skills as skill_manager,
+    state as app_state,
+    terminal,
+)
 
 
 class DotAiTests(unittest.TestCase):
@@ -80,9 +94,7 @@ class DotAiTests(unittest.TestCase):
         }
 
     def mock_routing_catalog(self):
-        return mock.patch.object(
-            DOTAI, "load_routing_recommendations", return_value=self.routing_recommendations()
-        )
+        return mock.patch.object(model_routing, "load_routing_recommendations", return_value=self.routing_recommendations())
 
     def omp_output(self, selectors: list[str], values: dict[str, object]):
         catalog = json.dumps({"models": [{"selector": selector} for selector in selectors]})
@@ -149,8 +161,8 @@ class DotAiTests(unittest.TestCase):
 
     def test_validate_omp_routing_accepts_compact_intent_and_null(self) -> None:
         routing = self.compact_routing(["anthropic", "github-copilot"], "anthropic")
-        self.assertEqual(DOTAI.validate_omp_routing(routing), routing)
-        self.assertEqual(DOTAI.validate_omp_routing(None), {})
+        self.assertEqual(manifests.validate_omp_routing(routing), routing)
+        self.assertEqual(manifests.validate_omp_routing(None), {})
 
     def test_stack_schema_has_exact_omp_routing_defaults(self) -> None:
         schema = json.loads((ROOT / "stack.schema.json").read_text(encoding="utf-8"))
@@ -185,8 +197,8 @@ class DotAiTests(unittest.TestCase):
             {**valid, "unexpected": True},
         ]
         for value in invalid:
-            with self.subTest(value=value), self.assertRaises(DOTAI.DotAiError):
-                DOTAI.validate_omp_routing(value)
+            with self.subTest(value=value), self.assertRaises(runtime.DotAiError):
+                manifests.validate_omp_routing(value)
 
 
     def test_compact_manifest_loads_without_routing_recommendations(self) -> None:
@@ -198,27 +210,25 @@ class DotAiTests(unittest.TestCase):
                 "primaryProvider": "anthropic",
             }
             path.write_text(json.dumps(manifest), encoding="utf-8")
-            error = DOTAI.DotAiError("missing recommendations")
-            with mock.patch.object(
-                DOTAI, "load_routing_recommendations", side_effect=error
-            ):
-                loaded = DOTAI.load_manifest(path)
+            error = runtime.DotAiError("missing recommendations")
+            with mock.patch.object(model_routing, "load_routing_recommendations", side_effect=error):
+                loaded = manifests.load_manifest(path)
                 self.assertEqual(loaded["ompRouting"]["providers"], ["anthropic"])
                 self.assertEqual(
-                    DOTAI.omp_routing_status(loaded, DOTAI.Runner("ubuntu")),
+                    model_routing.omp_routing_status(loaded, runtime.Runner("ubuntu")),
                     ("FAIL", "unable to read routing recommendations"),
                 )
 
     def test_repository_routing_catalog_covers_all_managed_roles(self) -> None:
-        recommendations = DOTAI.load_routing_recommendations()
+        recommendations = model_routing.load_routing_recommendations()
         for provider, entry in recommendations["providers"].items():
             with self.subTest(provider=provider):
                 available = {
-                    DOTAI.selector_identity(selector)
+                    model_routing.selector_identity(selector)
                     for selectors in entry["roles"].values()
                     for selector in selectors
                 }
-                primaries, _, unavailable = DOTAI.resolve_omp_routing(
+                primaries, _, unavailable = model_routing.resolve_omp_routing(
                     recommendations, [provider], provider, available
                 )
                 self.assertEqual(set(primaries), {"default", "task", "smol", "slow"})
@@ -255,21 +265,21 @@ class DotAiTests(unittest.TestCase):
             missing_override,
         ]
         for value in invalid:
-            with self.subTest(value=value), self.assertRaises(DOTAI.DotAiError):
-                DOTAI.validate_routing_recommendations(value)
+            with self.subTest(value=value), self.assertRaises(runtime.DotAiError):
+                model_routing.validate_routing_recommendations(value)
 
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "routing-recommendations.json"
             path.write_text("{", encoding="utf-8")
-            with self.assertRaises(DOTAI.DotAiError):
-                DOTAI.load_routing_recommendations(path)
+            with self.assertRaises(runtime.DotAiError):
+                model_routing.load_routing_recommendations(path)
 
     def test_static_routing_is_only_accepted_for_configure_migration(self) -> None:
         legacy = {"roles": {"default": ["openai-codex/interactive-model"]}}
-        with self.assertRaisesRegex(DOTAI.DotAiError, "configure omp-routing"):
-            DOTAI.validate_omp_routing(legacy)
+        with self.assertRaisesRegex(runtime.DotAiError, "configure omp-routing"):
+            manifests.validate_omp_routing(legacy)
         self.assertEqual(
-            DOTAI.validate_omp_routing(legacy, allow_legacy=True)["roles"],
+            manifests.validate_omp_routing(legacy, allow_legacy=True)["roles"],
             legacy["roles"],
         )
 
@@ -279,24 +289,24 @@ class DotAiTests(unittest.TestCase):
             for root in ([], [self.minimal_manifest("mcp.json")], None, "stack"):
                 with self.subTest(root=root):
                     path.write_text(json.dumps(root), encoding="utf-8")
-                    with self.assertRaises(DOTAI.DotAiError):
-                        DOTAI.load_manifest(path)
+                    with self.assertRaises(runtime.DotAiError):
+                        manifests.load_manifest(path)
 
             for section in ("packages", "skills", "marketplaces", "plugins", "mcp"):
                 with self.subTest(missing=section):
                     manifest = self.minimal_manifest("mcp.json")
                     del manifest[section]
                     path.write_text(json.dumps(manifest), encoding="utf-8")
-                    with self.assertRaises(DOTAI.DotAiError):
-                        DOTAI.load_manifest(path)
+                    with self.assertRaises(runtime.DotAiError):
+                        manifests.load_manifest(path)
 
             for field in ("target", "servers"):
                 with self.subTest(missing_mcp_field=field):
                     manifest = self.minimal_manifest("mcp.json")
                     del manifest["mcp"][field]
                     path.write_text(json.dumps(manifest), encoding="utf-8")
-                    with self.assertRaises(DOTAI.DotAiError):
-                        DOTAI.load_manifest(path)
+                    with self.assertRaises(runtime.DotAiError):
+                        manifests.load_manifest(path)
 
     def test_load_manifest_rejects_malformed_packages_and_platform_commands(self) -> None:
         package = {
@@ -326,8 +336,8 @@ class DotAiTests(unittest.TestCase):
                     manifest = self.minimal_manifest("mcp.json")
                     manifest["packages"] = [entry]
                     path.write_text(json.dumps(manifest), encoding="utf-8")
-                    with self.assertRaises(DOTAI.DotAiError):
-                        DOTAI.load_manifest(path)
+                    with self.assertRaises(runtime.DotAiError):
+                        manifests.load_manifest(path)
 
     def test_load_manifest_rejects_malformed_skills_plugins_and_extensions(self) -> None:
         invalid = (
@@ -350,8 +360,8 @@ class DotAiTests(unittest.TestCase):
                     manifest = self.minimal_manifest("mcp.json")
                     manifest[section] = entries
                     path.write_text(json.dumps(manifest), encoding="utf-8")
-                    with self.assertRaises(DOTAI.DotAiError):
-                        DOTAI.load_manifest(path)
+                    with self.assertRaises(runtime.DotAiError):
+                        manifests.load_manifest(path)
 
     def test_load_manifest_rejects_malformed_mcp_servers(self) -> None:
         invalid = {
@@ -377,16 +387,16 @@ class DotAiTests(unittest.TestCase):
                     manifest = self.minimal_manifest("mcp.json")
                     manifest["mcp"]["servers"] = {"custom": server}
                     path.write_text(json.dumps(manifest), encoding="utf-8")
-                    with self.assertRaises(DOTAI.DotAiError):
-                        DOTAI.load_manifest(path)
+                    with self.assertRaises(runtime.DotAiError):
+                        manifests.load_manifest(path)
 
             for field, value in (("target", ""), ("servers", [])):
                 with self.subTest(mcp_field=field):
                     manifest = self.minimal_manifest("mcp.json")
                     manifest["mcp"][field] = value
                     path.write_text(json.dumps(manifest), encoding="utf-8")
-                    with self.assertRaises(DOTAI.DotAiError):
-                        DOTAI.load_manifest(path)
+                    with self.assertRaises(runtime.DotAiError):
+                        manifests.load_manifest(path)
 
     def test_load_manifest_preserves_user_owned_extra_fields(self) -> None:
         manifest = self.minimal_manifest("mcp.json")
@@ -397,7 +407,7 @@ class DotAiTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "stack.json"
             path.write_text(json.dumps(manifest), encoding="utf-8")
-            loaded = DOTAI.load_manifest(path)
+            loaded = manifests.load_manifest(path)
         self.assertEqual(loaded["localOnly"], {"owner": "user"})
         self.assertEqual(loaded["mcp"]["servers"]["custom"]["providerSetting"], {"keep": True})
 
@@ -406,7 +416,7 @@ class DotAiTests(unittest.TestCase):
             path = Path(directory) / "stack.json"
             manifest = self.minimal_manifest("~/.omp/agent/mcp.json")
             path.write_text(json.dumps(manifest), encoding="utf-8")
-            self.assertNotIn("ompRouting", DOTAI.load_manifest(path))
+            self.assertNotIn("ompRouting", manifests.load_manifest(path))
 
             manifest["ompRouting"] = {
                 "providers": ["anthropic"],
@@ -414,7 +424,7 @@ class DotAiTests(unittest.TestCase):
             }
             path.write_text(json.dumps(manifest), encoding="utf-8")
             self.assertEqual(
-                DOTAI.load_manifest(path)["ompRouting"],
+                manifests.load_manifest(path)["ompRouting"],
                 {
                     "providers": ["anthropic"],
                     "primaryProvider": "anthropic",
@@ -428,7 +438,7 @@ class DotAiTests(unittest.TestCase):
     def test_repository_example_starts_with_unconfigured_routing(self) -> None:
         raw = json.loads((ROOT / "stack.example.json").read_text(encoding="utf-8"))
         self.assertIsNone(raw["ompRouting"])
-        self.assertEqual(DOTAI.load_manifest(ROOT / "stack.example.json")["ompRouting"], {})
+        self.assertEqual(manifests.load_manifest(ROOT / "stack.example.json")["ompRouting"], {})
 
     def test_loaded_null_omp_routing_is_unconfigured(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -436,14 +446,14 @@ class DotAiTests(unittest.TestCase):
             manifest = self.minimal_manifest("~/.omp/agent/mcp.json")
             manifest["ompRouting"] = None
             path.write_text(json.dumps(manifest), encoding="utf-8")
-            loaded = DOTAI.load_manifest(path)
+            loaded = manifests.load_manifest(path)
 
-        runner = DOTAI.Runner("ubuntu")
+        runner = runtime.Runner("ubuntu")
         with mock.patch.object(runner, "output") as output, mock.patch.object(runner, "run") as run:
-            self.assertEqual(DOTAI.omp_routing_status(loaded, runner), ("OK", "not configured in manifest"))
+            self.assertEqual(model_routing.omp_routing_status(loaded, runner), ("OK", "not configured in manifest"))
             report = io.StringIO()
-            with mock.patch.object(DOTAI, "mcp_status", return_value=(True, "managed")), contextlib.redirect_stdout(report):
-                self.assertTrue(DOTAI.print_status(loaded, runner))
+            with mock.patch.object(mcp_config, "mcp_status", return_value=(True, "managed")), contextlib.redirect_stdout(report):
+                self.assertTrue(health.print_status(loaded, runner))
         output.assert_not_called()
         run.assert_not_called()
         self.assertIn("[INACTIVE]", report.getvalue())
@@ -468,15 +478,15 @@ class DotAiTests(unittest.TestCase):
             )
             manifest = self.minimal_manifest("~/.omp/agent/mcp.json")
             with mock.patch.dict(os.environ, {"DOTAI_HOME": str(home)}):
-                runner = DOTAI.Runner("ubuntu")
-                self.assertTrue(DOTAI.sync_mcp(manifest, runner))
+                runner = runtime.Runner("ubuntu")
+                self.assertTrue(mcp_config.sync_mcp(manifest, runner))
                 merged = json.loads(target.read_text(encoding="utf-8"))
                 self.assertEqual(merged["customTopLevel"], {"preserve": True})
                 self.assertIn("private", merged["mcpServers"])
                 self.assertEqual(merged["mcpServers"]["context7"], manifest["mcp"]["servers"]["context7"])
                 backups = list(target.parent.glob("mcp.json.bak.*"))
                 self.assertEqual(len(backups), 1)
-                self.assertFalse(DOTAI.sync_mcp(manifest, runner))
+                self.assertFalse(mcp_config.sync_mcp(manifest, runner))
                 self.assertEqual(len(list(target.parent.glob("mcp.json.bak.*"))), 1)
 
     @unittest.skipIf(os.name == "nt", "POSIX permissions are not Windows ACLs")
@@ -491,7 +501,7 @@ class DotAiTests(unittest.TestCase):
             )
             target.chmod(0o644)
             with mock.patch.dict(os.environ, {"DOTAI_HOME": str(home)}):
-                self.assertTrue(DOTAI.sync_mcp(self.minimal_manifest("~/.omp/agent/mcp.json"), DOTAI.Runner("ubuntu")))
+                self.assertTrue(mcp_config.sync_mcp(self.minimal_manifest("~/.omp/agent/mcp.json"), runtime.Runner("ubuntu")))
             backup = next(target.parent.glob("mcp.json.bak.*"))
             self.assertIn("old-reference", backup.read_text(encoding="utf-8"))
             self.assertEqual(backup.stat().st_mode & 0o777, 0o600)
@@ -499,7 +509,7 @@ class DotAiTests(unittest.TestCase):
             custom = home / "custom-stack.json"
             custom.write_text('{"env":"OLD_TOKEN"}', encoding="utf-8")
             custom.chmod(0o644)
-            prior = DOTAI.backup_manifest(custom)
+            prior = manifests.backup_manifest(custom)
             self.assertEqual(prior.read_text(encoding="utf-8"), custom.read_text(encoding="utf-8"))
             self.assertEqual(prior.stat().st_mode & 0o777, 0o600)
 
@@ -541,9 +551,9 @@ class DotAiTests(unittest.TestCase):
             manifest = self.minimal_manifest("~/.omp/agent/mcp.json")
             original = target.read_text(encoding="utf-8")
             with mock.patch.dict(os.environ, {"DOTAI_HOME": str(home)}):
-                healthy, detail = DOTAI.mcp_status(manifest)
+                healthy, detail = mcp_config.mcp_status(manifest)
                 self.assertTrue(healthy, detail)
-                self.assertFalse(DOTAI.sync_mcp(manifest, DOTAI.Runner("ubuntu")))
+                self.assertFalse(mcp_config.sync_mcp(manifest, runtime.Runner("ubuntu")))
             self.assertEqual(target.read_text(encoding="utf-8"), original)
 
     def test_mcp_sync_respects_disabled_server_without_reporting_ok(self) -> None:
@@ -566,10 +576,10 @@ class DotAiTests(unittest.TestCase):
             target.write_text(original, encoding="utf-8")
             output = io.StringIO()
             with mock.patch.dict(os.environ, {"DOTAI_HOME": str(home)}), contextlib.redirect_stdout(output):
-                self.assertFalse(DOTAI.mcp_status(manifest)[0])
-                self.assertFalse(DOTAI.sync_mcp(manifest, DOTAI.Runner("ubuntu")))
-                self.assertFalse(DOTAI.sync_mcp(manifest, DOTAI.Runner("ubuntu")))
-                self.assertFalse(DOTAI.mcp_status(manifest)[0])
+                self.assertFalse(mcp_config.mcp_status(manifest)[0])
+                self.assertFalse(mcp_config.sync_mcp(manifest, runtime.Runner("ubuntu")))
+                self.assertFalse(mcp_config.sync_mcp(manifest, runtime.Runner("ubuntu")))
+                self.assertFalse(mcp_config.mcp_status(manifest)[0])
             self.assertNotIn("OK", output.getvalue())
             self.assertEqual(target.read_text(encoding="utf-8"), original)
             self.assertEqual(list(target.parent.glob("mcp.json.bak.*")), [])
@@ -589,10 +599,10 @@ class DotAiTests(unittest.TestCase):
             with mock.patch.dict(os.environ, {"DOTAI_HOME": str(home)}), contextlib.redirect_stdout(io.StringIO()):
                 for dry_run in (True, False):
                     with self.subTest(dry_run=dry_run):
-                        runner = DOTAI.Runner("ubuntu", dry_run=dry_run)
-                        self.assertFalse(DOTAI.sync_mcp(manifest, runner))
+                        runner = runtime.Runner("ubuntu", dry_run=dry_run)
+                        self.assertFalse(mcp_config.sync_mcp(manifest, runner))
                         self.assertTrue(runner.failures)
-                        self.assertFalse(DOTAI.mcp_status(manifest)[0])
+                        self.assertFalse(mcp_config.mcp_status(manifest)[0])
                         self.assertEqual(target.read_text(encoding="utf-8"), original)
                         self.assertEqual(list(home.glob("mcp.json.bak.*")), [])
 
@@ -610,11 +620,11 @@ class DotAiTests(unittest.TestCase):
             manifest["mcp"]["servers"] = {"context7": manifest["mcp"]["servers"]["context7"]}
             with mock.patch.dict(os.environ, {"DOTAI_HOME": str(home)}):
                 try:
-                    changed = DOTAI.sync_mcp(manifest, DOTAI.Runner("ubuntu"))
+                    changed = mcp_config.sync_mcp(manifest, runtime.Runner("ubuntu"))
                 except AttributeError as exc:
                     self.fail(f"MCP sync crashed on a non-object managed entry: {exc}")
                 self.assertTrue(changed)
-                self.assertTrue(DOTAI.mcp_status(manifest)[0])
+                self.assertTrue(mcp_config.mcp_status(manifest)[0])
             updated = json.loads(target.read_text(encoding="utf-8"))
             self.assertEqual(updated["mcpServers"]["context7"], manifest["mcp"]["servers"]["context7"])
             self.assertEqual(updated["mcpServers"]["personal"], original["mcpServers"]["personal"])
@@ -646,9 +656,9 @@ class DotAiTests(unittest.TestCase):
             original = provider.read_text(encoding="utf-8")
             output = io.StringIO()
             with mock.patch.dict(os.environ, {"DOTAI_HOME": str(home)}), contextlib.redirect_stdout(output):
-                self.assertFalse(DOTAI.mcp_status(manifest)[0])
-                self.assertFalse(DOTAI.sync_mcp(manifest, DOTAI.Runner("ubuntu")))
-                self.assertFalse(DOTAI.mcp_status(manifest)[0])
+                self.assertFalse(mcp_config.mcp_status(manifest)[0])
+                self.assertFalse(mcp_config.sync_mcp(manifest, runtime.Runner("ubuntu")))
+                self.assertFalse(mcp_config.mcp_status(manifest)[0])
             self.assertNotIn("OK", output.getvalue())
             self.assertFalse(target.exists())
             self.assertEqual(provider.read_text(encoding="utf-8"), original)
@@ -669,17 +679,17 @@ class DotAiTests(unittest.TestCase):
                 "b": {"command": "python3", "args": ["-m", "example"], "cwd": "/workspace/b", "timeout": 30},
             }
             with mock.patch.dict(os.environ, {"DOTAI_HOME": str(home)}), contextlib.redirect_stdout(io.StringIO()):
-                runner = DOTAI.Runner("ubuntu")
-                self.assertTrue(DOTAI.sync_mcp(manifest, runner))
+                runner = runtime.Runner("ubuntu")
+                self.assertTrue(mcp_config.sync_mcp(manifest, runner))
                 updated = json.loads(target.read_text(encoding="utf-8"))
                 self.assertEqual(updated["mcpServers"], {
                     "a": {"command": "python3", "args": ["-m", "example"], "cwd": "/workspace/a", "timeout": 30},
                     "b": {"command": "python3", "args": ["-m", "example"], "cwd": "/workspace/b", "timeout": 30},
                 })
-                healthy, detail = DOTAI.mcp_status(manifest)
+                healthy, detail = mcp_config.mcp_status(manifest)
                 self.assertTrue(healthy, detail)
                 after = target.read_bytes()
-                self.assertFalse(DOTAI.sync_mcp(manifest, runner))
+                self.assertFalse(mcp_config.sync_mcp(manifest, runner))
                 self.assertEqual(runner.failures, [])
                 self.assertEqual(target.read_bytes(), after)
             backups = list(target.parent.glob("mcp.json.bak.*"))
@@ -702,11 +712,11 @@ class DotAiTests(unittest.TestCase):
             }
             with mock.patch.dict(os.environ, {"DOTAI_HOME": str(home)}), contextlib.redirect_stdout(io.StringIO()):
                 with self.subTest(operation="status"):
-                    healthy, detail = DOTAI.mcp_status(manifest)
+                    healthy, detail = mcp_config.mcp_status(manifest)
                     self.assertTrue(healthy, detail)
                 with self.subTest(operation="sync"):
-                    runner = DOTAI.Runner("ubuntu")
-                    self.assertFalse(DOTAI.sync_mcp(manifest, runner))
+                    runner = runtime.Runner("ubuntu")
+                    self.assertFalse(mcp_config.sync_mcp(manifest, runner))
                     self.assertEqual(runner.failures, [])
                     self.assertEqual(target.read_text(encoding="utf-8"), original)
                     self.assertEqual(list(target.parent.glob("mcp.json.bak.*")), [])
@@ -728,10 +738,10 @@ class DotAiTests(unittest.TestCase):
             with mock.patch.dict(os.environ, {"DOTAI_HOME": str(home)}), contextlib.redirect_stdout(io.StringIO()):
                 for dry_run in (True, False):
                     with self.subTest(dry_run=dry_run):
-                        runner = DOTAI.Runner("ubuntu", dry_run=dry_run)
-                        self.assertFalse(DOTAI.sync_mcp(manifest, runner))
+                        runner = runtime.Runner("ubuntu", dry_run=dry_run)
+                        self.assertFalse(mcp_config.sync_mcp(manifest, runner))
                         self.assertTrue(runner.failures)
-                        self.assertFalse(DOTAI.mcp_status(manifest)[0])
+                        self.assertFalse(mcp_config.mcp_status(manifest)[0])
                         self.assertEqual(target.read_text(encoding="utf-8"), original)
                         self.assertEqual(list(target.parent.glob("mcp.json.bak.*")), [])
 
@@ -756,10 +766,10 @@ class DotAiTests(unittest.TestCase):
             with mock.patch.dict(os.environ, {"DOTAI_HOME": str(home)}), contextlib.redirect_stdout(io.StringIO()):
                 for dry_run in (True, False):
                     with self.subTest(dry_run=dry_run):
-                        runner = DOTAI.Runner("ubuntu", dry_run=dry_run)
-                        self.assertFalse(DOTAI.sync_mcp(manifest, runner))
+                        runner = runtime.Runner("ubuntu", dry_run=dry_run)
+                        self.assertFalse(mcp_config.sync_mcp(manifest, runner))
                         self.assertTrue(runner.failures)
-                        self.assertFalse(DOTAI.mcp_status(manifest)[0])
+                        self.assertFalse(mcp_config.mcp_status(manifest)[0])
                         self.assertEqual(target.read_text(encoding="utf-8"), original)
                         self.assertEqual(list(target.parent.glob("mcp.json.bak.*")), [])
 
@@ -780,9 +790,9 @@ class DotAiTests(unittest.TestCase):
             with mock.patch.dict(os.environ, {"DOTAI_HOME": str(home)}), contextlib.redirect_stdout(io.StringIO()):
                 for dry_run in (True, False):
                     with self.subTest(dry_run=dry_run):
-                        runner = DOTAI.Runner("ubuntu", dry_run=dry_run)
+                        runner = runtime.Runner("ubuntu", dry_run=dry_run)
                         try:
-                            changed = DOTAI.sync_mcp(manifest, runner)
+                            changed = mcp_config.sync_mcp(manifest, runner)
                         except TypeError as exc:
                             self.fail(f"MCP sync crashed on unrelated malformed args: {exc}")
                         self.assertTrue(changed)
@@ -796,10 +806,10 @@ class DotAiTests(unittest.TestCase):
                     "managed": {"command": "python3", "args": ["-m", "example"]},
                 })
                 self.assertEqual(updated["customTopLevel"], {"owner": "user"})
-                healthy, detail = DOTAI.mcp_status(manifest)
+                healthy, detail = mcp_config.mcp_status(manifest)
                 self.assertTrue(healthy, detail)
                 after = target.read_bytes()
-                self.assertFalse(DOTAI.sync_mcp(manifest, DOTAI.Runner("ubuntu")))
+                self.assertFalse(mcp_config.sync_mcp(manifest, runtime.Runner("ubuntu")))
                 self.assertEqual(target.read_bytes(), after)
             backups = list(target.parent.glob("mcp.json.bak.*"))
             self.assertEqual(len(backups), 1)
@@ -835,9 +845,9 @@ class DotAiTests(unittest.TestCase):
                 }
             }
             with mock.patch.dict(os.environ, {"DOTAI_HOME": str(home)}):
-                self.assertFalse(DOTAI.mcp_status(manifest)[0])
+                self.assertFalse(mcp_config.mcp_status(manifest)[0])
                 with contextlib.redirect_stdout(io.StringIO()):
-                    self.assertTrue(DOTAI.sync_mcp(manifest, DOTAI.Runner("ubuntu")))
+                    self.assertTrue(mcp_config.sync_mcp(manifest, runtime.Runner("ubuntu")))
                 merged = json.loads(target.read_text(encoding="utf-8"))
                 self.assertEqual(set(merged["mcpServers"]), {"local-alias", "personal"})
                 self.assertEqual(merged["mcpServers"]["local-alias"]["cwd"], "/workspace/current")
@@ -848,10 +858,10 @@ class DotAiTests(unittest.TestCase):
                 )
                 self.assertEqual(merged["mcpServers"]["local-alias"]["providerOptions"], {"retry": 2})
                 self.assertEqual(merged["customTopLevel"], {"owner": "user"})
-                self.assertTrue(DOTAI.mcp_status(manifest)[0])
+                self.assertTrue(mcp_config.mcp_status(manifest)[0])
                 after = target.read_bytes()
                 with contextlib.redirect_stdout(io.StringIO()):
-                    self.assertFalse(DOTAI.sync_mcp(manifest, DOTAI.Runner("ubuntu")))
+                    self.assertFalse(mcp_config.sync_mcp(manifest, runtime.Runner("ubuntu")))
                 self.assertEqual(target.read_bytes(), after)
                 self.assertEqual(len(list(target.parent.glob("mcp.json.bak.*"))), 1)
 
@@ -882,23 +892,23 @@ class DotAiTests(unittest.TestCase):
                 }
             }
             with mock.patch.dict(os.environ, {"DOTAI_HOME": str(home)}):
-                self.assertFalse(DOTAI.mcp_status(manifest)[0])
+                self.assertFalse(mcp_config.mcp_status(manifest)[0])
                 with contextlib.redirect_stdout(io.StringIO()):
-                    self.assertTrue(DOTAI.sync_mcp(manifest, DOTAI.Runner("ubuntu")))
+                    self.assertTrue(mcp_config.sync_mcp(manifest, runtime.Runner("ubuntu")))
                 merged = json.loads(target.read_text(encoding="utf-8"))["mcpServers"]
                 self.assertEqual(set(merged), {"remote-alias"})
                 self.assertEqual(merged["remote-alias"]["timeout"], 20)
                 self.assertEqual(merged["remote-alias"]["headers"], {"X-Extra": "EXTRA_FROM_ENV"})
                 self.assertEqual(merged["remote-alias"]["providerOptions"], {"keep": True})
-                self.assertTrue(DOTAI.mcp_status(manifest)[0])
+                self.assertTrue(mcp_config.mcp_status(manifest)[0])
 
     def test_selector_identity_removes_one_recognized_thinking_suffix(self) -> None:
-        self.assertEqual(DOTAI.selector_identity("openai-codex/interactive-model:high"), "openai-codex/interactive-model")
-        self.assertEqual(DOTAI.selector_identity("openai-codex/interactive-model:high:auto"), "openai-codex/interactive-model:high")
-        self.assertEqual(DOTAI.selector_identity("openai-codex/interactive-model:custom"), "openai-codex/interactive-model:custom")
+        self.assertEqual(model_routing.selector_identity("openai-codex/interactive-model:high"), "openai-codex/interactive-model")
+        self.assertEqual(model_routing.selector_identity("openai-codex/interactive-model:high:auto"), "openai-codex/interactive-model:high")
+        self.assertEqual(model_routing.selector_identity("openai-codex/interactive-model:custom"), "openai-codex/interactive-model:custom")
 
     def test_available_omp_models_parses_only_complete_catalogs(self) -> None:
-        runner = DOTAI.Runner("ubuntu")
+        runner = runtime.Runner("ubuntu")
         catalog = json.dumps(
             {
                 "models": [
@@ -911,7 +921,7 @@ class DotAiTests(unittest.TestCase):
 
         with mock.patch.object(runner, "output", return_value=catalog) as output:
             self.assertEqual(
-                DOTAI.available_omp_models(runner),
+                model_routing.available_omp_models(runner),
                 {
                     "openai-codex/interactive-model",
                     "github-copilot/interactive-model",
@@ -922,10 +932,10 @@ class DotAiTests(unittest.TestCase):
 
         for malformed in ("", "[]", "{", "{}", '{"models": {}}', '{"models": ["selector"]}', '{"models": [{}]}', '{"models": [{"selector": ""}]}'):
             with self.subTest(malformed=malformed), mock.patch.object(runner, "output", return_value=malformed):
-                self.assertIsNone(DOTAI.available_omp_models(runner))
+                self.assertIsNone(model_routing.available_omp_models(runner))
 
         with mock.patch.object(runner, "output", return_value='{"models": []}'):
-            self.assertEqual(DOTAI.available_omp_models(runner), set())
+            self.assertEqual(model_routing.available_omp_models(runner), set())
 
     def test_detected_routing_providers_require_supported_recommendations(self) -> None:
         recommendations = self.routing_recommendations()
@@ -935,16 +945,16 @@ class DotAiTests(unittest.TestCase):
             "private/model",
         }
         self.assertEqual(
-            DOTAI.detected_routing_providers(recommendations, available),
+            model_routing.detected_routing_providers(recommendations, available),
             ["github-copilot", "openai-codex"],
         )
-        with self.assertRaisesRegex(DOTAI.DotAiError, "no recommended models"):
-            DOTAI.detected_routing_providers(
+        with self.assertRaisesRegex(runtime.DotAiError, "no recommended models"):
+            model_routing.detected_routing_providers(
                 recommendations,
                 {"anthropic/unknown-model"},
             )
         self.assertEqual(
-            DOTAI.detected_routing_providers(recommendations, {"private/model"}),
+            model_routing.detected_routing_providers(recommendations, {"private/model"}),
             [],
         )
 
@@ -962,7 +972,7 @@ class DotAiTests(unittest.TestCase):
         for providers, current, requested, expected in cases:
             with self.subTest(providers=providers, current=current, requested=requested):
                 self.assertEqual(
-                    DOTAI.choose_primary_provider(providers, current, requested),
+                    model_routing.choose_primary_provider(providers, current, requested),
                     expected,
                 )
 
@@ -973,7 +983,7 @@ class DotAiTests(unittest.TestCase):
                 mock.patch("builtins.input", return_value=response) as prompt,
             ):
                 self.assertEqual(
-                    DOTAI.choose_primary_provider(
+                    model_routing.choose_primary_provider(
                         ["anthropic", "openai-codex"], None, None
                     ),
                     expected,
@@ -984,12 +994,12 @@ class DotAiTests(unittest.TestCase):
 
         with (
             mock.patch.object(sys.stdin, "isatty", return_value=False),
-            self.assertRaisesRegex(DOTAI.DotAiError, "--primary"),
+            self.assertRaisesRegex(runtime.DotAiError, "--primary"),
         ):
-            DOTAI.choose_primary_provider(["anthropic", "openai-codex"], None, None)
+            model_routing.choose_primary_provider(["anthropic", "openai-codex"], None, None)
 
-        with self.assertRaisesRegex(DOTAI.DotAiError, "--primary.*not available"):
-            DOTAI.choose_primary_provider(["anthropic"], None, "openai-codex")
+        with self.assertRaisesRegex(runtime.DotAiError, "--primary.*not available"):
+            model_routing.choose_primary_provider(["anthropic"], None, "openai-codex")
 
         for providers, requested in (
             (["github-copilot"], "anthropic"),
@@ -999,16 +1009,16 @@ class DotAiTests(unittest.TestCase):
         ):
             with (
                 self.subTest(providers=providers, requested=requested),
-                self.assertRaisesRegex(DOTAI.DotAiError, "--primary.*not available"),
+                self.assertRaisesRegex(runtime.DotAiError, "--primary.*not available"),
             ):
-                DOTAI.choose_primary_provider(providers, None, requested)
+                model_routing.choose_primary_provider(providers, None, requested)
 
         with (
             mock.patch.object(sys.stdin, "isatty", return_value=True),
             mock.patch("builtins.input", return_value="3") as prompt,
-            self.assertRaisesRegex(DOTAI.DotAiError, "Invalid primary selection"),
+            self.assertRaisesRegex(runtime.DotAiError, "Invalid primary selection"),
         ):
-            DOTAI.choose_primary_provider(["anthropic", "openai-codex"], None, None)
+            model_routing.choose_primary_provider(["anthropic", "openai-codex"], None, None)
         prompt.assert_called_once()
 
         cancellation_errors = []
@@ -1017,9 +1027,9 @@ class DotAiTests(unittest.TestCase):
                 self.subTest(interruption=interruption.__name__),
                 mock.patch.object(sys.stdin, "isatty", return_value=True),
                 mock.patch("builtins.input", side_effect=interruption),
-                self.assertRaises(DOTAI.DotAiError) as raised,
+                self.assertRaises(runtime.DotAiError) as raised,
             ):
-                DOTAI.choose_primary_provider(
+                model_routing.choose_primary_provider(
                     ["anthropic", "openai-codex"], None, None
                 )
             cancellation_errors.append(str(raised.exception))
@@ -1031,9 +1041,9 @@ class DotAiTests(unittest.TestCase):
 
         def available_for(providers: list[str]) -> set[str]:
             return {
-                DOTAI.selector_identity(provider_roles[provider]["roles"][role][0])
+                model_routing.selector_identity(provider_roles[provider]["roles"][role][0])
                 for provider in providers
-                for role in DOTAI.ROUTING_ROLES
+                for role in model_routing.ROUTING_ROLES
             }
 
         copilot = {
@@ -1117,7 +1127,7 @@ class DotAiTests(unittest.TestCase):
 
         for providers, primary, expected_primaries in cases:
             with self.subTest(providers=providers, primary=primary):
-                primaries, fallbacks, unavailable = DOTAI.resolve_omp_routing(
+                primaries, fallbacks, unavailable = model_routing.resolve_omp_routing(
                     recommendations, providers, primary, available_for(providers)
                 )
                 self.assertEqual(primaries, expected_primaries)
@@ -1167,7 +1177,7 @@ class DotAiTests(unittest.TestCase):
                 }
             }
         }
-        primaries, fallbacks, unavailable = DOTAI.resolve_omp_routing(
+        primaries, fallbacks, unavailable = model_routing.resolve_omp_routing(
             duplicate_recommendations,
             ["anthropic"],
             "anthropic",
@@ -1208,7 +1218,7 @@ class DotAiTests(unittest.TestCase):
             manifest = self.minimal_manifest("~/.omp/agent/mcp.json")
             manifest["ompRouting"] = None
             path.write_text(json.dumps(manifest), encoding="utf-8")
-            runner = DOTAI.Runner("ubuntu")
+            runner = runtime.Runner("ubuntu")
 
             def persisted_before_omp(_command: list[str], _label: str) -> None:
                 saved = json.loads(path.read_text(encoding="utf-8"))["ompRouting"]
@@ -1220,7 +1230,7 @@ class DotAiTests(unittest.TestCase):
                 mock.patch.object(runner, "run", side_effect=persisted_before_omp) as run,
                 contextlib.redirect_stdout(io.StringIO()),
             ):
-                self.assertEqual(DOTAI.configure_omp_routing(manifest, path, runner), 0)
+                self.assertEqual(model_routing.configure_omp_routing(manifest, path, runner), 0)
 
             saved = json.loads(path.read_text(encoding="utf-8"))
             self.assertEqual(saved["ompRouting"]["providers"], ["github-copilot", "openai-codex"])
@@ -1292,7 +1302,7 @@ class DotAiTests(unittest.TestCase):
             manifest["ompRouting"] = None
             path.write_text(json.dumps(manifest), encoding="utf-8")
             before = path.read_bytes()
-            runner = DOTAI.Runner("ubuntu", dry_run=True)
+            runner = runtime.Runner("ubuntu", dry_run=True)
             report = io.StringIO()
             with (
                 self.mock_routing_catalog(),
@@ -1300,7 +1310,7 @@ class DotAiTests(unittest.TestCase):
                 mock.patch.object(runner, "run") as run,
                 contextlib.redirect_stdout(report),
             ):
-                self.assertEqual(DOTAI.configure_omp_routing(manifest, path, runner), 0)
+                self.assertEqual(model_routing.configure_omp_routing(manifest, path, runner), 0)
 
             self.assertEqual(path.read_bytes(), before)
             self.assertEqual(list(path.parent.glob("stack.json.bak.*")), [])
@@ -1368,14 +1378,14 @@ class DotAiTests(unittest.TestCase):
             manifest["ompRouting"] = routing
             path.write_text(json.dumps(manifest), encoding="utf-8")
             before = path.read_bytes()
-            runner = DOTAI.Runner("ubuntu")
+            runner = runtime.Runner("ubuntu")
             with (
                 self.mock_routing_catalog(),
                 mock.patch.object(runner, "output", side_effect=self.omp_output(selectors, values)),
                 mock.patch.object(runner, "run") as run,
                 contextlib.redirect_stdout(io.StringIO()),
             ):
-                self.assertEqual(DOTAI.configure_omp_routing(manifest, path, runner), 0)
+                self.assertEqual(model_routing.configure_omp_routing(manifest, path, runner), 0)
             self.assertEqual(path.read_bytes(), before)
             self.assertEqual(list(path.parent.glob("stack.json.bak.*")), [])
             run.assert_not_called()
@@ -1413,15 +1423,15 @@ class DotAiTests(unittest.TestCase):
                 "fallbackRevertPolicy": "never",
             }
             path.write_text(json.dumps(raw), encoding="utf-8")
-            manifest = DOTAI.load_manifest(path, allow_legacy_routing=True)
-            runner = DOTAI.Runner("ubuntu")
+            manifest = manifests.load_manifest(path, allow_legacy_routing=True)
+            runner = runtime.Runner("ubuntu")
             with (
                 self.mock_routing_catalog(),
                 mock.patch.object(runner, "output", side_effect=self.omp_output(selectors, values)),
                 mock.patch.object(runner, "run") as run,
                 contextlib.redirect_stdout(io.StringIO()),
             ):
-                self.assertEqual(DOTAI.configure_omp_routing(manifest, path, runner), 0)
+                self.assertEqual(model_routing.configure_omp_routing(manifest, path, runner), 0)
 
             run.assert_not_called()
             backups = list(path.parent.glob("stack.json.bak.*"))
@@ -1447,7 +1457,7 @@ class DotAiTests(unittest.TestCase):
             }
         )
         cases = [
-            ("malformed recommendations", lambda _command: "", None, DOTAI.DotAiError("bad catalog"), True),
+            ("malformed recommendations", lambda _command: "", None, runtime.DotAiError("bad catalog"), True),
             ("malformed model catalog", lambda _command: "{", None, None, False),
             (
                 "no supported provider",
@@ -1486,9 +1496,9 @@ class DotAiTests(unittest.TestCase):
                 manifest["ompRouting"] = None
                 path.write_text(json.dumps(manifest), encoding="utf-8")
                 before = path.read_bytes()
-                runner = DOTAI.Runner("ubuntu")
+                runner = runtime.Runner("ubuntu")
                 loader = (
-                    mock.patch.object(DOTAI, "load_routing_recommendations", side_effect=catalog_error)
+                    mock.patch.object(model_routing, "load_routing_recommendations", side_effect=catalog_error)
                     if catalog_error
                     else self.mock_routing_catalog()
                 )
@@ -1499,21 +1509,21 @@ class DotAiTests(unittest.TestCase):
                     contextlib.redirect_stdout(io.StringIO()),
                 ):
                     if raises:
-                        with self.assertRaises(DOTAI.DotAiError):
-                            DOTAI.configure_omp_routing(manifest, path, runner, requested)
+                        with self.assertRaises(runtime.DotAiError):
+                            model_routing.configure_omp_routing(manifest, path, runner, requested)
                     else:
-                        self.assertEqual(DOTAI.configure_omp_routing(manifest, path, runner, requested), 1)
+                        self.assertEqual(model_routing.configure_omp_routing(manifest, path, runner, requested), 1)
                 self.assertEqual(path.read_bytes(), before)
                 self.assertEqual(list(path.parent.glob("stack.json.bak.*")), [])
                 run.assert_not_called()
 
     def test_configured_omp_value_requires_a_json_value_object(self) -> None:
-        runner = DOTAI.Runner("ubuntu")
+        runner = runtime.Runner("ubuntu")
         with mock.patch.object(runner, "output", return_value=json.dumps({"key": "modelRoles", "value": {"default": "model"}})):
-            self.assertEqual(DOTAI.configured_omp_value(runner, "modelRoles"), {"default": "model"})
+            self.assertEqual(model_routing.configured_omp_value(runner, "modelRoles"), {"default": "model"})
         for output in ("", "[]", "{", json.dumps({}), json.dumps({"value": None})):
             with self.subTest(output=output), mock.patch.object(runner, "output", return_value=output):
-                self.assertIsNone(DOTAI.configured_omp_value(runner, "modelRoles"))
+                self.assertIsNone(model_routing.configured_omp_value(runner, "modelRoles"))
 
     def test_configure_omp_routing_returns_failure_after_manifest_persistence(self) -> None:
         selectors = ["openai-codex/interactive-model", "openai-codex/utility-model"]
@@ -1532,7 +1542,7 @@ class DotAiTests(unittest.TestCase):
             manifest = self.minimal_manifest("~/.omp/agent/mcp.json")
             manifest["ompRouting"] = None
             path.write_text(json.dumps(manifest), encoding="utf-8")
-            runner = DOTAI.Runner("ubuntu")
+            runner = runtime.Runner("ubuntu")
 
             def fail_first_write(_command: list[str], label: str) -> None:
                 if not runner.failures:
@@ -1544,7 +1554,7 @@ class DotAiTests(unittest.TestCase):
                 mock.patch.object(runner, "run", side_effect=fail_first_write),
                 contextlib.redirect_stdout(io.StringIO()),
             ):
-                self.assertEqual(DOTAI.configure_omp_routing(manifest, path, runner), 1)
+                self.assertEqual(model_routing.configure_omp_routing(manifest, path, runner), 1)
 
             saved = json.loads(path.read_text(encoding="utf-8"))["ompRouting"]
             self.assertEqual(saved["providers"], ["openai-codex"])
@@ -1556,15 +1566,15 @@ class DotAiTests(unittest.TestCase):
             home = Path(directory) / "{python}"
             literal_json = '{"literal":{"braces":true}}'
             with mock.patch.dict(os.environ, {"DOTAI_HOME": str(home)}):
-                runner = DOTAI.Runner("ubuntu")
+                runner = runtime.Runner("ubuntu")
                 self.assertEqual(runner.argv(["tool", "{home}"]), ["tool", str(home)])
                 self.assertEqual(
                     runner.argv(["{home}", "{repo}", "{python}", literal_json]),
-                    [str(home), str(DOTAI.ROOT), sys.executable, literal_json],
+                    [str(home), str(runtime.ROOT), sys.executable, literal_json],
                 )
 
     def test_configure_omp_routing_parser_and_lifecycle_are_explicit(self) -> None:
-        args = DOTAI.build_parser().parse_args(
+        args = cli.build_parser().parse_args(
             ["configure", "omp-routing", "--primary", "anthropic", "--dry-run"]
         )
         self.assertEqual(
@@ -1577,9 +1587,9 @@ class DotAiTests(unittest.TestCase):
             manifest = self.minimal_manifest("~/.omp/agent/mcp.json")
             manifest["ompRouting"] = {"roles": {"default": ["openai-codex/interactive-model"]}}
             path.write_text(json.dumps(manifest), encoding="utf-8")
-            with mock.patch.object(DOTAI, "configure_omp_routing", return_value=7) as configure:
+            with mock.patch.object(model_routing, "configure_omp_routing", return_value=7) as configure:
                 self.assertEqual(
-                    DOTAI.main(
+                    cli.main(
                         [
                             "--manifest",
                             str(path),
@@ -1600,15 +1610,11 @@ class DotAiTests(unittest.TestCase):
 
             error = io.StringIO()
             with (
-                mock.patch.object(
-                    DOTAI,
-                    "configure_omp_routing",
-                    side_effect=DOTAI.DotAiError("Primary selection cancelled"),
-                ),
+                mock.patch.object(model_routing, "configure_omp_routing", side_effect=runtime.DotAiError("Primary selection cancelled"),),
                 contextlib.redirect_stderr(error),
             ):
                 self.assertEqual(
-                    DOTAI.main(["--manifest", str(path), "configure", "omp-routing"]),
+                    cli.main(["--manifest", str(path), "configure", "omp-routing"]),
                     2,
                 )
             self.assertIn("Primary selection cancelled", error.getvalue())
@@ -1624,11 +1630,11 @@ class DotAiTests(unittest.TestCase):
                 error = io.StringIO()
                 with self.subTest(command=name):
                     with (
-                        mock.patch.object(DOTAI, "print_release_notice"),
-                        mock.patch.object(DOTAI, "available_omp_models", side_effect=AssertionError(name)),
+                        mock.patch.object(releases, "print_release_notice"),
+                        mock.patch.object(model_routing, "available_omp_models", side_effect=AssertionError(name)),
                         contextlib.redirect_stderr(error),
                     ):
-                        self.assertEqual(DOTAI.main(["--manifest", str(path), *command]), 2)
+                        self.assertEqual(cli.main(["--manifest", str(path), *command]), 2)
                 self.assertIn("configure omp-routing", error.getvalue())
 
             manifest["ompRouting"] = None
@@ -1636,31 +1642,27 @@ class DotAiTests(unittest.TestCase):
             for command in ("install", "update", "sync"):
                 with self.subTest(isolated_command=command):
                     with (
-                        mock.patch.object(DOTAI, "print_release_notice"),
-                        mock.patch.object(DOTAI, "available_omp_models", side_effect=AssertionError(command)),
-                        mock.patch.object(DOTAI, "sync_mcp", return_value=False),
+                        mock.patch.object(releases, "print_release_notice"),
+                        mock.patch.object(model_routing, "available_omp_models", side_effect=AssertionError(command)),
+                        mock.patch.object(mcp_config, "sync_mcp", return_value=False),
                         contextlib.redirect_stdout(io.StringIO()),
                     ):
-                        self.assertEqual(DOTAI.main(["--manifest", str(path), command, "--dry-run"]), 0)
+                        self.assertEqual(cli.main(["--manifest", str(path), command, "--dry-run"]), 0)
 
     def test_omp_routing_status_reports_ok_for_compact_intent(self) -> None:
         manifest, selectors, values = self.compact_status_case()
         original_manifest = json.loads(json.dumps(manifest))
-        runner = DOTAI.Runner("ubuntu")
+        runner = runtime.Runner("ubuntu")
         with (
             self.mock_routing_catalog(),
             mock.patch.object(
                 runner, "output", side_effect=self.omp_output(selectors, values)
             ),
             mock.patch.object(runner, "run") as run,
-            mock.patch.object(
-                DOTAI,
-                "choose_primary_provider",
-                side_effect=AssertionError("status must not select or prompt"),
-            ),
+            mock.patch.object(model_routing, "choose_primary_provider", side_effect=AssertionError("status must not select or prompt"),),
         ):
             self.assertEqual(
-                DOTAI.omp_routing_status(manifest, runner),
+                model_routing.omp_routing_status(manifest, runner),
                 ("OK", "configured roles match"),
             )
         run.assert_not_called()
@@ -1674,7 +1676,7 @@ class DotAiTests(unittest.TestCase):
         }
         for name, available in cases.items():
             with self.subTest(name=name):
-                runner = DOTAI.Runner("ubuntu")
+                runner = runtime.Runner("ubuntu")
                 with (
                     self.mock_routing_catalog(),
                     mock.patch.object(
@@ -1689,14 +1691,10 @@ class DotAiTests(unittest.TestCase):
                         ),
                     ) as output,
                     mock.patch.object(runner, "run") as run,
-                    mock.patch.object(
-                        DOTAI,
-                        "choose_primary_provider",
-                        side_effect=AssertionError("status must not select or prompt"),
-                    ),
+                    mock.patch.object(model_routing, "choose_primary_provider", side_effect=AssertionError("status must not select or prompt"),),
                 ):
                     self.assertEqual(
-                        DOTAI.omp_routing_status(manifest, runner),
+                        model_routing.omp_routing_status(manifest, runner),
                         (
                             "DRIFT",
                             "authenticated providers changed; run 'dotai configure omp-routing'",
@@ -1743,7 +1741,7 @@ class DotAiTests(unittest.TestCase):
         ]
         for key, changed, detail in cases:
             with self.subTest(detail=detail):
-                runner = DOTAI.Runner("ubuntu")
+                runner = runtime.Runner("ubuntu")
                 current = {**values, key: changed}
                 with (
                     self.mock_routing_catalog(),
@@ -1753,21 +1751,17 @@ class DotAiTests(unittest.TestCase):
                         side_effect=self.omp_output(selectors, current),
                     ),
                     mock.patch.object(runner, "run") as run,
-                    mock.patch.object(
-                        DOTAI,
-                        "choose_primary_provider",
-                        side_effect=AssertionError("status must not select or prompt"),
-                    ),
+                    mock.patch.object(model_routing, "choose_primary_provider", side_effect=AssertionError("status must not select or prompt"),),
                 ):
                     self.assertEqual(
-                        DOTAI.omp_routing_status(manifest, runner),
+                        model_routing.omp_routing_status(manifest, runner),
                         ("DRIFT", detail),
                     )
                 run.assert_not_called()
 
         manifest = self.minimal_manifest("~/.omp/agent/mcp.json")
         manifest["ompRouting"] = self.compact_routing(["anthropic"], "anthropic")
-        runner = DOTAI.Runner("ubuntu")
+        runner = runtime.Runner("ubuntu")
         with (
             self.mock_routing_catalog(),
             mock.patch.object(
@@ -1778,14 +1772,10 @@ class DotAiTests(unittest.TestCase):
                 ),
             ) as output,
             mock.patch.object(runner, "run") as run,
-            mock.patch.object(
-                DOTAI,
-                "choose_primary_provider",
-                side_effect=AssertionError("status must not select or prompt"),
-            ),
+            mock.patch.object(model_routing, "choose_primary_provider", side_effect=AssertionError("status must not select or prompt"),),
         ):
             self.assertEqual(
-                DOTAI.omp_routing_status(manifest, runner),
+                model_routing.omp_routing_status(manifest, runner),
                 ("DRIFT", "unavailable roles: smol"),
             )
         output.assert_called_once_with(["omp", "models", "--json"])
@@ -1793,7 +1783,7 @@ class DotAiTests(unittest.TestCase):
 
     def test_omp_routing_status_reports_inactive_and_fail(self) -> None:
         manifest, selectors, values = self.compact_status_case()
-        runner = DOTAI.Runner("ubuntu")
+        runner = runtime.Runner("ubuntu")
 
         with (
             self.mock_routing_catalog(),
@@ -1807,7 +1797,7 @@ class DotAiTests(unittest.TestCase):
             mock.patch.object(runner, "run") as run,
         ):
             self.assertEqual(
-                DOTAI.omp_routing_status(manifest, runner),
+                model_routing.omp_routing_status(manifest, runner),
                 ("INACTIVE", "configured providers are unavailable"),
             )
         output.assert_called_once_with(["omp", "models", "--json"])
@@ -1815,11 +1805,7 @@ class DotAiTests(unittest.TestCase):
 
         failures = [
             (
-                mock.patch.object(
-                    DOTAI,
-                    "load_routing_recommendations",
-                    side_effect=DOTAI.DotAiError("malformed recommendations"),
-                ),
+                mock.patch.object(model_routing, "load_routing_recommendations", side_effect=runtime.DotAiError("malformed recommendations"),),
                 mock.patch.object(runner, "output"),
                 ("FAIL", "unable to read routing recommendations"),
             ),
@@ -1845,7 +1831,7 @@ class DotAiTests(unittest.TestCase):
             with self.subTest(expected=expected), loader, output_patch as output, mock.patch.object(
                 runner, "run"
             ) as run:
-                self.assertEqual(DOTAI.omp_routing_status(manifest, runner), expected)
+                self.assertEqual(model_routing.omp_routing_status(manifest, runner), expected)
             run.assert_not_called()
 
         for routing in (None, "absent"):
@@ -1854,11 +1840,7 @@ class DotAiTests(unittest.TestCase):
                 if routing is None:
                     unconfigured["ompRouting"] = None
                 with (
-                    mock.patch.object(
-                        DOTAI,
-                        "load_routing_recommendations",
-                        side_effect=AssertionError("recommendations must not load"),
-                    ),
+                    mock.patch.object(model_routing, "load_routing_recommendations", side_effect=AssertionError("recommendations must not load"),),
                     mock.patch.object(
                         runner,
                         "output",
@@ -1867,17 +1849,17 @@ class DotAiTests(unittest.TestCase):
                     mock.patch.object(runner, "run") as run,
                 ):
                     self.assertEqual(
-                        DOTAI.omp_routing_status(unconfigured, runner),
+                        model_routing.omp_routing_status(unconfigured, runner),
                         ("OK", "not configured in manifest"),
                     )
                 run.assert_not_called()
 
     def test_print_status_reports_configured_routing_health(self) -> None:
         manifest = self.minimal_manifest("~/.omp/agent/mcp.json")
-        runner = DOTAI.Runner("ubuntu")
+        runner = runtime.Runner("ubuntu")
         manifest["ompRouting"] = self.compact_routing(["anthropic"], "anthropic")
-        DOTAI.configure_color("always")
-        self.addCleanup(DOTAI.configure_color, "never")
+        terminal.configure_color("always")
+        self.addCleanup(terminal.configure_color, "never")
         cases = [
             ("OK", "configured roles match", True, "\033[32;1m[OK]\033[0m"),
             (
@@ -1903,15 +1885,11 @@ class DotAiTests(unittest.TestCase):
             with self.subTest(label=label):
                 output = io.StringIO()
                 with (
-                    mock.patch.object(
-                        DOTAI, "mcp_status", return_value=(True, "managed")
-                    ),
-                    mock.patch.object(
-                        DOTAI, "omp_routing_status", return_value=(label, detail)
-                    ),
+                    mock.patch.object(mcp_config, "mcp_status", return_value=(True, "managed")),
+                    mock.patch.object(model_routing, "omp_routing_status", return_value=(label, detail)),
                     contextlib.redirect_stdout(output),
                 ):
-                    self.assertEqual(DOTAI.print_status(manifest, runner), healthy)
+                    self.assertEqual(health.print_status(manifest, runner), healthy)
                 self.assertIn("OMP routing:", output.getvalue())
                 self.assertIn(f"{colored_badge} {detail}", output.getvalue())
 
@@ -1919,7 +1897,7 @@ class DotAiTests(unittest.TestCase):
         manifest = self.minimal_manifest("~/.omp/agent/mcp.json")
         managed = "~/.pi/agent/extensions/rtk.ts"
         manifest["ompExtensions"] = [managed]
-        runner = DOTAI.Runner("ubuntu")
+        runner = runtime.Runner("ubuntu")
         current = json.dumps({"key": "extensions", "value": ["~/custom/extension.ts"]})
 
         with (
@@ -1927,7 +1905,7 @@ class DotAiTests(unittest.TestCase):
             mock.patch.object(runner, "run") as run,
             contextlib.redirect_stdout(io.StringIO()),
         ):
-            DOTAI.reconcile_omp_extensions(manifest, runner)
+            omp_config.reconcile_omp_extensions(manifest, runner)
 
         command = run.call_args.args[0]
         self.assertEqual(command[:4], ["omp", "config", "set", "extensions"])
@@ -1936,13 +1914,13 @@ class DotAiTests(unittest.TestCase):
             ["~/custom/extension.ts", managed],
         )
 
-        dry_runner = DOTAI.Runner("ubuntu", dry_run=True)
+        dry_runner = runtime.Runner("ubuntu", dry_run=True)
         output = io.StringIO()
         with (
             mock.patch.object(dry_runner, "output", return_value=""),
             contextlib.redirect_stdout(output),
         ):
-            DOTAI.reconcile_omp_extensions(manifest, dry_runner)
+            omp_config.reconcile_omp_extensions(manifest, dry_runner)
         self.assertFalse(dry_runner.failures)
         self.assertIn("OMP extensions: configure", output.getvalue())
 
@@ -1956,7 +1934,7 @@ class DotAiTests(unittest.TestCase):
                 mock.patch.dict(os.environ, {"DOTAI_HOME": str(home)}),
                 mock.patch.object(runner, "output", return_value=configured),
             ):
-                healthy, detail = DOTAI.omp_extension_status(manifest, runner)
+                healthy, detail = omp_config.omp_extension_status(manifest, runner)
             self.assertTrue(healthy, detail)
 
     def test_skill_status_distinguishes_codex_plugin_from_pi_install(self) -> None:
@@ -1969,7 +1947,7 @@ class DotAiTests(unittest.TestCase):
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_text(f"# {name}\n", encoding="utf-8")
             with mock.patch.dict(os.environ, {"DOTAI_HOME": str(home)}):
-                installed, detail = DOTAI.skill_status(skill)
+                installed, detail = skill_manager.skill_status(skill)
                 self.assertFalse(installed)
                 self.assertIn("Codex plugin", detail)
                 self.assertIn("inactive in OMP", detail)
@@ -1977,15 +1955,15 @@ class DotAiTests(unittest.TestCase):
                 manifest["skills"] = [skill]
                 manifest["mcp"]["servers"] = {}
                 output = io.StringIO()
-                DOTAI.configure_color("never")
+                terminal.configure_color("never")
                 with contextlib.redirect_stdout(output):
-                    self.assertFalse(DOTAI.print_status(manifest, DOTAI.Runner("ubuntu")))
+                    self.assertFalse(health.print_status(manifest, runtime.Runner("ubuntu")))
                 self.assertIn("[INACTIVE]", output.getvalue())
                 for name in skill["checkSkills"]:
                     path = home / ".pi" / "agent" / "skills" / name / "SKILL.md"
                     path.parent.mkdir(parents=True, exist_ok=True)
                     path.write_text(f"# {name}\n", encoding="utf-8")
-                installed, detail = DOTAI.skill_status(skill)
+                installed, detail = skill_manager.skill_status(skill)
                 self.assertTrue(installed)
                 self.assertEqual(detail, "installed for pi")
     def test_universal_skill_target_uses_omp_discovery_path(self) -> None:
@@ -1996,7 +1974,7 @@ class DotAiTests(unittest.TestCase):
             path.parent.mkdir(parents=True)
             path.write_text("---\nname: alpha\ndescription: test\n---\n", encoding="utf-8")
             with mock.patch.dict(os.environ, {"DOTAI_HOME": str(home)}):
-                installed, detail = DOTAI.skill_status(skill)
+                installed, detail = skill_manager.skill_status(skill)
             self.assertTrue(installed)
             self.assertEqual(detail, "installed for universal")
 
@@ -2033,7 +2011,7 @@ class DotAiTests(unittest.TestCase):
                 mock.patch.dict(os.environ, {"DOTAI_HOME": str(home), "XDG_STATE_HOME": str(xdg), "GH_HOST": "github.com"}),
                 contextlib.redirect_stdout(output),
             ):
-                DOTAI.reconcile_skills(manifest, DOTAI.Runner("linux", dry_run=True))
+                skill_manager.reconcile_skills(manifest, runtime.Runner("linux", dry_run=True))
             self.assertNotIn("npx", output.getvalue())
             self.assertIn("already installed", output.getvalue())
 
@@ -2064,7 +2042,7 @@ class DotAiTests(unittest.TestCase):
                         mock.patch.dict(os.environ, {"DOTAI_HOME": str(home), "XDG_STATE_HOME": "", "GH_HOST": "github.com"}),
                         contextlib.redirect_stdout(output),
                     ):
-                        DOTAI.reconcile_skills(manifest, DOTAI.Runner("linux", dry_run=True))
+                        skill_manager.reconcile_skills(manifest, runtime.Runner("linux", dry_run=True))
                     self.assertNotIn("npx", output.getvalue())
                     self.assertIn("already installed", output.getvalue())
 
@@ -2090,7 +2068,7 @@ class DotAiTests(unittest.TestCase):
                 mock.patch.dict(os.environ, {"DOTAI_HOME": str(home), "XDG_STATE_HOME": "", "GH_HOST": "github.com"}),
                 contextlib.redirect_stdout(output),
             ):
-                DOTAI.reconcile_skills(manifest, DOTAI.Runner("linux", dry_run=True))
+                skill_manager.reconcile_skills(manifest, runtime.Runner("linux", dry_run=True))
             self.assertIn("Reconcile skills from owner/new", output.getvalue())
             self.assertIn("--agent universal", output.getvalue())
             self.assertEqual(codex.read_text(encoding="utf-8"), "# New alpha\n")
@@ -2127,7 +2105,7 @@ class DotAiTests(unittest.TestCase):
                         mock.patch.dict(os.environ, {"DOTAI_HOME": str(home), "XDG_STATE_HOME": "", "GH_HOST": "github.com"}),
                         contextlib.redirect_stdout(output),
                     ):
-                        DOTAI.reconcile_skills(manifest, DOTAI.Runner("linux", dry_run=True))
+                        skill_manager.reconcile_skills(manifest, runtime.Runner("linux", dry_run=True))
                     self.assertIn("Reconcile skills from", output.getvalue())
 
     def test_sync_checks_supporting_files_before_skipping_owned_skill(self) -> None:
@@ -2154,7 +2132,7 @@ class DotAiTests(unittest.TestCase):
                         mock.patch.dict(os.environ, {"DOTAI_HOME": str(home), "XDG_STATE_HOME": "", "GH_HOST": "github.com"}),
                         contextlib.redirect_stdout(output),
                     ):
-                        DOTAI.reconcile_skills(manifest, DOTAI.Runner("linux", dry_run=True))
+                        skill_manager.reconcile_skills(manifest, runtime.Runner("linux", dry_run=True))
                     self.assertEqual("Reconcile skills from" in output.getvalue(), refresh)
 
     def test_sync_refreshes_when_recorded_content_hash_cannot_prove_ownership(self) -> None:
@@ -2176,7 +2154,7 @@ class DotAiTests(unittest.TestCase):
                         mock.patch.dict(os.environ, {"DOTAI_HOME": str(home), "XDG_STATE_HOME": "", "GH_HOST": "github.com"}),
                         contextlib.redirect_stdout(output),
                     ):
-                        DOTAI.reconcile_skills(manifest, DOTAI.Runner("linux", dry_run=True))
+                        skill_manager.reconcile_skills(manifest, runtime.Runner("linux", dry_run=True))
                     self.assertIn("Reconcile skills from owner/skills", output.getvalue())
 
     def test_sync_leaves_healthy_skills_untouched_by_default(self) -> None:
@@ -2203,10 +2181,10 @@ class DotAiTests(unittest.TestCase):
             plan = io.StringIO()
             with (
                 mock.patch.dict(os.environ, {"DOTAI_HOME": str(home), "XDG_STATE_HOME": "", "GH_HOST": "github.com"}),
-                mock.patch.object(DOTAI.subprocess, "run", side_effect=AssertionError("healthy skills must not fetch")),
+                mock.patch.object(subprocess, "run", side_effect=AssertionError("healthy skills must not fetch")),
                 contextlib.redirect_stdout(plan),
             ):
-                DOTAI.reconcile_skills(manifest, DOTAI.Runner("linux"))
+                skill_manager.reconcile_skills(manifest, runtime.Runner("linux"))
             self.assertNotIn("Reconcile skills from", plan.getvalue())
             self.assertNotIn("npx", plan.getvalue())
 
@@ -2228,7 +2206,7 @@ class DotAiTests(unittest.TestCase):
             }), encoding="utf-8")
             plan = io.StringIO()
             with mock.patch.dict(os.environ, {"DOTAI_HOME": str(home), "XDG_STATE_HOME": "", "GH_HOST": "github.com"}), contextlib.redirect_stdout(plan):
-                DOTAI.reconcile_skills(manifest, DOTAI.Runner("ubuntu", dry_run=True))
+                skill_manager.reconcile_skills(manifest, runtime.Runner("ubuntu", dry_run=True))
             self.assertIn("Reconcile skills from owner/new", plan.getvalue())
 
     def test_install_force_refreshes_an_existing_skill_source(self) -> None:
@@ -2250,8 +2228,8 @@ class DotAiTests(unittest.TestCase):
             }]
             plan = io.StringIO()
             with mock.patch.dict(os.environ, {"DOTAI_HOME": str(home), "XDG_STATE_HOME": "", "GH_HOST": "github.com"}), contextlib.redirect_stdout(plan):
-                self.assertEqual(DOTAI.reconcile(
-                    manifest, manifest_path, DOTAI.Runner("ubuntu", dry_run=True), "install", force=True,
+                self.assertEqual(reconciliation.reconcile(
+                    manifest, manifest_path, runtime.Runner("ubuntu", dry_run=True), "install", force=True,
                 ), 0)
             self.assertIn("Reconcile skills from owner/skills", plan.getvalue())
 
@@ -2270,7 +2248,7 @@ class DotAiTests(unittest.TestCase):
             target.write_text("# alpha\n", encoding="utf-8")
             plan = io.StringIO()
             with mock.patch.dict(os.environ, {"DOTAI_HOME": str(home)}), contextlib.redirect_stdout(plan):
-                DOTAI.reconcile_skills(manifest, DOTAI.Runner("linux", dry_run=True))
+                skill_manager.reconcile_skills(manifest, runtime.Runner("linux", dry_run=True))
             self.assertIn("Reconcile skills from owner/skills", plan.getvalue())
             self.assertIn("--skill beta", plan.getvalue())
 
@@ -2298,12 +2276,12 @@ class DotAiTests(unittest.TestCase):
             plan = io.StringIO()
             with (
                 mock.patch.dict(os.environ, {"DOTAI_HOME": str(home), "XDG_STATE_HOME": "", "GH_HOST": "github.com"}),
-                mock.patch.object(DOTAI, "print_release_notice"),
+                mock.patch.object(releases, "print_release_notice"),
                 contextlib.redirect_stdout(plan),
             ):
                 with contextlib.redirect_stderr(io.StringIO()):
                     try:
-                        result = DOTAI.main(["--manifest", str(path), "sync", "--update-skills", "--dry-run"])
+                        result = cli.main(["--manifest", str(path), "sync", "--update-skills", "--dry-run"])
                     except SystemExit as exc:
                         result = exc.code
                 self.assertEqual(result, 0)
@@ -2320,7 +2298,7 @@ class DotAiTests(unittest.TestCase):
             manifest["skills"] = [{"source": "owner/skills", "agent": "pi", "checkSkills": ["legacy"]}]
             output = io.StringIO()
             with mock.patch.dict(os.environ, {"DOTAI_HOME": str(home)}), contextlib.redirect_stdout(output):
-                healthy = DOTAI.print_status(manifest, DOTAI.Runner("ubuntu"))
+                healthy = health.print_status(manifest, runtime.Runner("ubuntu"))
             self.assertFalse(healthy)
             self.assertIn("[DRIFT] Legacy Pi skill targets", output.getvalue())
             self.assertIn("Run 'dotai fix'", output.getvalue())
@@ -2333,14 +2311,14 @@ class DotAiTests(unittest.TestCase):
             path.write_text(json.dumps(manifest), encoding="utf-8")
             output = io.StringIO()
             with (
-                mock.patch.object(DOTAI, "reconcile_packages"),
-                mock.patch.object(DOTAI, "reconcile_omp_extensions"),
-                mock.patch.object(DOTAI, "reconcile_skills"),
-                mock.patch.object(DOTAI, "reconcile_plugins"),
-                mock.patch.object(DOTAI, "sync_mcp", return_value=True),
+                mock.patch.object(package_manager, "reconcile_packages"),
+                mock.patch.object(omp_config, "reconcile_omp_extensions"),
+                mock.patch.object(skill_manager, "reconcile_skills"),
+                mock.patch.object(omp_config, "reconcile_plugins"),
+                mock.patch.object(mcp_config, "sync_mcp", return_value=True),
                 contextlib.redirect_stdout(output),
             ):
-                self.assertEqual(DOTAI.main(["--manifest", str(path), "update", "--dry-run"]), 0)
+                self.assertEqual(cli.main(["--manifest", str(path), "update", "--dry-run"]), 0)
             self.assertIn("[DRIFT] Legacy Pi skill targets", output.getvalue())
             self.assertIn("Run 'dotai fix'", output.getvalue())
 
@@ -2356,7 +2334,7 @@ class DotAiTests(unittest.TestCase):
             with mock.patch.dict(os.environ, {"DOTAI_HOME": str(home)}, clear=False):
                 with contextlib.redirect_stdout(colored):
                     self.assertEqual(
-                        DOTAI.main(["--manifest", str(path), "--color", "always", "status"]),
+                        cli.main(["--manifest", str(path), "--color", "always", "status"]),
                         0,
                     )
             self.assertIn("\033[", colored.getvalue())
@@ -2365,7 +2343,7 @@ class DotAiTests(unittest.TestCase):
             plain = io.StringIO()
             with contextlib.redirect_stdout(plain):
                 self.assertEqual(
-                    DOTAI.main(["--manifest", str(path), "--color", "never", "status"]),
+                    cli.main(["--manifest", str(path), "--color", "never", "status"]),
                     0,
                 )
             self.assertNotIn("\033[", plain.getvalue())
@@ -2385,7 +2363,7 @@ class DotAiTests(unittest.TestCase):
             path.write_bytes(original)
             with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
                 self.assertEqual(
-                    DOTAI.main([
+                    cli.main([
                         "--manifest", str(path), "add", "mcp", "bad", "--url",
                         "https://example.test:not-a-port/mcp",
                     ]),
@@ -2393,13 +2371,13 @@ class DotAiTests(unittest.TestCase):
                 )
                 self.assertEqual(path.read_bytes(), original)
                 self.assertEqual(
-                    DOTAI.main([
+                    cli.main([
                         "--manifest", str(path), "add", "mcp", "bad", "--url",
                         "https://example.test:443/mcp", "--header", "Authorization=API_TOKEN",
                     ]),
                     0,
                 )
-            updated = DOTAI.load_manifest(path)
+            updated = manifests.load_manifest(path)
             self.assertEqual(updated["mcp"]["servers"]["bad"], {
                 "type": "http", "url": "https://example.test:443/mcp",
                 "headers": {"Authorization": "API_TOKEN"},
@@ -2413,10 +2391,10 @@ class DotAiTests(unittest.TestCase):
             original = json.dumps(self.minimal_manifest("mcp.json"), indent=4).encode("utf-8")
             path.write_bytes(original)
             with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
-                self.assertEqual(DOTAI.main(["--manifest", str(path), "add", "plugin", "bad"]), 2)
+                self.assertEqual(cli.main(["--manifest", str(path), "add", "plugin", "bad"]), 2)
                 self.assertEqual(path.read_bytes(), original)
-                self.assertEqual(DOTAI.main(["--manifest", str(path), "add", "plugin", "review@team"]), 0)
-            self.assertEqual(DOTAI.load_manifest(path)["plugins"], [{"id": "review@team", "scope": "user"}])
+                self.assertEqual(cli.main(["--manifest", str(path), "add", "plugin", "review@team"]), 0)
+            self.assertEqual(manifests.load_manifest(path)["plugins"], [{"id": "review@team", "scope": "user"}])
 
     def test_add_tool_empty_check_preserves_manifest_and_allows_valid_retry(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -2426,16 +2404,16 @@ class DotAiTests(unittest.TestCase):
             original = json.dumps(manifest, indent=4).encode("utf-8")
             path.write_bytes(original)
             with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
-                self.assertEqual(DOTAI.main([
+                self.assertEqual(cli.main([
                     "--manifest", str(path), "add", "tool", "sample", "--check", "",
                     "--install", "default=sample install",
                 ]), 2)
                 self.assertEqual(path.read_bytes(), original)
-                self.assertEqual(DOTAI.main([
+                self.assertEqual(cli.main([
                     "--manifest", str(path), "add", "tool", "sample", "--check", "sample --version",
                     "--install", "default=sample install",
                 ]), 0)
-            self.assertEqual(DOTAI.load_manifest(path)["packages"], [{
+            self.assertEqual(manifests.load_manifest(path)["packages"], [{
                 "name": "sample", "check": "sample --version", "install": {"default": ["sample install"]},
             }])
 
@@ -2452,7 +2430,7 @@ class DotAiTests(unittest.TestCase):
                 with self.subTest(command=command):
                     path.write_bytes(original)
                     with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
-                        self.assertEqual(DOTAI.main(["--manifest", str(path), *command]), 2)
+                        self.assertEqual(cli.main(["--manifest", str(path), *command]), 2)
                     self.assertEqual(path.read_bytes(), original)
 
     def test_add_preserves_unconfigured_routing_for_subsequent_commands(self) -> None:
@@ -2462,11 +2440,11 @@ class DotAiTests(unittest.TestCase):
             manifest["ompRouting"] = None
             path.write_text(json.dumps(manifest), encoding="utf-8")
             with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
-                self.assertEqual(DOTAI.main(["--manifest", str(path), "add", "plugin", "review@team"]), 0)
-                self.assertEqual(DOTAI.main(["--manifest", str(path), "add", "skill", "owner/skills"]), 0)
-                self.assertEqual(DOTAI.main(["--manifest", str(path), "validate"]), 0)
+                self.assertEqual(cli.main(["--manifest", str(path), "add", "plugin", "review@team"]), 0)
+                self.assertEqual(cli.main(["--manifest", str(path), "add", "skill", "owner/skills"]), 0)
+                self.assertEqual(cli.main(["--manifest", str(path), "validate"]), 0)
             self.assertIsNone(json.loads(path.read_text(encoding="utf-8"))["ompRouting"])
-            self.assertEqual(DOTAI.load_manifest(path)["skills"][0]["source"], "owner/skills")
+            self.assertEqual(manifests.load_manifest(path)["skills"][0]["source"], "owner/skills")
 
     def test_write_manifest_rejects_invalid_candidate_before_creating_files(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -2476,12 +2454,12 @@ class DotAiTests(unittest.TestCase):
             original = json.dumps(manifest, indent=4).encode("utf-8")
             path.write_bytes(original)
             manifest["plugins"] = [{"id": "bad"}]
-            with self.assertRaises(DOTAI.DotAiError):
-                DOTAI.write_manifest(path, manifest)
+            with self.assertRaises(runtime.DotAiError):
+                manifests.write_manifest(path, manifest)
             self.assertEqual(path.read_bytes(), original)
             missing = root / "new" / "stack.json"
-            with self.assertRaises(DOTAI.DotAiError):
-                DOTAI.write_manifest(missing, manifest)
+            with self.assertRaises(runtime.DotAiError):
+                manifests.write_manifest(missing, manifest)
             self.assertFalse(missing.parent.exists())
             self.assertEqual(set(root.iterdir()), {path})
 
@@ -2494,15 +2472,15 @@ class DotAiTests(unittest.TestCase):
             example.write_text(json.dumps(invalid), encoding="utf-8")
             target = root / "new" / "stack.json"
             with (
-                mock.patch.object(DOTAI, "EXAMPLE_MANIFEST", example),
+                mock.patch.object(manifests, "EXAMPLE_MANIFEST", example),
                 contextlib.redirect_stdout(io.StringIO()),
                 contextlib.redirect_stderr(io.StringIO()),
             ):
-                self.assertEqual(DOTAI.main(["--manifest", str(target), "init"]), 2)
+                self.assertEqual(cli.main(["--manifest", str(target), "init"]), 2)
                 self.assertFalse(target.parent.exists())
                 example.write_text(json.dumps(self.minimal_manifest("mcp.json")), encoding="utf-8")
-                self.assertEqual(DOTAI.main(["--manifest", str(target), "init"]), 0)
-            self.assertEqual(DOTAI.load_manifest(target)["plugins"], [])
+                self.assertEqual(cli.main(["--manifest", str(target), "init"]), 0)
+            self.assertEqual(manifests.load_manifest(target)["plugins"], [])
 
     def test_added_named_skill_reports_installed_only_after_skill_file_exists(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -2514,8 +2492,8 @@ class DotAiTests(unittest.TestCase):
             manifest["mcp"]["servers"] = {}
             manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
             with mock.patch.dict(os.environ, {"DOTAI_HOME": str(home)}), contextlib.redirect_stdout(io.StringIO()):
-                self.assertEqual(DOTAI.main(["--manifest", str(manifest_path), "add", "skill", "owner/skills", "--skill", "foo"]), 0)
-                before = DOTAI.main(["--manifest", str(manifest_path), "--color", "never", "status"])
+                self.assertEqual(cli.main(["--manifest", str(manifest_path), "add", "skill", "owner/skills", "--skill", "foo"]), 0)
+                before = cli.main(["--manifest", str(manifest_path), "--color", "never", "status"])
             self.assertEqual(before, 1)
             self.assertEqual(json.loads(manifest_path.read_text(encoding="utf-8"))["skills"][0]["checkSkills"], ["foo"])
 
@@ -2524,7 +2502,7 @@ class DotAiTests(unittest.TestCase):
             skill_file.write_text("# foo\n", encoding="utf-8")
             output = io.StringIO()
             with mock.patch.dict(os.environ, {"DOTAI_HOME": str(home)}), contextlib.redirect_stdout(output):
-                result = DOTAI.main(["--manifest", str(manifest_path), "--color", "never", "status"])
+                result = cli.main(["--manifest", str(manifest_path), "--color", "never", "status"])
             self.assertEqual(result, 0, output.getvalue())
             self.assertIn("[OK] owner/skills: installed for universal", output.getvalue())
 
@@ -2538,14 +2516,14 @@ class DotAiTests(unittest.TestCase):
             manifest["mcp"]["servers"] = {}
             manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
             with mock.patch.dict(os.environ, {"DOTAI_HOME": str(home)}), contextlib.redirect_stdout(io.StringIO()):
-                self.assertEqual(DOTAI.main(["--manifest", str(manifest_path), "add", "skill", "owner/skills", "--skill", "ALPHA"]), 0)
+                self.assertEqual(cli.main(["--manifest", str(manifest_path), "add", "skill", "owner/skills", "--skill", "ALPHA"]), 0)
 
             skill_file = home / ".agents" / "skills" / "alpha" / "SKILL.md"
             skill_file.parent.mkdir(parents=True)
             skill_file.write_text("# ALPHA\n", encoding="utf-8")
             output = io.StringIO()
             with mock.patch.dict(os.environ, {"DOTAI_HOME": str(home)}), contextlib.redirect_stdout(output):
-                result = DOTAI.main(["--manifest", str(manifest_path), "--color", "never", "status"])
+                result = cli.main(["--manifest", str(manifest_path), "--color", "never", "status"])
             self.assertEqual(result, 0, output.getvalue())
             self.assertIn("[OK] owner/skills: installed for universal", output.getvalue())
             self.assertNotIn("[MISSING] owner/skills:", output.getvalue())
@@ -2568,14 +2546,14 @@ class DotAiTests(unittest.TestCase):
                 manifest["mcp"]["servers"] = {}
                 manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
                 with mock.patch.dict(os.environ, {"DOTAI_HOME": str(home)}), contextlib.redirect_stdout(io.StringIO()):
-                    self.assertEqual(DOTAI.main(["--manifest", str(manifest_path), "add", "skill", "owner/skills", "--skill", selection]), 0)
+                    self.assertEqual(cli.main(["--manifest", str(manifest_path), "add", "skill", "owner/skills", "--skill", selection]), 0)
 
                 skill_file = home / ".agents" / "skills" / installed_name / "SKILL.md"
                 skill_file.parent.mkdir(parents=True)
                 skill_file.write_text("# installed skill\n", encoding="utf-8")
                 output = io.StringIO()
                 with mock.patch.dict(os.environ, {"DOTAI_HOME": str(home)}), contextlib.redirect_stdout(output):
-                    result = DOTAI.main(["--manifest", str(manifest_path), "--color", "never", "status"])
+                    result = cli.main(["--manifest", str(manifest_path), "--color", "never", "status"])
                 self.assertEqual(result, 0, output.getvalue())
                 self.assertIn("[OK] owner/skills: installed for universal", output.getvalue())
                 saved = json.loads(manifest_path.read_text(encoding="utf-8"))
@@ -2595,8 +2573,8 @@ class DotAiTests(unittest.TestCase):
             normalized_file.write_text("# normalized, not the explicit check\n", encoding="utf-8")
             output = io.StringIO()
             with mock.patch.dict(os.environ, {"DOTAI_HOME": str(home)}), contextlib.redirect_stdout(output):
-                self.assertEqual(DOTAI.main(["--manifest", str(manifest_path), "add", "skill", "owner/skills", "--skill", "ALPHA", "--check-skill", "Actual Skill!"]), 0)
-                missing = DOTAI.main(["--manifest", str(manifest_path), "--color", "never", "status"])
+                self.assertEqual(cli.main(["--manifest", str(manifest_path), "add", "skill", "owner/skills", "--skill", "ALPHA", "--check-skill", "Actual Skill!"]), 0)
+                missing = cli.main(["--manifest", str(manifest_path), "--color", "never", "status"])
             self.assertEqual(missing, 1, output.getvalue())
             self.assertIn("[MISSING] owner/skills:", output.getvalue())
 
@@ -2605,7 +2583,7 @@ class DotAiTests(unittest.TestCase):
             exact_file.write_text("# explicitly checked skill\n", encoding="utf-8")
             output = io.StringIO()
             with mock.patch.dict(os.environ, {"DOTAI_HOME": str(home)}), contextlib.redirect_stdout(output):
-                healthy = DOTAI.main(["--manifest", str(manifest_path), "--color", "never", "status"])
+                healthy = cli.main(["--manifest", str(manifest_path), "--color", "never", "status"])
             self.assertEqual(healthy, 0, output.getvalue())
             self.assertIn("[OK] owner/skills: installed for universal", output.getvalue())
 
@@ -2620,8 +2598,8 @@ class DotAiTests(unittest.TestCase):
             manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
             output = io.StringIO()
             with mock.patch.dict(os.environ, {"DOTAI_HOME": str(home)}), contextlib.redirect_stdout(output):
-                self.assertEqual(DOTAI.main(["--manifest", str(manifest_path), "add", "skill", "owner/skills"]), 0)
-                result = DOTAI.main(["--manifest", str(manifest_path), "--color", "never", "status"])
+                self.assertEqual(cli.main(["--manifest", str(manifest_path), "add", "skill", "owner/skills"]), 0)
+                result = cli.main(["--manifest", str(manifest_path), "--color", "never", "status"])
             self.assertEqual(result, 1)
             self.assertIn("[UNVERIFIED] owner/skills:", output.getvalue())
             self.assertNotIn("[MISSING] owner/skills:", output.getvalue())
@@ -2641,8 +2619,8 @@ class DotAiTests(unittest.TestCase):
             skill_file.write_text("# actual\n", encoding="utf-8")
             output = io.StringIO()
             with mock.patch.dict(os.environ, {"DOTAI_HOME": str(home)}), contextlib.redirect_stdout(output):
-                self.assertEqual(DOTAI.main(["--manifest", str(manifest_path), "add", "skill", "owner/skills", "--skill", "alias", "--check-skill", "actual"]), 0)
-                result = DOTAI.main(["--manifest", str(manifest_path), "--color", "never", "status"])
+                self.assertEqual(cli.main(["--manifest", str(manifest_path), "add", "skill", "owner/skills", "--skill", "alias", "--check-skill", "actual"]), 0)
+                result = cli.main(["--manifest", str(manifest_path), "--color", "never", "status"])
             self.assertEqual(result, 0, output.getvalue())
             self.assertIn("[OK] owner/skills: installed for universal", output.getvalue())
 
@@ -2671,7 +2649,7 @@ class DotAiTests(unittest.TestCase):
             ]
             with contextlib.redirect_stdout(io.StringIO()):
                 for command in commands:
-                    self.assertEqual(DOTAI.main(["--manifest", str(path), *command]), 0)
+                    self.assertEqual(cli.main(["--manifest", str(path), *command]), 0)
             value = json.loads(path.read_text(encoding="utf-8"))
             self.assertEqual(value["skills"][0]["source"], "owner/skills")
             self.assertEqual(value["skills"][0]["agent"], "universal")
@@ -2702,7 +2680,7 @@ class DotAiTests(unittest.TestCase):
             path.write_text(json.dumps(manifest), encoding="utf-8")
             with contextlib.redirect_stdout(io.StringIO()):
                 self.assertEqual(
-                    DOTAI.main(
+                    cli.main(
                         [
                             "--manifest",
                             str(path),
@@ -2737,11 +2715,11 @@ class DotAiTests(unittest.TestCase):
             output = io.StringIO()
             with (
                 mock.patch.dict(os.environ, {"DOTAI_HOME": str(root), "DOTAI_STATE_DIR": str(root / "state")}),
-                mock.patch.object(DOTAI, "latest_release_version", return_value=None),
+                mock.patch.object(releases, "latest_release_version", return_value=None),
                 contextlib.redirect_stdout(output),
                 contextlib.redirect_stderr(output),
             ):
-                result = DOTAI.main(["--manifest", str(path), "sync"])
+                result = cli.main(["--manifest", str(path), "sync"])
             self.assertEqual(result, 1)
             self.assertIn("MCP", output.getvalue())
             self.assertIn("invalid json", output.getvalue().lower())
@@ -2764,7 +2742,7 @@ class DotAiTests(unittest.TestCase):
             output = io.StringIO()
             with contextlib.redirect_stdout(output):
                 self.assertEqual(
-                    DOTAI.main(["--manifest", str(path), "sync", "--dry-run"]),
+                    cli.main(["--manifest", str(path), "sync", "--dry-run"]),
                     0,
                 )
             self.assertEqual(json.loads(path.read_text(encoding="utf-8")), manifest)
@@ -2795,11 +2773,11 @@ class DotAiTests(unittest.TestCase):
             output = io.StringIO()
             with (
                 mock.patch.dict(os.environ, {"DOTAI_HOME": str(home), "DOTAI_STATE_DIR": str(home / "state"), "XDG_STATE_HOME": "", "GH_HOST": "github.com"}),
-                mock.patch.object(DOTAI, "EXAMPLE_MANIFEST", example_path),
-                mock.patch.object(DOTAI, "latest_release_version", return_value=None),
+                mock.patch.object(manifests, "EXAMPLE_MANIFEST", example_path),
+                mock.patch.object(releases, "latest_release_version", return_value=None),
                 contextlib.redirect_stdout(output),
             ):
-                result = DOTAI.main(["--manifest", str(manifest_path), "sync", "--recommended-skills", "--enforce", "--dry-run"])
+                result = cli.main(["--manifest", str(manifest_path), "sync", "--recommended-skills", "--enforce", "--dry-run"])
             self.assertEqual(result, 0)
             self.assertIn("Reconcile skills from owner/recommended", output.getvalue())
 
@@ -2854,18 +2832,18 @@ class DotAiTests(unittest.TestCase):
             output = io.StringIO()
             with (
                 mock.patch.dict(os.environ, {"DOTAI_STATE_DIR": str(state_root)}, clear=False),
-                mock.patch.object(DOTAI, "EXAMPLE_MANIFEST", example_path),
-                mock.patch.object(DOTAI, "latest_release_version", return_value=None),
-                mock.patch.object(DOTAI, "reconcile_omp_extensions"),
-                mock.patch.object(DOTAI, "reconcile_plugins"),
-                mock.patch.object(DOTAI, "sync_mcp", return_value=False),
-                mock.patch.object(DOTAI.Runner, "output", side_effect=[installed, "[]"]),
-                mock.patch.object(DOTAI.Runner, "run", return_value=subprocess.CompletedProcess([], 0)) as run,
+                mock.patch.object(manifests, "EXAMPLE_MANIFEST", example_path),
+                mock.patch.object(releases, "latest_release_version", return_value=None),
+                mock.patch.object(omp_config, "reconcile_omp_extensions"),
+                mock.patch.object(omp_config, "reconcile_plugins"),
+                mock.patch.object(mcp_config, "sync_mcp", return_value=False),
+                mock.patch.object(runtime.Runner, "output", side_effect=[installed, "[]"]),
+                mock.patch.object(runtime.Runner, "run", return_value=subprocess.CompletedProcess([], 0)) as run,
                 mock.patch("builtins.input", return_value="a"),
                 contextlib.redirect_stdout(output),
             ):
                 try:
-                    result = DOTAI.main(["--manifest", str(path), "sync", "--recommended-skills"])
+                    result = cli.main(["--manifest", str(path), "sync", "--recommended-skills"])
                 except SystemExit as exc:
                     result = exc.code
                 self.assertEqual(result, 0)
@@ -2886,7 +2864,7 @@ class DotAiTests(unittest.TestCase):
                 ],
                 commands,
             )
-            self.assertIn(DOTAI.skill_command(added), commands)
+            self.assertIn(skill_manager.skill_command(added), commands)
             history = json.loads((state_root / "recommended-skills.json").read_text(encoding="utf-8"))
             self.assertEqual(history[os.path.normcase(str(path.resolve()))], {"version": 1, "skills": [added]})
             self.assertIn("owner/retired", output.getvalue())
@@ -2956,14 +2934,14 @@ class DotAiTests(unittest.TestCase):
             )
             with (
                 mock.patch.dict(os.environ, {"DOTAI_STATE_DIR": str(state_root)}, clear=False),
-                mock.patch.object(DOTAI, "EXAMPLE_MANIFEST", example_path),
-                mock.patch.object(DOTAI, "latest_release_version", return_value=None),
-                mock.patch.object(DOTAI, "reconcile_omp_extensions"),
-                mock.patch.object(DOTAI, "reconcile_plugins"),
-                mock.patch.object(DOTAI, "sync_mcp", return_value=False),
-                mock.patch.object(DOTAI.Runner, "output", side_effect=[installed, remaining]),
+                mock.patch.object(manifests, "EXAMPLE_MANIFEST", example_path),
+                mock.patch.object(releases, "latest_release_version", return_value=None),
+                mock.patch.object(omp_config, "reconcile_omp_extensions"),
+                mock.patch.object(omp_config, "reconcile_plugins"),
+                mock.patch.object(mcp_config, "sync_mcp", return_value=False),
+                mock.patch.object(runtime.Runner, "output", side_effect=[installed, remaining]),
                 mock.patch.object(
-                    DOTAI.Runner,
+                    runtime.Runner,
                     "run",
                     return_value=subprocess.CompletedProcess([], 0),
                 ) as run,
@@ -2971,7 +2949,7 @@ class DotAiTests(unittest.TestCase):
                 contextlib.redirect_stdout(io.StringIO()),
             ):
                 try:
-                    result = DOTAI.main(
+                    result = cli.main(
                         ["--manifest", str(path), "sync", "--recommended-skills", "--enforce"]
                     )
                 except SystemExit as exc:
@@ -2997,7 +2975,7 @@ class DotAiTests(unittest.TestCase):
                 ],
                 commands,
             )
-            self.assertIn(DOTAI.skill_command(after), commands)
+            self.assertIn(skill_manager.skill_command(after), commands)
 
     def test_recommended_skill_dry_run_does_not_query_machine_for_wildcard_removal(self) -> None:
         retired = {
@@ -3006,11 +2984,11 @@ class DotAiTests(unittest.TestCase):
             "skills": ["*"],
             "checkSkills": ["old-skill"],
         }
-        runner = DOTAI.Runner("ubuntu", dry_run=True)
+        runner = runtime.Runner("ubuntu", dry_run=True)
         changes = [{"kind": "remove", "source": retired["source"], "before": retired, "after": None}]
         output = io.StringIO()
         with mock.patch.object(runner, "output", return_value="[]") as machine_query, contextlib.redirect_stdout(output):
-            DOTAI.remove_retired_skills(changes, runner)
+            skill_manager.remove_retired_skills(changes, runner)
 
         machine_query.assert_not_called()
         self.assertIn("resolved when applied", output.getvalue())
@@ -3022,11 +3000,11 @@ class DotAiTests(unittest.TestCase):
             "skills": ["old-skill"],
             "checkSkills": ["old-skill"],
         }
-        runner = DOTAI.Runner("ubuntu", dry_run=True)
+        runner = runtime.Runner("ubuntu", dry_run=True)
         changes = [{"kind": "remove", "source": retired["source"], "before": retired, "after": None}]
         output = io.StringIO()
         with mock.patch.object(runner, "output", return_value="[]") as machine_query, contextlib.redirect_stdout(output):
-            DOTAI.remove_retired_skills(changes, runner)
+            skill_manager.remove_retired_skills(changes, runner)
 
         machine_query.assert_not_called()
         self.assertEqual(runner.failures, [])
@@ -3034,9 +3012,9 @@ class DotAiTests(unittest.TestCase):
 
 
     def test_runner_output_ignores_stderr(self) -> None:
-        runner = DOTAI.Runner("ubuntu")
+        runner = runtime.Runner("ubuntu")
         result = subprocess.CompletedProcess(["command"], 0, '{"valid": true}')
-        with mock.patch.object(DOTAI.subprocess, "run", return_value=result) as run:
+        with mock.patch.object(subprocess, "run", return_value=result) as run:
             self.assertEqual(runner.output(["command"]), '{"valid": true}')
 
         self.assertIs(run.call_args.kwargs["stderr"], subprocess.DEVNULL)
@@ -3055,13 +3033,13 @@ class DotAiTests(unittest.TestCase):
                     }
                 ]
             )
-            runner = DOTAI.Runner("ubuntu")
+            runner = runtime.Runner("ubuntu")
             with (
                 mock.patch.dict(os.environ, {"DOTAI_HOME": str(home)}),
                 mock.patch.object(runner, "output", return_value=listing),
             ):
                 self.assertEqual(
-                    DOTAI.installed_skill_names("universal", runner, "owner/retired"),
+                    skill_manager.installed_skill_names("universal", runner, "owner/retired"),
                     {"old-skill"},
                 )
 
@@ -3080,9 +3058,9 @@ class DotAiTests(unittest.TestCase):
                 }
             ]
         )
-        runner = DOTAI.Runner("ubuntu")
+        runner = runtime.Runner("ubuntu")
         with mock.patch.object(runner, "output", return_value=listing):
-            self.assertEqual(DOTAI.installed_skill_names("universal", runner, "owner/retired"), set())
+            self.assertEqual(skill_manager.installed_skill_names("universal", runner, "owner/retired"), set())
 
     def test_recommended_skill_review_applies_each_choice_and_keeps_rejections_pending(self) -> None:
         retired = {"source": "owner/retired", "agent": "universal", "skills": ["old-skill"]}
@@ -3103,17 +3081,17 @@ class DotAiTests(unittest.TestCase):
                 json.dumps({"manifest": str(path.resolve()), "managedRecommendedSkills": [retired]}),
                 encoding="utf-8",
             )
-            runner = DOTAI.Runner("ubuntu")
+            runner = runtime.Runner("ubuntu")
             with (
                 mock.patch.dict(os.environ, {"DOTAI_STATE_DIR": str(state_root)}, clear=False),
-                mock.patch.object(DOTAI, "EXAMPLE_MANIFEST", example_path),
+                mock.patch.object(manifests, "EXAMPLE_MANIFEST", example_path),
                 mock.patch.object(runner, "run") as run,
                 mock.patch("builtins.input", side_effect=["e", "n", "y"]),
                 contextlib.redirect_stdout(io.StringIO()),
             ):
-                updated, managed = DOTAI.review_recommended_skills(manifest, path, runner)
-                DOTAI.save_state(path, runner, "sync", managed)
-                _, pending, _ = DOTAI.recommended_skill_plan(updated, path)
+                updated, managed = skill_recommendations.review_recommended_skills(manifest, path, runner)
+                app_state.save_state(path, runner, "sync", managed)
+                _, pending, _ = skill_recommendations.recommended_skill_plan(updated, path)
 
             self.assertEqual(updated["skills"], [retired, added])
             self.assertEqual(managed, [retired, added])
@@ -3123,7 +3101,7 @@ class DotAiTests(unittest.TestCase):
     def test_recommended_skill_update_removes_old_agent_installation(self) -> None:
         before = {"source": "owner/skills", "agent": "pi", "skills": ["review"]}
         after = {"source": "owner/skills", "agent": "universal", "skills": ["*"]}
-        runner = DOTAI.Runner("ubuntu")
+        runner = runtime.Runner("ubuntu")
         installed = json.dumps(
             [
                 {
@@ -3139,7 +3117,7 @@ class DotAiTests(unittest.TestCase):
         )
         change = {"kind": "update", "source": before["source"], "before": before, "after": after}
         with mock.patch.object(runner, "output", side_effect=[installed, "[]"]), mock.patch.object(runner, "run") as run:
-            DOTAI.remove_retired_skills([change], runner)
+            skill_manager.remove_retired_skills([change], runner)
 
         run.assert_called_once_with(
             [
@@ -3193,9 +3171,9 @@ class DotAiTests(unittest.TestCase):
             )
             with (
                 mock.patch.dict(os.environ, {"DOTAI_STATE_DIR": str(state_root)}, clear=False),
-                mock.patch.object(DOTAI, "EXAMPLE_MANIFEST", example_path),
+                mock.patch.object(manifests, "EXAMPLE_MANIFEST", example_path),
             ):
-                managed, changes, conflicts = DOTAI.recommended_skill_plan(manifest, path)
+                managed, changes, conflicts = skill_recommendations.recommended_skill_plan(manifest, path)
 
         self.assertEqual(managed, [before])
         self.assertEqual([(change["kind"], change["source"]) for change in changes], [("update", "owner/recommended")])
@@ -3220,15 +3198,15 @@ class DotAiTests(unittest.TestCase):
             second_manifest["skills"] = [second]
             first_path.write_text(json.dumps(first_manifest), encoding="utf-8")
             second_path.write_text(json.dumps(second_manifest), encoding="utf-8")
-            runner = DOTAI.Runner("ubuntu")
+            runner = runtime.Runner("ubuntu")
             with (
                 mock.patch.dict(os.environ, {"DOTAI_STATE_DIR": str(state_root)}, clear=False),
-                mock.patch.object(DOTAI, "EXAMPLE_MANIFEST", example_path),
+                mock.patch.object(manifests, "EXAMPLE_MANIFEST", example_path),
             ):
-                DOTAI.save_state(first_path, runner, "sync", [first])
-                DOTAI.save_state(second_path, runner, "sync", [second])
-                _, first_changes, _ = DOTAI.recommended_skill_plan(first_manifest, first_path)
-                _, second_changes, _ = DOTAI.recommended_skill_plan(second_manifest, second_path)
+                app_state.save_state(first_path, runner, "sync", [first])
+                app_state.save_state(second_path, runner, "sync", [second])
+                _, first_changes, _ = skill_recommendations.recommended_skill_plan(first_manifest, first_path)
+                _, second_changes, _ = skill_recommendations.recommended_skill_plan(second_manifest, second_path)
 
             self.assertEqual([(change["kind"], change["source"]) for change in first_changes], [("remove", "owner/first")])
             self.assertEqual([(change["kind"], change["source"]) for change in second_changes], [("remove", "owner/second")])
@@ -3250,18 +3228,18 @@ class DotAiTests(unittest.TestCase):
                 json.dumps({os.path.normcase(str(path.resolve())): {"version": 1, "skills": [retired]}}),
                 encoding="utf-8",
             )
-            runner = DOTAI.Runner("ubuntu")
+            runner = runtime.Runner("ubuntu")
             with (
                 mock.patch.dict(os.environ, {"DOTAI_STATE_DIR": str(state_root)}, clear=False),
-                mock.patch.object(DOTAI, "EXAMPLE_MANIFEST", example_path),
-                mock.patch.object(DOTAI, "write_manifest", side_effect=OSError("locked")),
+                mock.patch.object(manifests, "EXAMPLE_MANIFEST", example_path),
+                mock.patch.object(manifests, "write_manifest", side_effect=OSError("locked")),
                 mock.patch.object(runner, "output", return_value=json.dumps([{"name": "old-skill", "source": "owner/retired"}])),
                 mock.patch.object(runner, "run") as run,
                 mock.patch("builtins.input", return_value="a"),
                 contextlib.redirect_stdout(io.StringIO()),
             ):
                 with self.assertRaises(OSError):
-                    DOTAI.review_recommended_skills(manifest, path, runner)
+                    skill_recommendations.review_recommended_skills(manifest, path, runner)
 
             run.assert_not_called()
 
@@ -3293,14 +3271,14 @@ class DotAiTests(unittest.TestCase):
                 }
             ]
         )
-        runner = DOTAI.Runner("ubuntu")
+        runner = runtime.Runner("ubuntu")
         change = {"kind": "remove", "source": retired["source"], "before": retired, "after": None}
         with (
             mock.patch.object(runner, "output", side_effect=[installed, untracked]),
             mock.patch.object(runner, "run", return_value=subprocess.CompletedProcess([], 0)),
             contextlib.redirect_stdout(io.StringIO()),
         ):
-            DOTAI.remove_retired_skills([change], runner)
+            skill_manager.remove_retired_skills([change], runner)
 
         self.assertEqual(runner.failures, ["Retired skills still installed for universal: old-skill"])
 
@@ -3323,16 +3301,16 @@ class DotAiTests(unittest.TestCase):
                 json.dumps({os.path.normcase(str(path.resolve())): {"version": 1, "skills": [retired]}}),
                 encoding="utf-8",
             )
-            runner = DOTAI.Runner("ubuntu")
+            runner = runtime.Runner("ubuntu")
             with (
                 mock.patch.dict(os.environ, {"DOTAI_STATE_DIR": str(state_root)}, clear=False),
-                mock.patch.object(DOTAI, "EXAMPLE_MANIFEST", example_path),
+                mock.patch.object(manifests, "EXAMPLE_MANIFEST", example_path),
                 mock.patch.object(runner, "output", side_effect=[installed, installed]),
                 mock.patch.object(runner, "run", return_value=subprocess.CompletedProcess([], 0)),
                 mock.patch("builtins.input", return_value="a"),
                 contextlib.redirect_stdout(io.StringIO()),
             ):
-                updated, managed = DOTAI.review_recommended_skills(manifest, path, runner)
+                updated, managed = skill_recommendations.review_recommended_skills(manifest, path, runner)
 
             self.assertEqual(updated, manifest)
             self.assertEqual(managed, [retired])
@@ -3355,21 +3333,21 @@ class DotAiTests(unittest.TestCase):
             path.write_text(json.dumps(manifest), encoding="utf-8")
             example_path.write_text(json.dumps(example), encoding="utf-8")
 
-            def fail_extension_sync(_manifest: dict, runner: DOTAI.Runner) -> None:
+            def fail_extension_sync(_manifest: dict, runner: runtime.Runner) -> None:
                 runner.failures.append("unrelated extension failure")
 
             with (
                 mock.patch.dict(os.environ, {"DOTAI_STATE_DIR": str(state_root)}, clear=False),
-                mock.patch.object(DOTAI, "EXAMPLE_MANIFEST", example_path),
-                mock.patch.object(DOTAI, "latest_release_version", return_value=None),
-                mock.patch.object(DOTAI, "reconcile_omp_extensions", side_effect=fail_extension_sync),
-                mock.patch.object(DOTAI, "reconcile_skills"),
-                mock.patch.object(DOTAI, "reconcile_plugins"),
-                mock.patch.object(DOTAI, "sync_mcp", return_value=False),
+                mock.patch.object(manifests, "EXAMPLE_MANIFEST", example_path),
+                mock.patch.object(releases, "latest_release_version", return_value=None),
+                mock.patch.object(omp_config, "reconcile_omp_extensions", side_effect=fail_extension_sync),
+                mock.patch.object(skill_manager, "reconcile_skills"),
+                mock.patch.object(omp_config, "reconcile_plugins"),
+                mock.patch.object(mcp_config, "sync_mcp", return_value=False),
                 mock.patch("builtins.input", return_value="a"),
                 contextlib.redirect_stdout(io.StringIO()),
             ):
-                self.assertEqual(DOTAI.main(["--manifest", str(path), "sync", "--recommended-skills"]), 1)
+                self.assertEqual(cli.main(["--manifest", str(path), "sync", "--recommended-skills"]), 1)
 
             self.assertTrue((state_root / "recommended-skills.json").is_file())
             history = json.loads((state_root / "recommended-skills.json").read_text(encoding="utf-8"))
@@ -3398,10 +3376,10 @@ class DotAiTests(unittest.TestCase):
             output = io.StringIO()
             with (
                 mock.patch("builtins.input", return_value="y"),
-                mock.patch.object(DOTAI, "reconcile_skills") as reconcile,
+                mock.patch.object(skill_manager, "reconcile_skills") as reconcile,
                 contextlib.redirect_stdout(output),
             ):
-                self.assertEqual(DOTAI.main(["--manifest", str(path), "fix"]), 0)
+                self.assertEqual(cli.main(["--manifest", str(path), "fix"]), 0)
             updated = json.loads(path.read_text(encoding="utf-8"))
             self.assertEqual(updated["skills"][0]["agent"], "universal")
             self.assertEqual(updated["skills"][1], manifest["skills"][1])
@@ -3420,7 +3398,7 @@ class DotAiTests(unittest.TestCase):
             path.write_text(original, encoding="utf-8")
             output = io.StringIO()
             with contextlib.redirect_stdout(output):
-                self.assertEqual(DOTAI.main(["--manifest", str(path), "fix", "--dry-run"]), 0)
+                self.assertEqual(cli.main(["--manifest", str(path), "fix", "--dry-run"]), 0)
             self.assertEqual(path.read_text(encoding="utf-8"), original)
             self.assertFalse(list(path.parent.glob("stack.json.bak.*")))
             self.assertIn('"agent": "universal"', output.getvalue())
@@ -3428,18 +3406,18 @@ class DotAiTests(unittest.TestCase):
 
     def test_package_check_uses_declared_minimum_for_any_package(self) -> None:
         package = {"name": "Other tool", "check": ["other", "--version"], "minimumVersion": "0.43"}
-        runner = DOTAI.Runner("ubuntu")
+        runner = runtime.Runner("ubuntu")
         for version, expected in (("other 0.42.99", False), ("other 0.43.0", True), ("other 0.50.0", True)):
             with self.subTest(version=version):
                 result = subprocess.CompletedProcess(["other", "--version"], 0, version)
-                with mock.patch.object(DOTAI.subprocess, "run", return_value=result):
-                    self.assertEqual(DOTAI.package_check(package, runner), expected)
+                with mock.patch.object(subprocess, "run", return_value=result):
+                    self.assertEqual(package_manager.package_check(package, runner), expected)
 
     def test_package_version_check_reads_stderr_only_version_output(self) -> None:
         command = [sys.executable, "-c", "import sys; print('other 0.50.0', file=sys.stderr)"]
         package = {"name": "Other tool", "check": command, "minimumVersion": "0.43"}
         self.assertEqual(
-            DOTAI.package_version_check(package, DOTAI.Runner("ubuntu"), command),
+            package_manager.package_version_check(package, runtime.Runner("ubuntu"), command),
             (True, "other 0.50.0"),
         )
 
@@ -3449,32 +3427,32 @@ class DotAiTests(unittest.TestCase):
             "import sys; print('Checking installation'); print('other 0.50.0', file=sys.stderr)",
         ]
         package = {"name": "Other tool", "check": command, "minimumVersion": "0.43"}
-        installed, report = DOTAI.package_version_check(package, DOTAI.Runner("ubuntu"), command)
+        installed, report = package_manager.package_version_check(package, runtime.Runner("ubuntu"), command)
         self.assertTrue(installed, report)
         self.assertIn("other 0.50.0", report)
 
     def test_rtk_status_checks_minimum_version_on_supported_platforms(self) -> None:
-        manifest = DOTAI.load_manifest(ROOT / "stack.example.json")
+        manifest = manifests.load_manifest(ROOT / "stack.example.json")
         manifest["packages"] = [next(package for package in manifest["packages"] if package["name"] == "RTK")]
         manifest["skills"] = []
         manifest["ompExtensions"] = []
         for platform in ("windows", "macos", "ubuntu", "wsl", "arch"):
             for version, expected in (("rtk 0.42.9", False), ("rtk 0.43.0", True), ("rtk 0.50.0", True)):
                 with self.subTest(platform=platform, version=version):
-                    runner = DOTAI.Runner(platform)
+                    runner = runtime.Runner(platform)
                     result = subprocess.CompletedProcess(["rtk", "--version"], 0, version)
                     output = io.StringIO()
                     with (
-                        mock.patch.object(DOTAI.subprocess, "run", return_value=result),
-                        mock.patch.object(DOTAI, "mcp_status", return_value=(True, "configured")),
+                        mock.patch.object(subprocess, "run", return_value=result),
+                        mock.patch.object(mcp_config, "mcp_status", return_value=(True, "configured")),
                         contextlib.redirect_stdout(output),
                     ):
-                        healthy = DOTAI.print_status(manifest, runner)
+                        healthy = health.print_status(manifest, runner)
                     self.assertEqual(healthy, expected)
                     self.assertIn(f"[{'OK' if expected else 'MISSING'}] RTK:", output.getvalue())
 
     def test_rtk_old_version_updates_while_missing_binary_installs(self) -> None:
-        manifest = DOTAI.load_manifest(ROOT / "stack.example.json")
+        manifest = manifests.load_manifest(ROOT / "stack.example.json")
         manifest["packages"] = [next(package for package in manifest["packages"] if package["name"] == "RTK")]
         for platform in ("windows", "macos", "ubuntu", "wsl", "arch"):
             for version, returncode, operation in (
@@ -3483,26 +3461,26 @@ class DotAiTests(unittest.TestCase):
                 ("rtk 0.50.0", 0, "Check/update RTK"),
             ):
                 with self.subTest(platform=platform, version=version, returncode=returncode):
-                    runner = DOTAI.Runner(platform, dry_run=True)
+                    runner = runtime.Runner(platform, dry_run=True)
                     result = subprocess.CompletedProcess(["rtk", "--version"], returncode, version)
                     output = io.StringIO()
                     with (
-                        mock.patch.object(DOTAI.subprocess, "run", return_value=result),
+                        mock.patch.object(subprocess, "run", return_value=result),
                         contextlib.redirect_stdout(output),
                     ):
-                        DOTAI.reconcile_packages(manifest, runner, "update")
+                        package_manager.reconcile_packages(manifest, runner, "update")
                     self.assertIn(operation, output.getvalue())
 
     def test_install_upgrades_present_rtk_below_minimum(self) -> None:
-        manifest = DOTAI.load_manifest(ROOT / "stack.example.json")
+        manifest = manifests.load_manifest(ROOT / "stack.example.json")
         manifest["packages"] = [next(package for package in manifest["packages"] if package["name"] == "RTK")]
         for platform in ("windows", "macos", "ubuntu", "wsl", "arch"):
             with self.subTest(platform=platform):
-                runner = DOTAI.Runner(platform, dry_run=True)
+                runner = runtime.Runner(platform, dry_run=True)
                 result = subprocess.CompletedProcess(["rtk", "--version"], 0, "rtk 0.42.9")
                 output = io.StringIO()
-                with mock.patch.object(DOTAI.subprocess, "run", return_value=result), contextlib.redirect_stdout(output):
-                    DOTAI.reconcile_packages(manifest, runner, "install")
+                with mock.patch.object(subprocess, "run", return_value=result), contextlib.redirect_stdout(output):
+                    package_manager.reconcile_packages(manifest, runner, "install")
                 self.assertIn("Check/update RTK", output.getvalue())
 
     def test_update_dependency_minimum_respects_presence_and_opt_in(self) -> None:
@@ -3542,9 +3520,9 @@ class DotAiTests(unittest.TestCase):
                         f"from pathlib import Path; Path({str(marker)!r}).write_text('update')",
                     ]]},
                 }]
-                runner = DOTAI.Runner("ubuntu")
+                runner = runtime.Runner("ubuntu")
                 with contextlib.redirect_stdout(io.StringIO()):
-                    DOTAI.reconcile_packages(
+                    package_manager.reconcile_packages(
                         manifest, runner, "update", include_dependencies=include_dependencies,
                     )
                 if expected_operation is None:
@@ -3570,13 +3548,13 @@ class DotAiTests(unittest.TestCase):
                 "update": {"default": [["dependency", "update"]]},
             },
         ]
-        runner = DOTAI.Runner("linux", dry_run=True)
+        runner = runtime.Runner("linux", dry_run=True)
         output = io.StringIO()
         with (
-            mock.patch.object(DOTAI, "package_check", return_value=True),
+            mock.patch.object(package_manager, "package_check", return_value=True),
             contextlib.redirect_stdout(output),
         ):
-            DOTAI.reconcile_packages(manifest, runner, "update")
+            package_manager.reconcile_packages(manifest, runner, "update")
         plan = output.getvalue()
         self.assertIn("Check/update Core", plan)
         self.assertIn("Dependency: dependency update skipped", plan)
@@ -3584,35 +3562,31 @@ class DotAiTests(unittest.TestCase):
 
         output = io.StringIO()
         with (
-            mock.patch.object(
-                DOTAI,
-                "package_check",
-                side_effect=lambda package, _runner: package["name"] == "Core",
-            ),
+            mock.patch.object(package_manager, "package_check", side_effect=lambda package, _runner: package["name"] == "Core",),
             contextlib.redirect_stdout(output),
         ):
-            DOTAI.reconcile_packages(manifest, runner, "update")
+            package_manager.reconcile_packages(manifest, runner, "update")
         self.assertIn("Install Dependency", output.getvalue())
 
         output = io.StringIO()
         with (
-            mock.patch.object(DOTAI, "package_check", return_value=True),
+            mock.patch.object(package_manager, "package_check", return_value=True),
             contextlib.redirect_stdout(output),
         ):
-            DOTAI.reconcile_packages(manifest, runner, "update", include_dependencies=True)
+            package_manager.reconcile_packages(manifest, runner, "update", include_dependencies=True)
         self.assertIn("Check/update Dependency", output.getvalue())
 
     def test_linux_update_keeps_omp_updater_and_pinned_rtk_update(self) -> None:
-        manifest = DOTAI.load_manifest(ROOT / "stack.example.json")
+        manifest = manifests.load_manifest(ROOT / "stack.example.json")
         manifest["packages"] = [
             package for package in manifest["packages"] if package["name"] in {"RTK", "Oh My Pi"}
         ]
         plan = io.StringIO()
         with (
-            mock.patch.object(DOTAI, "package_check", return_value=True),
+            mock.patch.object(package_manager, "package_check", return_value=True),
             contextlib.redirect_stdout(plan),
         ):
-            DOTAI.reconcile_packages(manifest, DOTAI.Runner("wsl", dry_run=True), "update")
+            package_manager.reconcile_packages(manifest, runtime.Runner("wsl", dry_run=True), "update")
         self.assertIn("omp update", plan.getvalue())
         self.assertIn("Check/update RTK", plan.getvalue())
         self.assertIn("releases/download/v0.50.0/rtk-", plan.getvalue())
@@ -3641,14 +3615,14 @@ class DotAiTests(unittest.TestCase):
                     f"from pathlib import Path; Path({str(marker)!r}).write_text('update')",
                 ]]},
             }]
-            runner = DOTAI.Runner("ubuntu")
+            runner = runtime.Runner("ubuntu")
             with contextlib.redirect_stdout(io.StringIO()):
-                DOTAI.reconcile_packages(manifest, runner, "update")
+                package_manager.reconcile_packages(manifest, runner, "update")
             self.assertEqual(marker.read_text(), "install")
             self.assertEqual(runner.failures, [])
 
     def test_default_omp_privacy_configuration_and_dependencies(self) -> None:
-        manifest = DOTAI.load_manifest(ROOT / "stack.example.json")
+        manifest = manifests.load_manifest(ROOT / "stack.example.json")
         packages = {package["name"]: package for package in manifest["packages"]}
         self.assertEqual(
             packages["Oh My Pi"]["configure"]["default"],
@@ -3689,7 +3663,7 @@ class DotAiTests(unittest.TestCase):
             ]
             with contextlib.redirect_stdout(io.StringIO()):
                 for command in commands:
-                    self.assertEqual(DOTAI.main(["--manifest", str(path), *command]), 0)
+                    self.assertEqual(cli.main(["--manifest", str(path), *command]), 0)
 
             servers = json.loads(path.read_text(encoding="utf-8"))["mcp"]["servers"]
             self.assertEqual(
@@ -3723,7 +3697,7 @@ class DotAiTests(unittest.TestCase):
             ]
             for command in commands:
                 with contextlib.redirect_stderr(io.StringIO()):
-                    self.assertEqual(DOTAI.main(["--manifest", str(path), *command]), 2)
+                    self.assertEqual(cli.main(["--manifest", str(path), *command]), 2)
 
     def test_windows_plan_uses_scoop(self) -> None:
         manifest = self.minimal_manifest("~/.omp/agent/mcp.json")
@@ -3739,7 +3713,7 @@ class DotAiTests(unittest.TestCase):
             path.write_text(json.dumps(manifest), encoding="utf-8")
             output = io.StringIO()
             with contextlib.redirect_stdout(output):
-                result = DOTAI.main(
+                result = cli.main(
                     ["--manifest", str(path), "--platform", "windows", "install", "--force", "--dry-run"]
                 )
             self.assertEqual(result, 0)
@@ -3756,35 +3730,35 @@ class DotAiTests(unittest.TestCase):
 
             output = io.StringIO()
             with (
-                mock.patch.object(DOTAI, "DEFAULT_MANIFEST", target),
-                mock.patch.object(DOTAI, "EXAMPLE_MANIFEST", example),
+                mock.patch.object(manifests, "DEFAULT_MANIFEST", target),
+                mock.patch.object(manifests, "EXAMPLE_MANIFEST", example),
                 contextlib.redirect_stdout(output),
             ):
-                self.assertEqual(DOTAI.main(["validate"]), 0)
+                self.assertEqual(cli.main(["validate"]), 0)
                 self.assertEqual(json.loads(target.read_text(encoding="utf-8")), template)
                 default_local = dict(template)
                 default_local["localOnly"] = True
                 target.write_text(json.dumps(default_local, indent=2) + "\n", encoding="utf-8")
-                self.assertEqual(DOTAI.main(["validate"]), 0)
+                self.assertEqual(cli.main(["validate"]), 0)
                 custom = root / "custom.json"
                 with contextlib.redirect_stdout(output):
-                    self.assertEqual(DOTAI.main(["--manifest", str(custom), "init"]), 0)
+                    self.assertEqual(cli.main(["--manifest", str(custom), "init"]), 0)
                 self.assertEqual(json.loads(custom.read_text(encoding="utf-8")), template)
                 custom_local = dict(template)
                 custom_local["localOnly"] = True
                 custom.write_text(json.dumps(custom_local, indent=2) + "\n", encoding="utf-8")
                 with contextlib.redirect_stderr(io.StringIO()):
-                    self.assertEqual(DOTAI.main(["--manifest", str(custom), "init"]), 2)
+                    self.assertEqual(cli.main(["--manifest", str(custom), "init"]), 2)
                 self.assertEqual(json.loads(custom.read_text(encoding="utf-8")), custom_local)
                 missing_custom = root / "missing.json"
                 with contextlib.redirect_stderr(io.StringIO()):
-                    self.assertEqual(DOTAI.main(["--manifest", str(missing_custom), "validate"]), 2)
+                    self.assertEqual(cli.main(["--manifest", str(missing_custom), "validate"]), 2)
                 self.assertFalse(missing_custom.exists())
             self.assertEqual(json.loads(target.read_text(encoding="utf-8")), default_local)
             self.assertEqual(output.getvalue().count("Initialized"), 2)
 
     def test_repository_example_manifest_has_no_winget_commands(self) -> None:
-        manifest = DOTAI.load_manifest(ROOT / "stack.example.json")
+        manifest = manifests.load_manifest(ROOT / "stack.example.json")
         self.assertNotIn("winget", json.dumps(manifest).lower())
         serialized = json.dumps(manifest)
         rtk = next(package for package in manifest["packages"] if package["name"] == "RTK")
@@ -3795,7 +3769,7 @@ class DotAiTests(unittest.TestCase):
         self.assertEqual(manifest["ompExtensions"], ["~/.pi/agent/extensions/rtk.ts"])
         self.assertNotIn("--codex", serialized)
         self.assertIn("/stack.json", (ROOT / ".gitignore").read_text(encoding="utf-8").splitlines())
-        self.assertEqual(DOTAI.detect_platform(), os.environ.get("DOTAI_PLATFORM", DOTAI.detect_platform()))
+        self.assertEqual(runtime.detect_platform(), os.environ.get("DOTAI_PLATFORM", runtime.detect_platform()))
 
     def test_release_notice_warns_only_for_newer_numeric_versions(self) -> None:
         for current, tag, warns in (
@@ -3810,11 +3784,11 @@ class DotAiTests(unittest.TestCase):
                 response.read.return_value = json.dumps({"tag_name": tag}).encode("utf-8")
                 output = io.StringIO()
                 with (
-                    mock.patch.object(DOTAI, "VERSION", current),
+                    mock.patch.object(releases, "VERSION", current),
                     mock.patch("urllib.request.urlopen", return_value=response),
                     contextlib.redirect_stdout(output),
                 ):
-                    self.assertEqual(DOTAI.main(["--color", "never", "version"]), 0)
+                    self.assertEqual(cli.main(["--color", "never", "version"]), 0)
                 if warns:
                     self.assertIn("[UPDATE]", output.getvalue())
                     self.assertIn("1.10.0", output.getvalue())
@@ -3837,12 +3811,12 @@ class DotAiTests(unittest.TestCase):
                 if command != "status":
                     argv.append("--dry-run")
                 with (
-                    mock.patch.object(DOTAI, "VERSION", "1.2.3"),
+                    mock.patch.object(releases, "VERSION", "1.2.3"),
                     mock.patch.dict(os.environ, {"DOTAI_HOME": directory, "DOTAI_STATE_DIR": str(Path(directory) / "state")}),
                     mock.patch("urllib.request.urlopen", return_value=response),
                     contextlib.redirect_stdout(output),
                 ):
-                    self.assertEqual(DOTAI.main(argv), 0)
+                    self.assertEqual(cli.main(argv), 0)
                 self.assertIn("[UPDATE]", output.getvalue())
                 self.assertIn("1.3.0", output.getvalue())
 
@@ -3850,11 +3824,11 @@ class DotAiTests(unittest.TestCase):
     def test_release_check_failure_keeps_version_command_available(self) -> None:
         output = io.StringIO()
         with (
-            mock.patch.object(DOTAI, "VERSION", "1.2.3"),
+            mock.patch.object(releases, "VERSION", "1.2.3"),
             mock.patch("urllib.request.urlopen", side_effect=OSError("offline")),
             contextlib.redirect_stdout(output),
         ):
-            self.assertEqual(DOTAI.main(["--color", "never", "version"]), 0)
+            self.assertEqual(cli.main(["--color", "never", "version"]), 0)
         self.assertIn("1.2.3", output.getvalue())
         self.assertNotIn("[UPDATE]", output.getvalue())
 
@@ -3863,7 +3837,7 @@ class DotAiTests(unittest.TestCase):
         response.__enter__.return_value = response
         response.read.return_value = b"[]"
         with mock.patch("urllib.request.urlopen", return_value=response):
-            self.assertIsNone(DOTAI.latest_release_version())
+            self.assertIsNone(releases.latest_release_version())
 
 
 

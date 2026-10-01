@@ -1,0 +1,167 @@
+"""Review and apply repository-recommended skill changes."""
+
+from __future__ import annotations
+
+from pathlib import Path
+from typing import Any
+import shutil
+from . import manifest as manifests
+from . import runtime
+from . import skills as skill_manager
+from . import state as app_state
+from . import terminal
+
+
+def replace_skill(skills: list[dict[str, Any]], source: str, value: dict[str, Any] | None) -> None:
+    for index, skill in enumerate(skills):
+        if skill.get("source") == source:
+            if value is None:
+                skills.pop(index)
+            else:
+                skills[index] = value
+            return
+    if value is not None:
+        skills.append(value)
+
+
+def recommended_skill_plan(
+    manifest: dict[str, Any], manifest_path: Path, enforce: bool = False
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[str]]:
+    desired = manifests.load_manifest(manifests.EXAMPLE_MANIFEST)["skills"]
+    stored = app_state.managed_recommendations(manifest_path)
+    if stored is not None:
+        managed = stored
+    else:
+        managed = [skill for skill in desired if skill in manifest["skills"]]
+
+    local = {skill["source"]: skill for skill in manifest["skills"]}
+    wanted = {skill["source"]: skill for skill in desired}
+    accepted_baseline = list(managed)
+    changes: list[dict[str, Any]] = []
+    conflicts: list[str] = []
+
+    for before in managed:
+        source = before["source"]
+        after = wanted.get(source)
+        current = local.get(source)
+        if after is None:
+            if current is None or current == before:
+                changes.append({"kind": "remove", "source": source, "before": before, "after": None})
+            elif enforce:
+                changes.append({"kind": "remove", "source": source, "before": current, "after": None})
+            else:
+                conflicts.append(source)
+        elif after != before:
+            if current == before:
+                changes.append({"kind": "update", "source": source, "before": before, "after": after})
+            elif current == after:
+                replace_skill(accepted_baseline, source, after)
+            elif enforce:
+                changes.append(
+                    {
+                        "kind": "add" if current is None else "update",
+                        "source": source,
+                        "before": current,
+                        "after": after,
+                    }
+                )
+            else:
+                conflicts.append(source)
+        elif current != before:
+            if enforce:
+                changes.append(
+                    {
+                        "kind": "add" if current is None else "update",
+                        "source": source,
+                        "before": current,
+                        "after": after,
+                    }
+                )
+            else:
+                conflicts.append(source)
+
+    managed_sources = {skill["source"] for skill in managed}
+    for after in desired:
+        source = after["source"]
+        if source in managed_sources:
+            continue
+        current = local.get(source)
+        if current is None:
+            changes.append({"kind": "add", "source": source, "before": None, "after": after})
+        elif current == after:
+            replace_skill(accepted_baseline, source, after)
+        elif enforce:
+            changes.append({"kind": "update", "source": source, "before": current, "after": after})
+        else:
+            conflicts.append(source)
+
+    return accepted_baseline, changes, conflicts
+
+
+def apply_recommended_skill_changes(
+    manifest: dict[str, Any],
+    managed: list[dict[str, Any]],
+    changes: list[dict[str, Any]],
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    updated = dict(manifest)
+    updated["skills"] = list(manifest["skills"])
+    accepted = list(managed)
+    for change in changes:
+        replace_skill(updated["skills"], change["source"], change["after"])
+        replace_skill(accepted, change["source"], change["after"])
+    return updated, accepted
+
+
+def review_recommended_skills(
+    manifest: dict[str, Any], manifest_path: Path, runner: runtime.Runner, enforce: bool = False
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    managed, changes, conflicts = recommended_skill_plan(manifest, manifest_path, enforce)
+    for source in conflicts:
+        print(f"{terminal.badge('DRIFT')} Recommended source {source}: local entry was modified; preserving it")
+    if not changes:
+        print(f"{terminal.badge('OK')} Recommended skills: no changes available")
+        return manifest, managed
+
+    proposed, _ = apply_recommended_skill_changes(manifest, managed, changes)
+    print(f"{terminal.heading('Proposed recommended skill changes:')}")
+    print(manifests.manifest_diff(manifest, proposed, manifest_path))
+    if runner.dry_run:
+        selected = changes
+        print(f"{terminal.badge('RUN')} Dry run: no manifest or skill changes applied.")
+    else:
+        try:
+            answer = input("Apply [a]ll, review [e]ach, or [n]one? ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            answer = ""
+        if answer in {"a", "all"}:
+            selected = changes
+        elif answer in {"e", "each", "r", "review"}:
+            selected = []
+            for change in changes:
+                try:
+                    answer = input(f"Apply {change['kind']} for {change['source']}? [y/N] ")
+                except (EOFError, KeyboardInterrupt):
+                    answer = ""
+                if answer.strip().lower() in {"y", "yes"}:
+                    selected.append(change)
+        else:
+            selected = []
+
+    if not selected:
+        print(f"{terminal.badge('OK')} No recommended skill changes applied.")
+        return manifest, managed
+
+    updated, accepted = apply_recommended_skill_changes(manifest, managed, selected)
+    backup = None
+    if not runner.dry_run:
+        backup = manifests.write_manifest(manifest_path, updated, backup=True)
+        print(f"{terminal.badge('OK')} Manifest backup written to {backup}")
+    skill_manager.remove_retired_skills(selected, runner)
+    if runner.failures:
+        if backup is not None:
+            shutil.copy2(backup, manifest_path)
+            print(f"{terminal.badge('OK')} Restored {manifest_path} after skill removal failure")
+        return manifest, managed
+    if not runner.dry_run:
+        app_state.save_managed_recommendations(manifest_path, accepted)
+    return updated, accepted

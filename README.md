@@ -13,8 +13,10 @@ Python 3.10 or newer must already be installed and available on `PATH`.
 ```sh
 git clone https://github.com/mathwro/DotAi.git
 cd DotAi
-./dotai install
+./dotai.py install
 ```
+
+Direct execution uses `python3` from `PATH`. If your Python 3.10+ interpreter is available only as `python`, use `python dotai.py install` and replace `./dotai.py` with `python dotai.py` in the examples below.
 
 ### Windows PowerShell
 
@@ -23,8 +25,10 @@ Install [Scoop](https://scoop.sh/) first, then run:
 ```powershell
 git clone https://github.com/mathwro/DotAi.git
 Set-Location DotAi
-.\dotai.ps1 install
+python dotai.py install
 ```
+
+If Python is available through the Windows launcher instead, use `py -3 dotai.py install` and replace `python dotai.py` with `py -3 dotai.py` in subsequent commands. If your interpreter is named `python3`, use `python3 dotai.py` instead. The selected interpreter must be Python 3.10 or newer.
 
 Native Windows uses Scoop for all managed package operations; Winget is intentionally not used.
 
@@ -32,56 +36,56 @@ Native Windows uses Scoop for all managed package operations; Winget is intentio
 
 **Routing configuration is optional and must only run after installation, your first OMP launch, and provider authentication.** Skip it to keep OMP's existing model selection; `install`, `update`, and `sync` do not configure routing automatically.
 
-1. Complete `./dotai install` (or `.\dotai.ps1 install` on Windows).
+1. Complete `./dotai.py install` (or `python dotai.py install` on Windows).
 2. Run `omp` to open OMP for the first time.
 3. Inside OMP, use `/login` and authenticate at least one supported provider: GitHub Copilot, OpenAI Codex, or Anthropic. Finish authentication and return to your shell.
 4. Only then preview the proposed routing and, if you want it, apply it:
 
    ```sh
-   ./dotai configure omp-routing --dry-run
-   ./dotai configure omp-routing
+   ./dotai.py configure omp-routing --dry-run
+   ./dotai.py configure omp-routing
    ```
 
    In PowerShell:
 
    ```powershell
-   .\dotai.ps1 configure omp-routing --dry-run
-   .\dotai.ps1 configure omp-routing
+   python dotai.py configure omp-routing --dry-run
+   python dotai.py configure omp-routing
    ```
 
 DotAi selects available models for interactive and worker roles and preserves unrelated OMP settings. See [OMP provider routing](docs/configuration.md#configure-omp-provider-routing) for provider selection, `--primary`, fallbacks, and migration details.
 
 ## Usage
 
-Use `./dotai` on Linux, WSL, and macOS, or `.\dotai.ps1` in PowerShell.
+Use `./dotai.py` on Linux, WSL, and macOS, or `python dotai.py` in PowerShell. The interpreter alternatives described under [Installation](#installation) apply to every command.
 
 ```sh
-./dotai install          # Install missing components and synchronize configuration
-./dotai update           # Update core components and synchronize configuration
-./dotai sync             # Reconcile skills, plugins, and MCP servers; no package operations
-./dotai sync --update-skills  # Explicitly refresh already installed skill sources
-./dotai sync --recommended-skills  # Review and apply repository skill recommendations
-./dotai sync --recommended-skills --enforce  # Fully adopt and clean recommended skill sources
-./dotai status           # Show installed, missing, inactive, or drifting components
-./dotai doctor           # Check the stack plus platform prerequisites
-./dotai validate         # Initialize when absent, then validate stack.json
-./dotai version          # Print the version and warn about newer releases
-./dotai platform         # Print the detected platform
+./dotai.py install          # Install missing components and synchronize configuration
+./dotai.py update           # Update core components and synchronize configuration
+./dotai.py sync             # Reconcile skills, plugins, and MCP servers; no package operations
+./dotai.py sync --update-skills  # Explicitly refresh already installed skill sources
+./dotai.py sync --recommended-skills  # Review and apply repository skill recommendations
+./dotai.py sync --recommended-skills --enforce  # Fully adopt and clean recommended skill sources
+./dotai.py status           # Show installed, missing, inactive, or drifting components
+./dotai.py doctor           # Check the stack plus platform prerequisites
+./dotai.py validate         # Initialize when absent, then validate stack.json
+./dotai.py version          # Print the version and warn about newer releases
+./dotai.py platform         # Print the detected platform
 ```
 
 Common options:
 
 ```sh
-./dotai install --dry-run
-./dotai install --force
-./dotai update --include-dependencies
-./dotai --manifest path/to/stack.json status
-./dotai --manifest path/to/new-stack.json init
+./dotai.py install --dry-run
+./dotai.py install --force
+./dotai.py update --include-dependencies
+./dotai.py --manifest path/to/stack.json status
+./dotai.py --manifest path/to/new-stack.json init
 ```
 
 `init` creates only a missing manifest and refuses to overwrite an existing file. Dependency tools such as Node.js and `uv` install when missing but update only with `--include-dependencies`. OMP updates use its version-aware `omp update` command.
 
-Preview commands still initialize a missing default `stack.json` on first use. Run `./dotai validate` first if you want to separate manifest initialization from a dry-run preview.
+Preview commands still initialize a missing default `stack.json` on first use. Run `./dotai.py validate` first if you want to separate manifest initialization from a dry-run preview.
 
 Linux RTK installs and updates use the reviewed v0.50.0 release archives with pinned SHA-256 digests rather than executing an installer from a moving branch. To adopt this change on an existing installation, update the RTK commands in your personal `stack.json` from `stack.example.json`; DotAi does not overwrite that file.
 
@@ -106,13 +110,13 @@ The `INACTIVE` hint for unconfigured optional routing is informational and does 
 Use `add` to record a desired integration in your local `stack.json`; adding it does not install it yet. Replace these example names and URLs with your own:
 
 ```sh
-./dotai add skill owner/repository --skill review
-./dotai add mcp example --url https://example.com/mcp
-./dotai add marketplace team owner/marketplace
-./dotai add plugin review@team --scope user
+./dotai.py add skill owner/repository --skill review
+./dotai.py add mcp example --url https://example.com/mcp
+./dotai.py add marketplace team owner/marketplace
+./dotai.py add plugin review@team --scope user
 ```
 
-Then preview with `./dotai sync --dry-run` and apply with `./dotai sync`. For command-line tools, use `./dotai add tool` with `--check` and platform-specific `--install` commands, then run `./dotai install`; `sync` does not install packages. Use `.\dotai.ps1` instead of `./dotai` in PowerShell.
+Then preview with `./dotai.py sync --dry-run` and apply with `./dotai.py sync`. For command-line tools, use `./dotai.py add tool` with `--check` and platform-specific `--install` commands, then run `./dotai.py install`; `sync` does not install packages. Use `python dotai.py` instead of `./dotai.py` in PowerShell.
 
 Reusing a skill source, MCP or marketplace name, plugin ID, or tool name replaces that manifest entry. See [Extending the stack](docs/extending.md) for tool examples, stdio/SSE servers, authentication headers and environment references, skill checks, and recommendation management.
 
@@ -128,6 +132,16 @@ Reusing a skill source, MCP or marketplace name, plugin ID, or tool name replace
 RTK 0.43 or newer is configured for Pi and registered as an OMP global extension without replacing unrelated extensions. DotAi also enables OMP's **Hide Secrets** privacy setting during installation and updates.
 
 DotAi installs the Graphify CLI, but its Pi skill and project graph generation are opt-in. Run `graphify extract . --code-only` in a project when you want a graph. Existing local manifests retain their earlier Graphify configuration; see [Optional Graphify](docs/configuration.md#optional-graphify) before your next `install` or `update`.
+
+## Tests
+
+Run all unit tests from the repository root:
+
+```sh
+rtk python3 -m unittest discover -s tests -v
+```
+
+RTK is optional for running tests; omit `rtk` if it is not installed. On Windows, replace `python3` with `python` or `py -3`, depending on your installed interpreter.
 
 ## Guides
 

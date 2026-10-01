@@ -5,9 +5,8 @@ The runtime uses only the Python standard library and supports Python 3.10 or ne
 ## Repository layout
 
 ```text
-dotai.py             Cross-platform manager implementation
-dotai                Unix command wrapper
-dotai.ps1            PowerShell command wrapper
+dotai.py             Executable Python CLI entry point
+dotai_app/           Purpose-specific application modules
 stack.example.json   Tracked baseline copied for new users
 stack.json           Ignored, user-owned stack configuration
 stack.schema.json    JSON Schema for stack manifests
@@ -17,7 +16,29 @@ tests/               Behavioral test suite
 AGENTS.md             Repository guidance for coding agents
 ```
 
-The public launchers, manifests, and schema stay at the repository root because installation and operational commands address them there directly.
+The Python entry point, manifests, and schema stay at the repository root because installation and operational commands address them there directly.
+
+`dotai.py` delegates to `dotai_app.cli.main`. Its executable mode is tracked in Git: use `./dotai.py` on Unix or `python dotai.py` on Windows. Direct Unix execution requires `python3`; use `python dotai.py` if your Python 3.10+ interpreter is named `python` instead. On Windows, `py -3 dotai.py` or `python3 dotai.py` can be used when those commands provide the compatible interpreter. Running from a checkout needs no package installation.
+
+| Module in `dotai_app/` | Responsibility |
+| --- | --- |
+| `cli.py` | Argument parsing and command dispatch |
+| `runtime.py` | Repository/home/state paths, platform selection, shared errors, and external command execution |
+| `terminal.py` | Color policy, headings, and status badges |
+| `releases.py` | Application version and best-effort release notices |
+| `manifest.py` | Manifest validation, initialization, diffs, backups, and safe JSON writes |
+| `integrations.py` | Parse and persist declared integrations from `add` commands |
+| `packages.py` | Package presence, minimum versions, and install/update decisions |
+| `skills.py` | Agent-scoped installation, ownership checks, health, retirement, and legacy migration |
+| `recommendations.py` | Plan, review, and apply recommended skill changes |
+| `state.py` | Reconciliation history and recommended-skill ownership persistence |
+| `omp.py` | OMP marketplaces, plugins, extension registration, and registry checks |
+| `routing.py` | Provider/model policy, availability, explicit routing configuration, and routing health |
+| `mcp.py` | Provider discovery, semantic server matching, health, and reconciliation |
+| `health.py` | Aggregate read-only status and doctor diagnostics |
+| `reconcile.py` | Coordinate package and integration reconciliation |
+
+Keep dependencies directed: CLI dispatch and orchestration call the domain modules; domain modules use manifest, runtime, and terminal helpers without importing the CLI or orchestration. Use explicit module imports rather than a package-wide re-export facade. Tests import and patch the module that owns a behavior, so the same patch applies to its callers.
 
 The current user-facing contracts live in [Configuration](configuration.md) and [Extending the stack](extending.md). Dated files under `docs/superpowers/specs/` are historical design records, not current defaults or active instructions. Completed implementation plans have been removed; their history remains in Git.
 
@@ -29,11 +50,19 @@ Run the behavioral suite:
 rtk python3 -m unittest discover -s tests -v
 ```
 
-Validate the tracked example and Unix launcher without initializing a personal manifest:
+The test script also supports direct execution, including a single selected test:
+
+```sh
+rtk python3 tests/test_dotai.py DotAiTests.test_validate_omp_routing_accepts_compact_intent_and_null
+```
+
+For invocation from another working directory, pass the absolute path to `tests/test_dotai.py`; the script establishes its repository import path before loading application modules.
+
+Validate the tracked example and direct executable entry point without initializing a personal manifest:
 
 ```sh
 rtk python3 dotai.py --manifest stack.example.json validate
-rtk sh -n dotai
+rtk ./dotai.py --manifest stack.example.json validate
 ```
 
 To check a local installation, `rtk python3 dotai.py validate` validates `stack.json` and initializes it from the example only if absent. First-use initialization also happens before dry-run previews.
@@ -42,7 +71,7 @@ When changing the manifest format or shared defaults, keep `stack.example.json`,
 
 Routing behavior tests use the shared synthetic catalog in `tests/test_dotai.py`, not current GPT or Claude versions. Keep expected provider precedence, fallback chains, and configuration effects explicit; do not calculate expected results with the production resolver. The repository catalog is validated separately and exercised for coverage of every managed role without pinning model IDs. Model refreshes should update `routing-recommendations.json` and the routing documentation, not the behavioral fixtures.
 
-Release-notice tests use explicit synthetic current and available versions, including numeric ordering, equal/older releases, and network failures. Keep these behavioral fixtures independent of `dotai.py`'s release version and exact notice wording; verify a release's real version with `./dotai version` before tagging it.
+Release-notice tests use explicit synthetic current and available versions, including numeric ordering, equal/older releases, and network failures. Keep these behavioral fixtures independent of `dotai_app/releases.py`'s release version and exact notice wording; verify a release's real version with `./dotai.py version` before tagging it.
 
 ## Behavioral fixtures and CLI smoke checks
 

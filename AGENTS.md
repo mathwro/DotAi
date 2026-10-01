@@ -14,23 +14,32 @@ Supported platforms:
 
 ## Repository map
 
-- `dotai.py` — manifest validation, platform detection, reconciliation, status, doctor, extension commands, and explicit routing configuration
+- `dotai.py` — executable Python CLI entry point; use `./dotai.py` on Unix or `python dotai.py` on Windows
+- `dotai_app/` — purpose-specific application modules; see `docs/development.md` for module responsibilities and dependency direction
 - `stack.example.json` — tracked baseline stack definition copied for new users
 - `stack.json` — ignored, user-owned stack configuration generated on first use
 - `routing-recommendations.json` — tracked provider/model policy; compact routing intent stays in `stack.json`
 - `stack.schema.json` — JSON Schema for both manifests
-- `dotai` / `dotai.ps1` — operational launchers
 - `tests/test_dotai.py` — behavioral tests
 - `README.md` — concise installation, usage, status, and managed-stack overview
 - `docs/configuration.md` — read before changing manifest validation, reconciliation safety, or OMP routing
 - `docs/extending.md` — read before changing extension commands, skill ownership/refresh, or recommendation reconciliation
-- `docs/development.md` — read before changing tests or the routing catalog; verification and fixture conventions
+- `docs/development.md` — read before changing application code, tests, or the routing catalog; module ownership, dependency direction, and verification conventions
 - `docs/superpowers/specs/` — historical design records, not active agent instructions or current defaults; current contracts are in the guides above
+
+## Module boundaries
+
+- Place application changes in the owning module identified by `docs/development.md`'s responsibility table. Extend an existing responsibility before introducing a new module.
+- Keep `dotai.py` an executable entry point that delegates to `dotai_app.cli.main`; application logic belongs in `dotai_app/`, not the root script or new platform wrappers.
+- Keep `cli.py` focused on argument parsing and dispatch, `integrations.py` on manifest additions, `reconcile.py` on coordinating reconciliation, and `health.py` on aggregating observational checks. Delegate domain decisions and operations to their owning modules rather than accumulating them in these entry points.
+- Keep imports acyclic. Domain modules must not import `cli.py`, `reconcile.py`, or `health.py`; shared manifest, runtime, and terminal helpers must not depend on domain modules.
+- Reuse behavior through explicit imports of its owning module. Keep `__init__.py` a package marker rather than a re-export facade, and patch the owning module in behavioral tests.
+- Create a module only for a distinct, cohesive responsibility that does not fit an existing owner; avoid generic utility grab bags and one-function forwarding modules. Update the responsibility table when adding a module or moving ownership.
 
 ## Development rules
 
 - Keep the runtime compatible with Python 3.10 or newer and use the standard library unless a dependency is demonstrably necessary.
-- Treat stack manifests as declarative data. Do not hard-code stack-specific tools or integrations into `dotai.py` when a manifest can express them.
+- Treat stack manifests as declarative data. Do not hard-code stack-specific tools or integrations into the Python modules when a manifest can express them.
 - Shared defaults belong in `stack.example.json`; never commit or overwrite the user-owned `stack.json`.
 - When the default `stack.json` is absent, initialize it once from `stack.example.json`. Existing local manifests must remain untouched, and missing explicitly selected custom manifests must still fail.
 - Keep `stack.schema.json`, manifest validation, CLI mutation commands, and `stack.example.json` aligned when changing the manifest format.
