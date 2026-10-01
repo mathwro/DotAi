@@ -106,6 +106,8 @@ Define referenced variables in the environment where OMP starts; adding a refere
 
 Plugin scope can be `user` or `project`.
 
+`status` and `doctor` check marketplace registration and the plugin's selected user or project registry. Missing, malformed, or unreadable registries, including invalid UTF-8, are unhealthy rather than successful installations. Extension health independently requires both global registration and an available source file; registering a path alone does not make the extension healthy.
+
 ## Add a command-line tool
 
 ```sh
