@@ -67,7 +67,7 @@ class SkillCoverageTests(unittest.TestCase):
     def setUp(self):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
-        self.home = Path(temporary.name)
+        self.home = Path(temporary.name).resolve()
         self.path = self.home / "stack.json"
         self.example = self.home / "example.json"
         self.history = self.home / "state" / "recommended-skills.json"
