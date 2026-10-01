@@ -172,6 +172,8 @@ def remove_retired_skills(changes: list[dict[str, Any]], runner: runtime.Runner)
             continue
         wanted_before = before.get("skills", ["*"])
         wanted_after = after.get("skills", ["*"]) if after else []
+        names_before = set(before.get("checkSkills") or [installed_skill_name(name) for name in wanted_before])
+        names_after = set(after.get("checkSkills") or [installed_skill_name(name) for name in wanted_after]) if after else set()
         same_agent = after is not None and (
             before.get("agent", "universal") == after.get("agent", "universal")
         )
@@ -184,7 +186,7 @@ def remove_retired_skills(changes: list[dict[str, Any]], runner: runtime.Runner)
                     "installed names resolved when applied"
                 )
                 continue
-            names = set(wanted_before) - set(wanted_after) if same_agent else set(wanted_before)
+            names = names_before - names_after if same_agent else names_before
         else:
             agent = before.get("agent", "universal")
             installed = installed_skill_names(agent, runner, before["source"])
@@ -192,9 +194,9 @@ def remove_retired_skills(changes: list[dict[str, Any]], runner: runtime.Runner)
                 runner.failures.append(f"Unable to list installed skills from {before['source']}")
                 print(f"{terminal.badge('FAIL')} Unable to identify installed skills from {before['source']}")
                 continue
-            names = installed if "*" in wanted_before else installed.intersection(wanted_before)
+            names = installed if "*" in wanted_before else installed.intersection(names_before)
             if same_agent:
-                names -= set(wanted_after)
+                names -= names_after
         if names:
             command = [
                 "npx",
