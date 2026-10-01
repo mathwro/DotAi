@@ -31,7 +31,7 @@ def configure_color(mode: str) -> None:
         _COLOR_ENABLED = (
             "NO_COLOR" not in os.environ
             and os.environ.get("TERM") != "dumb"
-            and ((forced is not None and forced != "0") or sys.stdout.isatty())
+            and (forced != "0" and (forced is not None or sys.stdout.isatty()))
         )
     if _COLOR_ENABLED and os.name == "nt":
         try:

@@ -50,6 +50,24 @@ Run the behavioral suite:
 rtk python3 -m unittest discover -s tests -v
 ```
 
+Focused domain suites also live in `tests/test_*_coverage.py`; select one with `-p`, for example:
+
+```sh
+rtk python3 -m unittest discover -s tests -p test_installers_terminal_coverage.py -v
+```
+
+GitHub Actions runs the behavioral suite and tracked-baseline validation on Ubuntu, Windows, and macOS with Python 3.10 and 3.14. Native PowerShell tests run on Windows; Linux RTK shell tests run on Linux. Platform-specific skips do not establish behavior on another operating system.
+
+The separate Linux coverage job publishes line/branch reports as the `linux-branch-coverage` artifact, without a percentage gate. Coverage is a development-only tool; the application remains standard-library-only. To measure locally without installing it into the runtime environment:
+
+```sh
+rtk uv tool run --from 'coverage>=7.6,<8' coverage run --branch --source=dotai_app -m unittest discover -s tests -v
+rtk uv tool run --from 'coverage>=7.6,<8' coverage report -m
+rtk uv tool run --from 'coverage>=7.6,<8' coverage html -d htmlcov
+```
+
+These figures measure application Python executed in the test process, not the entry-point wrapper, child processes, or shell installers. Installer tests execute isolated shell commands and assert their side effects separately.
+
 The test script also supports direct execution, including a single selected test:
 
 ```sh

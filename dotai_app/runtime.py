@@ -160,7 +160,9 @@ class Runner:
                 check=False,
             )
             if result.returncode == 0 and result.stdout.strip():
-                self.env["PATH"] = result.stdout.strip() + os.pathsep + self.env["PATH"]
+                registered = result.stdout.strip().split(os.pathsep)
+                inherited = self.env["PATH"].split(os.pathsep)
+                self.env["PATH"] = os.pathsep.join(registered + [path for path in inherited if path not in registered])
         except OSError:
             pass
 

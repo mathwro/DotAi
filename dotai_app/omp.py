@@ -100,5 +100,5 @@ def json_contains(value: Any, needle: str) -> bool:
 def registry_contains(path: Path, needle: str) -> bool:
     try:
         return json_contains(manifests.load_json_object(path), needle)
-    except (OSError, runtime.DotAiError):
+    except (OSError, UnicodeError, runtime.DotAiError):
         return False
