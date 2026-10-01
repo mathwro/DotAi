@@ -31,6 +31,8 @@ DotAi updates configuration conservatively:
 - MCP status confirms configured provider entries, not network reachability or successful server startup.
 - Repeated synchronization is idempotent and does not create another backup when nothing changes.
 - `install`, `update`, and `sync` report MCP configuration errors as failures and exit nonzero without overwriting invalid JSON.
+- MCP targets must be readable UTF-8 JSON objects. When present, `mcpServers` must be an object and `disabledServers` an array of server-name strings. Invalid targets are unhealthy and fail reconciliation before writes or backups, including dry runs. This container validation does not prevent replacing a non-object managed entry. Independently malformed provider files are ignored without modification and cannot satisfy managed requirements.
+- Required header and environment references participate in MCP health. Writable target aliases can be corrected while preserving extra references; drifting external-only entries require manual resolution.
 - Managed `ompExtensions` are appended to OMP's global extension list; unrelated user extensions are retained.
 - Skill health is agent-scoped. A skill found only in a Codex plugin cache is reported as `INACTIVE` until installed for the configured OMP skill target.
 - Avoiding skill fetches requires matching source metadata and a matching GitHub folder tree hash for the configured agent's installed files; the name-only global lock cannot establish ownership of another agent's independent copy. Missing or uncertain provenance triggers a refresh, not a silent skip.
