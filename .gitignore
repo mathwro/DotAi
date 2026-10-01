@@ -7,3 +7,6 @@ graphify-out/
 stack.json.bak.*
 mcp.json.bak.*
 .worktrees/
+.coverage*
+coverage.xml
+htmlcov/

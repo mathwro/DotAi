@@ -101,7 +101,7 @@ Linux RTK installs and updates use the reviewed v0.50.0 release archives with pi
 | `MISSING` | Red | A declared component is not installed |
 | `FAIL` | Red | An operation or prerequisite check failed |
 
-Color can be controlled with `--color auto|always|never`. Automatic mode respects `NO_COLOR`, `FORCE_COLOR`, and `TERM=dumb`. `status` and `doctor` return a nonzero exit code when the declared stack is unhealthy.
+Color can be controlled with `--color auto|always|never`. Automatic mode respects `NO_COLOR`, `FORCE_COLOR`, and `TERM=dumb`; `FORCE_COLOR=0` disables it even on a terminal. Explicit `always` or `never` takes precedence over the environment. `status` and `doctor` return a nonzero exit code when the declared stack is unhealthy.
 
 The `INACTIVE` hint for unconfigured optional routing is informational and does not make the stack unhealthy.
 
