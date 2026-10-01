@@ -19,13 +19,16 @@ if __name__ == "__main__":
 from dotai_app import cli, manifest as manifests, recommendations, releases, runtime, skills, state, terminal
 
 
-# External installer boundary: listing reflects actual files; removal changes them.
-INSTALLER = '''import json, os, pathlib, shutil, sys
+# Listing preserves frontmatter names and canonical paths separately. Removal
+# models the upstream all-agent default and canonical retention/deletion rules.
+INSTALLER = '''import json, os, pathlib, re, shutil, sys
 home = pathlib.Path(os.environ["DOTAI_HOME"])
 control = home / "installer.json"
 data = json.loads(control.read_text())
 args = sys.argv[1:]
 action = args[2]
+def identity(name):
+    return re.sub(r"[^a-z0-9._]+", "-", name.lower()).strip(".-")[:255] or "unnamed-skill"
 if action == "list":
     data["lists"] = data.get("lists", 0) + 1
     control.write_text(json.dumps(data))
@@ -33,15 +36,44 @@ if action == "list":
     if malformed == "initial" or (malformed == "verification" and data["lists"] > 1):
         print('{"unexpected": true}')
     else:
-        print(json.dumps([entry for entry in data["entries"] if pathlib.Path(entry["path"]).exists()]))
+        agent = args[args.index("--agent") + 1]
+        result = []
+        for entry in data["entries"]:
+            if entry["targetAgent"] != agent or not pathlib.Path(entry["path"]).exists():
+                continue
+            record = {key: value for key, value in entry.items() if key != "targetAgent"}
+            if agent == "universal":
+                record["agents"] = ["Pi"] if any(other["targetAgent"] == "pi" and other["name"] == entry["name"] and pathlib.Path(other["path"]).exists() for other in data["entries"]) else []
+            elif agent == "pi":
+                canonical = home / ".agents" / "skills" / pathlib.Path(entry["path"]).name
+                if canonical.exists():
+                    record["path"] = str(canonical)
+            result.append(record)
+        print(json.dumps(result))
 elif action == "remove":
     if data.get("remove_fail"):
         sys.exit(7)
-    agent = args[args.index("--agent") + 1] if "--agent" in args else "universal"
-    names = args[3:args.index("--global")]
+    agent = args[args.index("--agent") + 1] if "--agent" in args else None
+    names = {identity(name) for name in args[3:args.index("--global")]}
     for entry in data["entries"]:
-        if entry["name"] in names and entry["agents"] == [agent]:
-            shutil.rmtree(entry["path"])
+        path = pathlib.Path(entry["path"])
+        if identity(entry["name"]) not in names or not path.exists():
+            continue
+        if entry["targetAgent"] == "universal" and agent is not None:
+            still_used = any(other["targetAgent"] not in ("universal", agent) and identity(other["name"]) in names and pathlib.Path(other["path"]).exists() for other in data["entries"])
+            if still_used:
+                continue
+        elif agent is not None and entry["targetAgent"] != agent:
+            continue
+        if path.is_symlink():
+            path.unlink()
+        else:
+            shutil.rmtree(path)
+    if agent == "pi":
+        for name in names:
+            canonical = home / ".agents" / "skills" / name
+            if canonical.exists():
+                shutil.rmtree(canonical)
 elif action == "add":
     if data.get("add_fail"):
         sys.exit(9)
@@ -108,11 +140,12 @@ class SkillCoverageTests(unittest.TestCase):
         self.control.update(options)
         (self.home / "installer.json").write_text(json.dumps(self.control), encoding="utf-8")
 
-    def installed(self, name, *, repo="owner/repo", agent="universal"):
-        folder = (self.home / ".agents" / "skills" if agent == "universal" else self.home / ".pi" / "agent" / "skills") / name
+    def installed(self, directory, *, display_name=None, repo="owner/repo", agent="universal"):
+        name = directory if display_name is None else display_name
+        folder = (self.home / ".agents" / "skills" if agent == "universal" else self.home / ".pi" / "agent" / "skills") / directory
         folder.mkdir(parents=True)
-        (folder / "SKILL.md").write_text("fixture skill\n", encoding="utf-8")
-        self.control["entries"].append({"name": name, "source": repo, "path": str(folder), "agents": [agent]})
+        (folder / "SKILL.md").write_text(f"---\nname: {name}\ndescription: Fixture skill\n---\n", encoding="utf-8", newline="\n")
+        self.control["entries"].append({"name": name, "source": repo, "sourceUrl": "https://github.com/" + repo + ".git", "sourceType": "github", "scope": "global", "path": str(folder), "agents": [] if agent == "universal" else ["Pi"], "targetAgent": agent})
         self.configure()
         return folder
 
@@ -132,8 +165,8 @@ class SkillCoverageTests(unittest.TestCase):
 
     def test_normalized_named_retirement_removes_only_selected_agent_and_source(self):
         before = source(["ALPHA", "..Review / Code!!.."])
-        removed = [self.installed("alpha"), self.installed("review-code")]
-        survivors = [self.installed("other", repo="custom/repo"), self.installed("alpha", agent="pi"), self.installed("unselected")]
+        removed = [self.installed("alpha", display_name="ALPHA"), self.installed("review-code", display_name="..Review / Code!!..")]
+        survivors = [self.installed("other", repo="custom/repo"), self.installed("alpha", display_name="ALPHA", agent="pi"), self.installed("unselected")]
         original = self.prepare([before], [], [before])
         updated, baseline, runner = self.review(original)
         self.assertEqual(updated["skills"], [])
@@ -144,7 +177,7 @@ class SkillCoverageTests(unittest.TestCase):
 
     def test_wildcard_narrowing_retains_normalized_selection(self):
         before, after = source(["*"]), source(["ALPHA", "Review / Code"])
-        kept = [self.installed("alpha"), self.installed("review-code")]
+        kept = [self.installed("alpha", display_name="ALPHA"), self.installed("review-code", display_name="Review / Code")]
         retired = self.installed("retired")
         original = self.prepare([before], [after], [before])
         updated, baseline, runner = self.review(original)
@@ -154,7 +187,7 @@ class SkillCoverageTests(unittest.TestCase):
 
     def test_explicit_check_names_are_retirement_authority_without_normalization(self):
         before = source(["ALPHA"], checks=["External.Name"])
-        retired = self.installed("External.Name")
+        retired = self.installed("External.Name", display_name="ALPHA")
         unrelated = self.installed("alpha")
         original = self.prepare([before], [], [before])
         _, _, runner = self.review(original)
@@ -164,11 +197,154 @@ class SkillCoverageTests(unittest.TestCase):
 
     def test_wildcard_narrowing_preserves_explicit_check_directory(self):
         before, after = source(["*"]), source(["ALPHA"], checks=["External.Name"])
-        kept, retired = self.installed("External.Name"), self.installed("alpha")
+        kept, retired = self.installed("External.Name", display_name="ALPHA"), self.installed("alpha")
         original = self.prepare([before], [after], [before])
         self.review(original)
         self.assertTrue(kept.exists())
         self.assertFalse(retired.exists())
+
+    def test_universal_retirement_preserves_independent_pi_copy(self):
+        before = source(["alpha"])
+        retired = self.installed("alpha")
+        other = self.installed("alpha", agent="pi")
+        original = self.prepare([before], [], [before])
+        _, _, runner = self.review(original)
+        self.assertEqual(runner.failures, [])
+        self.assertFalse(retired.exists())
+        self.assertTrue((other / "SKILL.md").is_file())
+
+    def test_pi_retirement_preserves_independent_universal_copy(self):
+        before = source(["alpha"], agent="pi")
+        retired = self.installed("alpha", agent="pi")
+        other = self.installed("alpha")
+        original = self.prepare([before], [], [before])
+        _, _, runner = self.review(original)
+        self.assertEqual(runner.failures, [])
+        self.assertFalse(retired.exists())
+        self.assertTrue((other / "SKILL.md").is_file())
+
+    @unittest.skipIf(os.name == "nt", "Directory symlink creation requires native privileges")
+    def test_shared_canonical_skill_is_preserved_and_retirement_remains_pending(self):
+        before = source(["alpha"])
+        canonical = self.installed("alpha")
+        pi = self.home / ".pi" / "agent" / "skills" / "alpha"
+        pi.parent.mkdir(parents=True)
+        pi.symlink_to(canonical, target_is_directory=True)
+        self.control["entries"].append({**self.control["entries"][0], "path": str(pi), "agents": ["Pi"], "targetAgent": "pi"})
+        self.configure()
+        original = self.prepare([before], [], [before])
+        manifest_bytes, history_bytes = self.path.read_bytes(), self.history.read_bytes()
+        updated, baseline, runner = self.review(original)
+        self.assertTrue(runner.failures)
+        self.assertEqual((updated, baseline), (original, [before]))
+        self.assertEqual(self.path.read_bytes(), manifest_bytes)
+        self.assertEqual(self.history.read_bytes(), history_bytes)
+        self.assertTrue((canonical / "SKILL.md").is_file())
+        self.assertTrue(pi.is_symlink())
+
+    def test_named_retirement_dry_run_uses_exact_directories_without_machine_queries(self):
+        before = source(["ALPHA"], checks=["External.Name"])
+        original = self.prepare([before], [], [before])
+        manifest_bytes, history_bytes = self.path.read_bytes(), self.history.read_bytes()
+        runner = runtime.Runner("linux", dry_run=True)
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            recommendations.review_recommended_skills(original, self.path, runner)
+        self.assertIn(str(self.home / ".agents" / "skills" / "External.Name"), output.getvalue())
+        self.assertEqual(json.loads((self.home / "installer.json").read_text()).get("lists", 0), 0)
+        self.assertEqual(self.path.read_bytes(), manifest_bytes)
+        self.assertEqual(self.history.read_bytes(), history_bytes)
+        self.assertEqual(runner.failures, [])
+
+    def test_wildcard_retirement_preview_defers_listing_and_preserves_files(self):
+        before = source(["*"])
+        installed = self.installed("alpha", display_name="ALPHA")
+        original = self.prepare([before], [], [before])
+        manifest_bytes, history_bytes = self.path.read_bytes(), self.history.read_bytes()
+        runner = runtime.Runner("linux", dry_run=True)
+        recommendations.review_recommended_skills(original, self.path, runner)
+        self.assertTrue((installed / "SKILL.md").is_file())
+        self.assertEqual(json.loads((self.home / "installer.json").read_text()).get("lists", 0), 0)
+        self.assertEqual(self.path.read_bytes(), manifest_bytes)
+        self.assertEqual(self.history.read_bytes(), history_bytes)
+        self.assertFalse(list(self.home.glob("stack.json.bak.*")))
+
+    def test_agent_switch_retires_only_the_old_agent_copy(self):
+        before, after = source(["ALPHA"], agent="pi"), source(["*"], agent="universal")
+        retired = self.installed("alpha", display_name="ALPHA", agent="pi")
+        retained = self.installed("alpha", display_name="ALPHA")
+        original = self.prepare([before], [after], [before])
+        updated, _, runner = self.review(original)
+        self.assertEqual(runner.failures, [])
+        self.assertEqual(updated["skills"], [after])
+        self.assertFalse(retired.exists())
+        self.assertTrue((retained / "SKILL.md").is_file())
+
+    def test_retirement_does_not_delete_untrusted_listing_paths(self):
+        before = source(["alpha"])
+        owned = self.installed("alpha")
+        foreign = self.home / "foreign" / "alpha"
+        foreign.mkdir(parents=True)
+        (foreign / "SKILL.md").write_text("user-owned", encoding="utf-8")
+        record = {key: value for key, value in self.control["entries"][0].items() if key != "targetAgent"}
+        record["path"] = str(foreign)
+        original = self.prepare([before], [], [before])
+        with mock.patch.object(runtime.Runner, "output", return_value=json.dumps([record])):
+            updated, baseline, runner = self.review(original)
+        self.assertTrue(runner.failures)
+        self.assertEqual((updated, baseline), (original, [before]))
+        self.assertTrue((owned / "SKILL.md").is_file())
+        self.assertEqual((foreign / "SKILL.md").read_text(), "user-owned")
+
+    def test_unproven_shared_agent_keeps_retirement_pending(self):
+        before = source(["alpha"])
+        installed = self.installed("alpha")
+        record = {key: value for key, value in self.control["entries"][0].items() if key != "targetAgent"}
+        record["agents"] = ["Claude Code"]
+        original = self.prepare([before], [], [before])
+        with mock.patch.object(runtime.Runner, "output", return_value=json.dumps([record])):
+            updated, baseline, runner = self.review(original)
+        self.assertTrue(runner.failures)
+        self.assertEqual((updated, baseline), (original, [before]))
+        self.assertTrue((installed / "SKILL.md").is_file())
+
+    def test_remaining_files_cannot_be_hidden_by_missing_source_metadata(self):
+        before = source(["old"])
+        installed = self.installed("old")
+        record = {key: value for key, value in self.control["entries"][0].items() if key != "targetAgent"}
+        untracked = {**record, "source": None, "sourceUrl": None, "sourceType": None}
+        original = self.prepare([before], [], [before])
+        with mock.patch("shutil.rmtree", return_value=None), mock.patch.object(runtime.Runner, "output", side_effect=[json.dumps([record]), json.dumps([untracked])]):
+            updated, baseline, runner = self.review(original)
+        self.assertTrue(runner.failures)
+        self.assertEqual((updated, baseline), (original, [before]))
+        self.assertTrue((installed / "SKILL.md").is_file())
+
+    def test_incomplete_listing_metadata_cannot_complete_retirement(self):
+        before = source(["alpha"])
+        installed = self.installed("alpha")
+        complete = {key: value for key, value in self.control["entries"][0].items() if key != "targetAgent"}
+        for field in ("name", "path", "scope", "agents"):
+            original = self.prepare([before], [], [before])
+            record = {key: value for key, value in complete.items() if key != field}
+            with self.subTest(field=field), mock.patch.object(runtime.Runner, "output", return_value=json.dumps([record])):
+                updated, baseline, runner = self.review(original)
+                self.assertTrue(runner.failures)
+                self.assertEqual((updated, baseline), (original, [before]))
+                self.assertTrue((installed / "SKILL.md").is_file())
+
+    def test_invalid_listing_path_reports_failure_without_ownership_changes(self):
+        before = source(["alpha"])
+        installed = self.installed("alpha")
+        complete = {key: value for key, value in self.control["entries"][0].items() if key != "targetAgent"}
+        for path in (str(installed) + "\0", str(self.home / "bad\0parent" / "alpha")):
+            original = self.prepare([before], [], [before])
+            record = {**complete, "path": path}
+            with self.subTest(path=path), mock.patch.object(runtime.Runner, "output", return_value=json.dumps([record])):
+                updated, baseline, runner = self.review(original)
+                self.assertTrue(runner.failures)
+                self.assertEqual((updated, baseline), (original, [before]))
+                self.assertTrue((installed / "SKILL.md").is_file())
 
     def test_failed_retirements_preserve_manifest_history_and_pending_change(self):
         for failure in ("initial", "verification", "command"):
@@ -180,7 +356,9 @@ class SkillCoverageTests(unittest.TestCase):
                     self.installed("old")
                 original = self.prepare([before], [], [before])
                 original_bytes, history_bytes = self.path.read_bytes(), self.history.read_bytes()
-                updated, baseline, runner = self.review(original)
+                failure_boundary = mock.patch("shutil.rmtree", side_effect=PermissionError("retirement denied")) if failure == "command" else contextlib.nullcontext()
+                with failure_boundary:
+                    updated, baseline, runner = self.review(original)
                 self.assertTrue(runner.failures)
                 self.assertEqual((updated, baseline), (original, [before]))
                 self.assertEqual(self.path.read_bytes(), original_bytes)

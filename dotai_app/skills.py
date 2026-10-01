@@ -8,6 +8,7 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import stat
 from . import manifest as manifests
 from . import runtime
@@ -134,7 +135,7 @@ def agent_display_matches(agent: str, display: Any) -> bool:
     )
 
 
-def installed_skill_names(agent: str, runner: runtime.Runner, source: str | None = None) -> set[str] | None:
+def installed_skill_records(agent: str, runner: runtime.Runner, source: str | None = None) -> list[dict[str, Any]] | None:
     raw = runner.output(
         ["npx", "--yes", "skills@latest", "list", "--global", "--agent", agent, "--json"]
     )
@@ -144,24 +145,54 @@ def installed_skill_names(agent: str, runner: runtime.Runner, source: str | None
         return None
     if not isinstance(installed, list) or any(not isinstance(skill, dict) for skill in installed):
         return None
-    universal_root = (runtime.home_dir() / ".agents" / "skills").resolve()
-    return {
-        skill["name"]
-        for skill in installed
-        if isinstance(skill.get("name"), str)
-        and (
-            (
-                agent == "universal"
-                and isinstance(skill.get("path"), str)
-                and Path(skill["path"]).resolve().is_relative_to(universal_root)
-            )
-            or (
-                isinstance(skill.get("agents"), list)
-                and any(agent_display_matches(agent, display) for display in skill["agents"])
-            )
-        )
-        and (source is None or skill.get("source") == source)
-    }
+    root = skill_root({"agent": agent}).resolve()
+    canonical = skill_root({"agent": "universal"}).resolve()
+    records = []
+    for skill in installed:
+        if source is not None and skill.get("source") != source:
+            continue
+        if (
+            not isinstance(skill.get("name"), str) or not skill["name"]
+            or skill.get("scope") not in ("global", "project")
+            or not isinstance(skill.get("path"), str) or not skill["path"]
+            or "\0" in skill["path"]
+            or not isinstance(skill.get("agents"), list)
+            or any(not isinstance(display, str) for display in skill["agents"])
+        ):
+            return None
+        if skill["scope"] != "global":
+            continue
+        if agent != "universal" and not any(agent_display_matches(agent, display) for display in skill["agents"]):
+            continue
+        path = Path(skill["path"])
+        parent = path.parent.resolve()
+        if agent == "universal" and parent == skill_root({"agent": "pi"}).resolve() and any(agent_display_matches("pi", display) for display in skill["agents"]):
+            continue
+        if not path.is_absolute() or path.name in {"", ".", ".."} or parent not in {root, canonical}:
+            return None
+        if agent == "universal" and parent != canonical:
+            continue
+        records.append(skill)
+    return records
+
+
+def retirement_directory(skill: dict[str, Any], record: dict[str, Any]) -> Path:
+    """Allow copy retirement only inside the configured agent's unshared root."""
+    agent = skill.get("agent", "universal")
+    root = skill_root(skill)
+    folder = root / Path(record["path"]).name
+    if root.resolve() != root or folder.resolve() != folder:
+        raise runtime.DotAiError(f"Cannot retire linked skill directory: {folder}")
+    if agent == "universal":
+        for display in record["agents"]:
+            if agent_display_matches("universal", display):
+                continue
+            # Pi is an existing separately owned root. Unknown agent paths
+            # cannot establish that the canonical folder is an independent copy.
+            other = skill_root({"agent": "pi"}) / folder.name
+            if not agent_display_matches("pi", display) or not other.is_dir() or other.resolve() == folder:
+                raise runtime.DotAiError(f"Cannot retire shared or ambiguous skill directory: {folder}")
+    return folder
 
 
 def remove_retired_skills(changes: list[dict[str, Any]], runner: runtime.Runner) -> None:
@@ -174,57 +205,53 @@ def remove_retired_skills(changes: list[dict[str, Any]], runner: runtime.Runner)
         wanted_after = after.get("skills", ["*"]) if after else []
         names_before = set(before.get("checkSkills") or [installed_skill_name(name) for name in wanted_before])
         names_after = set(after.get("checkSkills") or [installed_skill_name(name) for name in wanted_after]) if after else set()
-        same_agent = after is not None and (
-            before.get("agent", "universal") == after.get("agent", "universal")
-        )
+        agent = before.get("agent", "universal")
+        same_agent = after is not None and agent == after.get("agent", "universal")
         if same_agent and "*" in wanted_after:
             continue
         if runner.dry_run:
             if "*" in wanted_before:
-                print(
-                    f"{terminal.badge('RUN')} Remove retired skills from {before['source']}: "
-                    "installed names resolved when applied"
-                )
+                print(f"{terminal.badge('RUN')} Remove retired skills from {before['source']}: installed directories resolved when applied")
                 continue
-            names = names_before - names_after if same_agent else names_before
-        else:
-            agent = before.get("agent", "universal")
-            installed = installed_skill_names(agent, runner, before["source"])
-            if installed is None:
-                runner.failures.append(f"Unable to list installed skills from {before['source']}")
-                print(f"{terminal.badge('FAIL')} Unable to identify installed skills from {before['source']}")
-                continue
-            names = installed if "*" in wanted_before else installed.intersection(names_before)
-            if same_agent:
-                names -= names_after
-        if names:
-            command = [
-                "npx",
-                "--yes",
-                "skills@latest",
-                "remove",
-                *sorted(names),
-                "--global",
-                *([] if before.get("agent", "universal") == "universal" else ["--agent", before["agent"]]),
-                "--yes",
-            ]
-            failure_count = len(runner.failures)
-            runner.run(command, f"Remove retired skills from {before['source']}")
-            if runner.dry_run:
-                continue
-            if len(runner.failures) != failure_count:
-                continue
-            agent = before.get("agent", "universal")
-            remaining = installed_skill_names(agent, runner)
-            if remaining is None:
-                runner.failures.append(f"Unable to verify retired skills from {before['source']}")
-                print(f"{terminal.badge('FAIL')} Unable to verify retired skills from {before['source']}")
-                continue
-            leftover = names.intersection(remaining)
-            if leftover:
-                detail = f"Retired skills still installed for {agent}: {', '.join(sorted(leftover))}"
-                runner.failures.append(detail)
-                print(f"{terminal.badge('FAIL')} {detail}")
+            for name in sorted(names_before - names_after if same_agent else names_before):
+                print(f"{terminal.badge('RUN')} Remove retired {agent} skill directory: {skill_root(before) / name}")
+            continue
+
+        installed = installed_skill_records(agent, runner, before["source"])
+        if installed is None:
+            runner.failures.append(f"Unable to list installed skills from {before['source']}")
+            print(f"{terminal.badge('FAIL')} Unable to identify installed skills from {before['source']}")
+            continue
+        retired = {
+            Path(record["path"]).name: record for record in installed
+            if ("*" in wanted_before or Path(record["path"]).name in names_before)
+            and (not same_agent or Path(record["path"]).name not in names_after)
+        }
+        if not retired:
+            continue
+        try:
+            # Preflight every directory before removing any. The installer's
+            # remove command can affect other agents even with an explicit scope.
+            folders = [retirement_directory(before, record) for record in retired.values()]
+            for folder in folders:
+                print(f"{terminal.badge('RUN')} Remove retired {agent} skill directory: {folder}")
+                if folder.exists():
+                    shutil.rmtree(folder)
+        except (OSError, runtime.DotAiError) as exc:
+            runner.failures.append(str(exc))
+            print(f"{terminal.badge('FAIL')} {exc}")
+            continue
+        remaining = installed_skill_records(agent, runner)
+        if remaining is None:
+            runner.failures.append(f"Unable to verify retired skills from {before['source']}")
+            print(f"{terminal.badge('FAIL')} Unable to verify retired skills from {before['source']}")
+            continue
+        leftover = set(retired).intersection(Path(record["path"]).name for record in remaining)
+        leftover.update(folder.name for folder in folders if folder.exists() or folder.is_symlink())
+        if leftover:
+            detail = f"Retired skills still installed for {agent}: {', '.join(sorted(leftover))}"
+            runner.failures.append(detail)
+            print(f"{terminal.badge('FAIL')} {detail}")
 
 
 def legacy_skill_sources(manifest: dict[str, Any]) -> list[str]:

@@ -2805,6 +2805,23 @@ class DotAiTests(unittest.TestCase):
             path = root / "stack.json"
             example_path = root / "stack.example.json"
             state_root = root / "state"
+            skill_root = root / ".agents" / "skills"
+            for name in ("old-skill", "custom-skill"):
+                folder = skill_root / name
+                folder.mkdir(parents=True)
+                (folder / "SKILL.md").write_text(name, encoding="utf-8")
+
+            def install_skill(command, *args, **kwargs):
+                if command[3] != "add":
+                    raise AssertionError(f"Unexpected external mutation: {command}")
+                if command[4] == "user/custom":
+                    return subprocess.CompletedProcess(command, 0)
+                if command[4] != "owner/added":
+                    raise AssertionError(f"Unexpected installation source: {command[4]}")
+                folder = skill_root / "new-skill"
+                folder.mkdir()
+                (folder / "SKILL.md").write_text("installed", encoding="utf-8")
+                return subprocess.CompletedProcess(command, 0)
             manifest = self.minimal_manifest("~/.omp/agent/mcp.json")
             manifest["skills"] = [retired, custom]
             example = self.minimal_manifest("~/.omp/agent/mcp.json")
@@ -2819,7 +2836,7 @@ class DotAiTests(unittest.TestCase):
             installed = json.dumps(
                 [
                     {
-                        "name": "old-skill",
+                        "name": "Old Skill!",
                         "path": str(root / ".agents" / "skills" / "old-skill"),
                         "scope": "global",
                         "agents": ["Universal"],
@@ -2831,14 +2848,14 @@ class DotAiTests(unittest.TestCase):
             )
             output = io.StringIO()
             with (
-                mock.patch.dict(os.environ, {"DOTAI_STATE_DIR": str(state_root)}, clear=False),
+                mock.patch.dict(os.environ, {"DOTAI_HOME": str(root), "DOTAI_STATE_DIR": str(state_root)}, clear=False),
                 mock.patch.object(manifests, "EXAMPLE_MANIFEST", example_path),
                 mock.patch.object(releases, "latest_release_version", return_value=None),
                 mock.patch.object(omp_config, "reconcile_omp_extensions"),
                 mock.patch.object(omp_config, "reconcile_plugins"),
                 mock.patch.object(mcp_config, "sync_mcp", return_value=False),
                 mock.patch.object(runtime.Runner, "output", side_effect=[installed, "[]"]),
-                mock.patch.object(runtime.Runner, "run", return_value=subprocess.CompletedProcess([], 0)) as run,
+                mock.patch.object(runtime.Runner, "run", side_effect=install_skill),
                 mock.patch("builtins.input", return_value="a"),
                 contextlib.redirect_stdout(output),
             ):
@@ -2851,20 +2868,9 @@ class DotAiTests(unittest.TestCase):
             updated = json.loads(path.read_text(encoding="utf-8"))
             self.assertEqual(updated["skills"], [custom, added])
             self.assertEqual(len(list(root.glob("stack.json.bak.*"))), 1)
-            commands = [call.args[0] for call in run.call_args_list]
-            self.assertIn(
-                [
-                    "npx",
-                    "--yes",
-                    "skills@latest",
-                    "remove",
-                    "old-skill",
-                    "--global",
-                    "--yes",
-                ],
-                commands,
-            )
-            self.assertIn(skill_manager.skill_command(added), commands)
+            self.assertFalse((skill_root / "old-skill").exists())
+            self.assertEqual((skill_root / "custom-skill" / "SKILL.md").read_text(encoding="utf-8"), "custom-skill")
+            self.assertEqual((skill_root / "new-skill" / "SKILL.md").read_text(encoding="utf-8"), "installed")
             history = json.loads((state_root / "recommended-skills.json").read_text(encoding="utf-8"))
             self.assertEqual(history[os.path.normcase(str(path.resolve()))], {"version": 1, "skills": [added]})
             self.assertIn("owner/retired", output.getvalue())
@@ -2894,6 +2900,20 @@ class DotAiTests(unittest.TestCase):
             path = root / "stack.json"
             example_path = root / "stack.example.json"
             state_root = root / "state"
+            skill_root = root / ".agents" / "skills"
+            for name in ("keep", "retired", "custom"):
+                folder = skill_root / name
+                folder.mkdir(parents=True)
+                (folder / "SKILL.md").write_text(name, encoding="utf-8")
+
+            def install_skill(command, *args, **kwargs):
+                if command[3] != "add":
+                    raise AssertionError(f"Unexpected external mutation: {command}")
+                if command[4] == "owner/recommended":
+                    (skill_root / "keep" / "SKILL.md").write_text("refreshed", encoding="utf-8")
+                elif command[4] != "user/custom":
+                    raise AssertionError(f"Unexpected installation source: {command[4]}")
+                return subprocess.CompletedProcess(command, 0)
             manifest = self.minimal_manifest("~/.omp/agent/mcp.json")
             manifest["skills"] = [before, custom]
             example = self.minimal_manifest("~/.omp/agent/mcp.json")
@@ -2908,7 +2928,7 @@ class DotAiTests(unittest.TestCase):
             installed = json.dumps(
                 [
                     {
-                        "name": name,
+                        "name": name.title() + " Skill!",
                         "path": str(root / ".agents" / "skills" / name),
                         "scope": "global",
                         "agents": ["Universal"],
@@ -2922,7 +2942,7 @@ class DotAiTests(unittest.TestCase):
             remaining = json.dumps(
                 [
                     {
-                        "name": "keep",
+                        "name": "Keep Skill!",
                         "path": str(root / ".agents" / "skills" / "keep"),
                         "scope": "global",
                         "agents": ["Universal"],
@@ -2933,18 +2953,14 @@ class DotAiTests(unittest.TestCase):
                 ]
             )
             with (
-                mock.patch.dict(os.environ, {"DOTAI_STATE_DIR": str(state_root)}, clear=False),
+                mock.patch.dict(os.environ, {"DOTAI_HOME": str(root), "DOTAI_STATE_DIR": str(state_root)}, clear=False),
                 mock.patch.object(manifests, "EXAMPLE_MANIFEST", example_path),
                 mock.patch.object(releases, "latest_release_version", return_value=None),
                 mock.patch.object(omp_config, "reconcile_omp_extensions"),
                 mock.patch.object(omp_config, "reconcile_plugins"),
                 mock.patch.object(mcp_config, "sync_mcp", return_value=False),
                 mock.patch.object(runtime.Runner, "output", side_effect=[installed, remaining]),
-                mock.patch.object(
-                    runtime.Runner,
-                    "run",
-                    return_value=subprocess.CompletedProcess([], 0),
-                ) as run,
+                mock.patch.object(runtime.Runner, "run", side_effect=install_skill),
                 mock.patch("builtins.input", return_value="a"),
                 contextlib.redirect_stdout(io.StringIO()),
             ):
@@ -2962,53 +2978,10 @@ class DotAiTests(unittest.TestCase):
                 history[os.path.normcase(str(path.resolve()))],
                 {"version": 1, "skills": [after]},
             )
-            commands = [call.args[0] for call in run.call_args_list]
-            self.assertIn(
-                [
-                    "npx",
-                    "--yes",
-                    "skills@latest",
-                    "remove",
-                    "retired",
-                    "--global",
-                    "--yes",
-                ],
-                commands,
-            )
-            self.assertIn(skill_manager.skill_command(after), commands)
+            self.assertFalse((skill_root / "retired").exists())
+            self.assertEqual((skill_root / "keep" / "SKILL.md").read_text(encoding="utf-8"), "refreshed")
+            self.assertEqual((skill_root / "custom" / "SKILL.md").read_text(encoding="utf-8"), "custom")
 
-    def test_recommended_skill_dry_run_does_not_query_machine_for_wildcard_removal(self) -> None:
-        retired = {
-            "source": "owner/retired",
-            "agent": "universal",
-            "skills": ["*"],
-            "checkSkills": ["old-skill"],
-        }
-        runner = runtime.Runner("ubuntu", dry_run=True)
-        changes = [{"kind": "remove", "source": retired["source"], "before": retired, "after": None}]
-        output = io.StringIO()
-        with mock.patch.object(runner, "output", return_value="[]") as machine_query, contextlib.redirect_stdout(output):
-            skill_manager.remove_retired_skills(changes, runner)
-
-        machine_query.assert_not_called()
-        self.assertIn("resolved when applied", output.getvalue())
-
-    def test_recommended_skill_dry_run_does_not_verify_named_removal(self) -> None:
-        retired = {
-            "source": "owner/retired",
-            "agent": "universal",
-            "skills": ["old-skill"],
-            "checkSkills": ["old-skill"],
-        }
-        runner = runtime.Runner("ubuntu", dry_run=True)
-        changes = [{"kind": "remove", "source": retired["source"], "before": retired, "after": None}]
-        output = io.StringIO()
-        with mock.patch.object(runner, "output", return_value="[]") as machine_query, contextlib.redirect_stdout(output):
-            skill_manager.remove_retired_skills(changes, runner)
-
-        machine_query.assert_not_called()
-        self.assertEqual(runner.failures, [])
-        self.assertIn("remove old-skill", output.getvalue())
 
 
     def test_runner_output_ignores_stderr(self) -> None:
@@ -3025,11 +2998,13 @@ class DotAiTests(unittest.TestCase):
             listing = json.dumps(
                 [
                     {
-                        "name": "old-skill",
+                        "name": "Old Skill!",
                         "path": str(home / ".agents" / "skills" / "old-skill"),
                         "scope": "global",
                         "agents": ["Pi"],
                         "source": "owner/retired",
+                        "sourceUrl": "https://github.com/owner/retired.git",
+                        "sourceType": "github",
                     }
                 ]
             )
@@ -3038,29 +3013,31 @@ class DotAiTests(unittest.TestCase):
                 mock.patch.dict(os.environ, {"DOTAI_HOME": str(home)}),
                 mock.patch.object(runner, "output", return_value=listing),
             ):
-                self.assertEqual(
-                    skill_manager.installed_skill_names("universal", runner, "owner/retired"),
-                    {"old-skill"},
-                )
+                records = skill_manager.installed_skill_records("universal", runner, "owner/retired")
+                self.assertIsNotNone(records)
+                self.assertEqual([(record["name"], Path(record["path"]).name) for record in records], [("Old Skill!", "old-skill")])
 
 
     def test_installed_skill_listing_excludes_other_agents(self) -> None:
-        listing = json.dumps(
-            [
-                {
-                    "name": "old-skill",
-                    "path": "/tmp/old-skill",
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            listing = json.dumps(
+                [{
+                    "name": "Old Skill!",
+                    "path": str(home / ".pi" / "agent" / "skills" / "old-skill"),
                     "scope": "global",
                     "agents": ["Pi"],
                     "source": "owner/retired",
                     "sourceUrl": "https://github.com/owner/retired.git",
                     "sourceType": "github",
-                }
-            ]
-        )
-        runner = runtime.Runner("ubuntu")
-        with mock.patch.object(runner, "output", return_value=listing):
-            self.assertEqual(skill_manager.installed_skill_names("universal", runner, "owner/retired"), set())
+                }]
+            )
+            runner = runtime.Runner("ubuntu")
+            with (
+                mock.patch.dict(os.environ, {"DOTAI_HOME": str(home)}),
+                mock.patch.object(runner, "output", return_value=listing),
+            ):
+                self.assertEqual(skill_manager.installed_skill_records("universal", runner, "owner/retired"), [])
 
     def test_recommended_skill_review_applies_each_choice_and_keeps_rejections_pending(self) -> None:
         retired = {"source": "owner/retired", "agent": "universal", "skills": ["old-skill"]}
@@ -3098,41 +3075,6 @@ class DotAiTests(unittest.TestCase):
             self.assertEqual([(change["kind"], change["source"]) for change in pending], [("remove", "owner/retired")])
             run.assert_not_called()
 
-    def test_recommended_skill_update_removes_old_agent_installation(self) -> None:
-        before = {"source": "owner/skills", "agent": "pi", "skills": ["review"]}
-        after = {"source": "owner/skills", "agent": "universal", "skills": ["*"]}
-        runner = runtime.Runner("ubuntu")
-        installed = json.dumps(
-            [
-                {
-                    "name": "review",
-                    "path": "/tmp/review",
-                    "scope": "global",
-                    "agents": ["Pi"],
-                    "source": "owner/skills",
-                    "sourceUrl": "https://github.com/owner/skills.git",
-                    "sourceType": "github",
-                }
-            ]
-        )
-        change = {"kind": "update", "source": before["source"], "before": before, "after": after}
-        with mock.patch.object(runner, "output", side_effect=[installed, "[]"]), mock.patch.object(runner, "run") as run:
-            skill_manager.remove_retired_skills([change], runner)
-
-        run.assert_called_once_with(
-            [
-                "npx",
-                "--yes",
-                "skills@latest",
-                "remove",
-                "review",
-                "--global",
-                "--agent",
-                "pi",
-                "--yes",
-            ],
-            "Remove retired skills from owner/skills",
-        )
 
     def test_legacy_recommendation_state_updates_current_recommendation_sources(self) -> None:
         before = {
@@ -3218,6 +3160,9 @@ class DotAiTests(unittest.TestCase):
             path = root / "stack.json"
             example_path = root / "stack.example.json"
             state_root = root / "state"
+            folder = root / ".agents" / "skills" / "old-skill"
+            folder.mkdir(parents=True)
+            (folder / "SKILL.md").write_text("original", encoding="utf-8")
             manifest = self.minimal_manifest("~/.omp/agent/mcp.json")
             manifest["skills"] = [retired]
             example = self.minimal_manifest("~/.omp/agent/mcp.json")
@@ -3230,66 +3175,48 @@ class DotAiTests(unittest.TestCase):
             )
             runner = runtime.Runner("ubuntu")
             with (
-                mock.patch.dict(os.environ, {"DOTAI_STATE_DIR": str(state_root)}, clear=False),
+                mock.patch.dict(os.environ, {"DOTAI_HOME": str(root), "DOTAI_STATE_DIR": str(state_root)}, clear=False),
                 mock.patch.object(manifests, "EXAMPLE_MANIFEST", example_path),
                 mock.patch.object(manifests, "write_manifest", side_effect=OSError("locked")),
-                mock.patch.object(runner, "output", return_value=json.dumps([{"name": "old-skill", "source": "owner/retired"}])),
-                mock.patch.object(runner, "run") as run,
+                mock.patch.object(runner, "output", side_effect=AssertionError("Retirement began before manifest write")),
                 mock.patch("builtins.input", return_value="a"),
                 contextlib.redirect_stdout(io.StringIO()),
             ):
                 with self.assertRaises(OSError):
                     skill_recommendations.review_recommended_skills(manifest, path, runner)
 
-            run.assert_not_called()
+            self.assertEqual((folder / "SKILL.md").read_text(encoding="utf-8"), "original")
+            self.assertEqual(json.loads(path.read_text(encoding="utf-8")), manifest)
+            history = json.loads((state_root / "recommended-skills.json").read_text(encoding="utf-8"))
+            self.assertEqual(history[os.path.normcase(str(path.resolve()))], {"version": 1, "skills": [retired]})
 
-    def test_recommended_skill_sync_fails_when_retired_files_remain(self) -> None:
-        retired = {"source": "owner/retired", "agent": "universal", "skills": ["old-skill"]}
-        installed = json.dumps(
-            [
-                {
-                    "name": "old-skill",
-                    "path": "/tmp/old-skill",
-                    "scope": "global",
-                    "agents": ["Universal"],
-                    "source": "owner/retired",
-                    "sourceUrl": "https://github.com/owner/retired.git",
-                    "sourceType": "github",
-                }
-            ]
-        )
-        untracked = json.dumps(
-            [
-                {
-                    "name": "old-skill",
-                    "path": "/tmp/old-skill",
-                    "scope": "global",
-                    "agents": ["Universal"],
-                    "source": None,
-                    "sourceUrl": None,
-                    "sourceType": None,
-                }
-            ]
-        )
-        runner = runtime.Runner("ubuntu")
-        change = {"kind": "remove", "source": retired["source"], "before": retired, "after": None}
-        with (
-            mock.patch.object(runner, "output", side_effect=[installed, untracked]),
-            mock.patch.object(runner, "run", return_value=subprocess.CompletedProcess([], 0)),
-            contextlib.redirect_stdout(io.StringIO()),
-        ):
-            skill_manager.remove_retired_skills([change], runner)
-
-        self.assertEqual(runner.failures, ["Retired skills still installed for universal: old-skill"])
 
     def test_recommended_skill_sync_restores_manifest_when_removal_verification_fails(self) -> None:
         retired = {"source": "owner/retired", "agent": "universal", "skills": ["old-skill"]}
-        installed = json.dumps([{"name": "old-skill", "agents": ["Universal"], "source": "owner/retired"}])
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             path = root / "stack.json"
             example_path = root / "stack.example.json"
             state_root = root / "state"
+            folder = root / ".agents" / "skills" / "old-skill"
+            folder.mkdir(parents=True)
+            (folder / "SKILL.md").write_text("original", encoding="utf-8")
+            record = {
+                "name": "Old Skill!", "path": str(folder), "scope": "global",
+                "agents": ["Universal"], "source": "owner/retired",
+                "sourceUrl": "https://github.com/owner/retired.git", "sourceType": "github",
+            }
+            listings = iter([
+                json.dumps([record]),
+                json.dumps([{**record, "source": None, "sourceUrl": None, "sourceType": None}]),
+            ])
+
+            def list_skills(*args, **kwargs):
+                listing = next(listings)
+                if not folder.exists():
+                    folder.mkdir()
+                    (folder / "SKILL.md").write_text("leftover", encoding="utf-8")
+                return listing
             manifest = self.minimal_manifest("~/.omp/agent/mcp.json")
             manifest["skills"] = [retired]
             example = self.minimal_manifest("~/.omp/agent/mcp.json")
@@ -3303,15 +3230,16 @@ class DotAiTests(unittest.TestCase):
             )
             runner = runtime.Runner("ubuntu")
             with (
-                mock.patch.dict(os.environ, {"DOTAI_STATE_DIR": str(state_root)}, clear=False),
+                mock.patch.dict(os.environ, {"DOTAI_HOME": str(root), "DOTAI_STATE_DIR": str(state_root)}, clear=False),
                 mock.patch.object(manifests, "EXAMPLE_MANIFEST", example_path),
-                mock.patch.object(runner, "output", side_effect=[installed, installed]),
-                mock.patch.object(runner, "run", return_value=subprocess.CompletedProcess([], 0)),
+                mock.patch.object(runner, "output", side_effect=list_skills),
                 mock.patch("builtins.input", return_value="a"),
                 contextlib.redirect_stdout(io.StringIO()),
             ):
                 updated, managed = skill_recommendations.review_recommended_skills(manifest, path, runner)
 
+            self.assertTrue(runner.failures)
+            self.assertTrue((folder / "SKILL.md").is_file())
             self.assertEqual(updated, manifest)
             self.assertEqual(managed, [retired])
             self.assertEqual(json.loads(path.read_text(encoding="utf-8")), manifest)
