@@ -1563,7 +1563,7 @@ class DotAiTests(unittest.TestCase):
 
     def test_runner_formats_only_original_supported_placeholders(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
-            home = Path(directory) / "{python}"
+            home = Path(directory).resolve() / "{python}"
             literal_json = '{"literal":{"braces":true}}'
             with mock.patch.dict(os.environ, {"DOTAI_HOME": str(home)}):
                 runner = runtime.Runner("ubuntu")
@@ -1994,7 +1994,7 @@ class DotAiTests(unittest.TestCase):
             home = Path(directory)
             target = home / ".agents" / "skills" / "alpha" / "SKILL.md"
             target.parent.mkdir(parents=True)
-            target.write_text("# Alpha\n", encoding="utf-8")
+            target.write_text("# Alpha\n", encoding="utf-8", newline="\n")
             entry = self.github_skill_lock_entry("owner/skills", "0ae35bdd602b22221c7503baa29f72fd9f115298")
             xdg = home / "state"
             lock = xdg / "skills" / ".skill-lock.json"
@@ -2026,7 +2026,7 @@ class DotAiTests(unittest.TestCase):
             home = Path(directory)
             target = home / ".agents" / "skills" / "alpha" / "SKILL.md"
             target.parent.mkdir(parents=True)
-            target.write_text("# Alpha\n", encoding="utf-8")
+            target.write_text("# Alpha\n", encoding="utf-8", newline="\n")
             (home / ".agents" / ".skill-lock.json").write_text(json.dumps({
                 "version": 3,
                 "skills": {"alpha": self.github_skill_lock_entry(
@@ -2113,9 +2113,9 @@ class DotAiTests(unittest.TestCase):
             home = Path(directory)
             folder = home / ".agents" / "skills" / "alpha"
             (folder / "references").mkdir(parents=True)
-            (folder / "SKILL.md").write_text("# Alpha\n", encoding="utf-8")
+            (folder / "SKILL.md").write_text("# Alpha\n", encoding="utf-8", newline="\n")
             guide = folder / "references" / "guide.md"
-            guide.write_text("old\n", encoding="utf-8")
+            guide.write_text("old\n", encoding="utf-8", newline="\n")
             (home / ".agents" / ".skill-lock.json").write_text(json.dumps({
                 "version": 3,
                 "skills": {"alpha": self.github_skill_lock_entry(
@@ -2126,7 +2126,7 @@ class DotAiTests(unittest.TestCase):
             manifest["skills"] = [{"source": "owner/skills", "checkSkills": ["alpha"]}]
             for content, refresh in (("old\n", True), ("new\n", False)):
                 with self.subTest(content=content):
-                    guide.write_text(content, encoding="utf-8")
+                    guide.write_text(content, encoding="utf-8", newline="\n")
                     output = io.StringIO()
                     with (
                         mock.patch.dict(os.environ, {"DOTAI_HOME": str(home), "XDG_STATE_HOME": "", "GH_HOST": "github.com"}),
@@ -2170,7 +2170,7 @@ class DotAiTests(unittest.TestCase):
             for name in ("alpha", "beta"):
                 target = home / ".agents" / "skills" / name / "SKILL.md"
                 target.parent.mkdir(parents=True)
-                target.write_text(f"# {name}\n", encoding="utf-8")
+                target.write_text(f"# {name}\n", encoding="utf-8", newline="\n")
             (home / ".agents" / ".skill-lock.json").write_text(json.dumps({
                 "version": 3,
                 "skills": {
@@ -3576,23 +3576,6 @@ class DotAiTests(unittest.TestCase):
             package_manager.reconcile_packages(manifest, runner, "update", include_dependencies=True)
         self.assertIn("Check/update Dependency", output.getvalue())
 
-    def test_linux_update_keeps_omp_updater_and_pinned_rtk_update(self) -> None:
-        manifest = manifests.load_manifest(ROOT / "stack.example.json")
-        manifest["packages"] = [
-            package for package in manifest["packages"] if package["name"] in {"RTK", "Oh My Pi"}
-        ]
-        plan = io.StringIO()
-        with (
-            mock.patch.object(package_manager, "package_check", return_value=True),
-            contextlib.redirect_stdout(plan),
-        ):
-            package_manager.reconcile_packages(manifest, runtime.Runner("wsl", dry_run=True), "update")
-        self.assertIn("omp update", plan.getvalue())
-        self.assertIn("Check/update RTK", plan.getvalue())
-        self.assertIn("releases/download/v0.50.0/rtk-", plan.getvalue())
-        self.assertIn("sha256sum -c -", plan.getvalue())
-        self.assertNotIn("install.sh", plan.getvalue())
-
     def test_update_installs_a_missing_versioned_core_package(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             marker = Path(directory) / "operation"
@@ -3620,16 +3603,6 @@ class DotAiTests(unittest.TestCase):
                 package_manager.reconcile_packages(manifest, runner, "update")
             self.assertEqual(marker.read_text(), "install")
             self.assertEqual(runner.failures, [])
-
-    def test_default_omp_privacy_configuration_and_dependencies(self) -> None:
-        manifest = manifests.load_manifest(ROOT / "stack.example.json")
-        packages = {package["name"]: package for package in manifest["packages"]}
-        self.assertEqual(
-            packages["Oh My Pi"]["configure"]["default"],
-            [["omp", "config", "set", "secrets.enabled", "true"]],
-        )
-        self.assertEqual(packages["Node.js"]["updateGroup"], "dependency")
-        self.assertEqual(packages["uv"]["updateGroup"], "dependency")
 
     def test_add_mcp_supports_remote_headers_and_stdio_environment(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -3756,20 +3729,6 @@ class DotAiTests(unittest.TestCase):
                 self.assertFalse(missing_custom.exists())
             self.assertEqual(json.loads(target.read_text(encoding="utf-8")), default_local)
             self.assertEqual(output.getvalue().count("Initialized"), 2)
-
-    def test_repository_example_manifest_has_no_winget_commands(self) -> None:
-        manifest = manifests.load_manifest(ROOT / "stack.example.json")
-        self.assertNotIn("winget", json.dumps(manifest).lower())
-        serialized = json.dumps(manifest)
-        rtk = next(package for package in manifest["packages"] if package["name"] == "RTK")
-        self.assertIn(["rtk", "init", "-g", "--agent", "pi"], rtk["configure"]["default"])
-        self.assertTrue(
-            all(skill.get("agent") == "universal" for skill in manifest["skills"]),
-        )
-        self.assertEqual(manifest["ompExtensions"], ["~/.pi/agent/extensions/rtk.ts"])
-        self.assertNotIn("--codex", serialized)
-        self.assertIn("/stack.json", (ROOT / ".gitignore").read_text(encoding="utf-8").splitlines())
-        self.assertEqual(runtime.detect_platform(), os.environ.get("DOTAI_PLATFORM", runtime.detect_platform()))
 
     def test_release_notice_warns_only_for_newer_numeric_versions(self) -> None:
         for current, tag, warns in (

@@ -15,7 +15,7 @@ from . import runtime
 def read_state(manifest_path: Path) -> dict[str, Any]:
     try:
         value = json.loads((runtime.state_dir() / "state.json").read_text(encoding="utf-8"))
-    except (FileNotFoundError, json.JSONDecodeError, OSError):
+    except (FileNotFoundError, json.JSONDecodeError, OSError, UnicodeError):
         return {}
     if not isinstance(value, dict) or value.get("manifest") != str(manifest_path.resolve()):
         return {}
@@ -32,7 +32,7 @@ def managed_recommendations(manifest_path: Path) -> list[dict[str, Any]] | None:
     key = os.path.normcase(str(manifest_path.resolve()))
     try:
         values = json.loads((runtime.state_dir() / "recommended-skills.json").read_text(encoding="utf-8"))
-    except (FileNotFoundError, json.JSONDecodeError, OSError):
+    except (FileNotFoundError, json.JSONDecodeError, OSError, UnicodeError):
         values = {}
     stored = values.get(key) if isinstance(values, dict) else None
     if isinstance(stored, dict) and stored.get("version") == 1:
@@ -46,22 +46,32 @@ def managed_recommendations(manifest_path: Path) -> list[dict[str, Any]] | None:
     return list(legacy) if valid_skill_list(legacy) else None
 
 
+def _write_state_file(target: Path, value: dict[str, Any]) -> None:
+    payload = json.dumps(value, indent=2) + "\n"
+    temp_path = None
+    try:
+        with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=target.parent, delete=False) as handle:
+            temp_path = Path(handle.name)
+            handle.write(payload)
+        os.replace(temp_path, target)
+    except Exception:
+        if temp_path is not None:
+            temp_path.unlink(missing_ok=True)
+        raise
+
+
 def save_managed_recommendations(manifest_path: Path, skills: list[dict[str, Any]]) -> None:
     directory = runtime.state_dir()
     directory.mkdir(parents=True, exist_ok=True)
     target = directory / "recommended-skills.json"
     try:
         values = json.loads(target.read_text(encoding="utf-8"))
-    except (FileNotFoundError, json.JSONDecodeError, OSError):
+    except (FileNotFoundError, json.JSONDecodeError, OSError, UnicodeError):
         values = {}
     if not isinstance(values, dict):
         values = {}
     values[os.path.normcase(str(manifest_path.resolve()))] = {"version": 1, "skills": skills}
-    payload = json.dumps(values, indent=2) + "\n"
-    with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=directory, delete=False) as handle:
-        handle.write(payload)
-        temp_path = Path(handle.name)
-    os.replace(temp_path, target)
+    _write_state_file(target, values)
 
 
 def save_state(
@@ -91,4 +101,4 @@ def save_state(
         "platform": runner.platform,
     }
     target = directory / "state.json"
-    target.write_text(json.dumps(value, indent=2) + "\n", encoding="utf-8")
+    _write_state_file(target, value)
