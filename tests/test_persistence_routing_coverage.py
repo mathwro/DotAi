@@ -85,7 +85,7 @@ class PersistenceRoutingCoverageTests(unittest.TestCase):
     def setUp(self) -> None:
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
-        self.root = Path(temporary.name)
+        self.root = Path(temporary.name).resolve()
         self.path = self.root / "stack.json"
         self.path.write_text(json.dumps(minimal_manifest(), indent=4) + "\n", encoding="utf-8")
         self.original = self.path.read_bytes()
