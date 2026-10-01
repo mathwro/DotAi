@@ -16,6 +16,8 @@ cd DotAi
 ./dotai.py install
 ```
 
+Direct execution uses `python3` from `PATH`. If your Python 3.10+ interpreter is available only as `python`, use `python dotai.py install` and replace `./dotai.py` with `python dotai.py` in the examples below.
+
 ### Windows PowerShell
 
 Install [Scoop](https://scoop.sh/) first, then run:
@@ -25,6 +27,8 @@ git clone https://github.com/mathwro/DotAi.git
 Set-Location DotAi
 python dotai.py install
 ```
+
+If Python is available through the Windows launcher instead, use `py -3 dotai.py install` and replace `python dotai.py` with `py -3 dotai.py` in subsequent commands. If your interpreter is named `python3`, use `python3 dotai.py` instead. The selected interpreter must be Python 3.10 or newer.
 
 Native Windows uses Scoop for all managed package operations; Winget is intentionally not used.
 
@@ -53,7 +57,7 @@ DotAi selects available models for interactive and worker roles and preserves un
 
 ## Usage
 
-Use `./dotai.py` on Linux, WSL, and macOS, or `python dotai.py` in PowerShell.
+Use `./dotai.py` on Linux, WSL, and macOS, or `python dotai.py` in PowerShell. The interpreter alternatives described under [Installation](#installation) apply to every command.
 
 ```sh
 ./dotai.py install          # Install missing components and synchronize configuration

@@ -18,7 +18,7 @@ AGENTS.md             Repository guidance for coding agents
 
 The Python entry point, manifests, and schema stay at the repository root because installation and operational commands address them there directly.
 
-`dotai.py` delegates to `dotai_app.cli.main`. Its executable mode is tracked in Git: use `./dotai.py` on Unix or `python dotai.py` on Windows. Running from a checkout needs no package installation.
+`dotai.py` delegates to `dotai_app.cli.main`. Its executable mode is tracked in Git: use `./dotai.py` on Unix or `python dotai.py` on Windows. Direct Unix execution requires `python3`; use `python dotai.py` if your Python 3.10+ interpreter is named `python` instead. On Windows, `py -3 dotai.py` or `python3 dotai.py` can be used when those commands provide the compatible interpreter. Running from a checkout needs no package installation.
 
 | Module in `dotai_app/` | Responsibility |
 | --- | --- |
@@ -49,6 +49,14 @@ Run the behavioral suite:
 ```sh
 rtk python3 -m unittest discover -s tests -v
 ```
+
+The test script also supports direct execution, including a single selected test:
+
+```sh
+rtk python3 tests/test_dotai.py DotAiTests.test_validate_omp_routing_accepts_compact_intent_and_null
+```
+
+For invocation from another working directory, pass the absolute path to `tests/test_dotai.py`; the script establishes its repository import path before loading application modules.
 
 Validate the tracked example and direct executable entry point without initializing a personal manifest:
 

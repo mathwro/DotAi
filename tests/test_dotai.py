@@ -11,6 +11,10 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+ROOT = Path(__file__).resolve().parents[1]
+if __name__ == "__main__":
+    sys.path.insert(0, str(ROOT))
+
 from dotai_app import (
     cli,
     health,
@@ -27,8 +31,6 @@ from dotai_app import (
     state as app_state,
     terminal,
 )
-
-ROOT = Path(__file__).resolve().parents[1]
 
 
 class DotAiTests(unittest.TestCase):
