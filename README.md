@@ -126,12 +126,14 @@ Reusing a skill source, MCP or marketplace name, plugin ID, or tool name replace
 | --- | --- |
 | Harness | [Oh My Pi](https://github.com/can1357/oh-my-pi) |
 | Tools | [RTK](https://github.com/rtk-ai/rtk), [Graphify](https://github.com/Graphify-Labs/graphify), Node.js, `uv`, `curl` |
-| Skills | [Ponytail](https://github.com/DietrichGebert/ponytail), [Superpowers](https://github.com/obra/superpowers), [Grilling and Writing for Agents](https://github.com/mattpocock/skills), [Choose Branch Structure](https://github.com/mathwro/Skills/tree/main/skills/choosing-branch-structure), [Commit and Document](https://github.com/mathwro/Skills), installed through [skills.sh](https://skills.sh/) |
+| Skills | [Ponytail](https://github.com/DietrichGebert/ponytail), [Superpowers](https://github.com/obra/superpowers), [Grilling and Writing for Agents](https://github.com/mattpocock/skills), [Choose Branch Structure](https://github.com/mathwro/Skills/tree/main/skills/choosing-branch-structure), [Commit and Document](https://github.com/mathwro/Skills), [Emil Design Engineering](https://github.com/emilkowalski/skills/tree/main/skills/emil-design-eng), [Web Design Guidelines](https://github.com/vercel-labs/agent-skills/tree/main/skills/web-design-guidelines), installed through [skills.sh](https://skills.sh/) |
 | MCP servers | [Context7](https://context7.com/), [Microsoft Learn](https://learn.microsoft.com/training/support/mcp) |
 
 RTK 0.43 or newer is configured for Pi and registered as an OMP global extension without replacing unrelated extensions. DotAi also enables OMP's **Hide Secrets** privacy setting during installation and updates.
 
 DotAi installs the Graphify CLI, but its Pi skill and project graph generation are opt-in. Run `graphify extract . --code-only` in a project when you want a graph. Existing local manifests retain their earlier Graphify configuration; see [Optional Graphify](docs/configuration.md#optional-graphify) before your next `install` or `update`.
+
+Web interface coverage selects only `emil-design-eng` for component and interaction polish and `web-design-guidelines` for interface-quality review, not their repositories' full skill bundles. Existing users can preview these additions with `./dotai.py sync --recommended-skills --dry-run`, then review and apply them with `./dotai.py sync --recommended-skills`. Restart OMP after synchronization and invoke `/skill:emil-design-eng` or `/skill:web-design-guidelines` when relevant. These skills complement, rather than replace, project-specific UX decisions and real browser verification.
 
 ## Tests
 
@@ -147,4 +149,5 @@ RTK is optional for running tests; omit `rtk` if it is not installed. On Windows
 
 - [Configuration](docs/configuration.md) — manifest lifecycle, safety guarantees, and OMP provider routing
 - [Extending the stack](docs/extending.md) — add skills, MCP servers, plugins, and command-line tools
+- [Vetted project skills](docs/project-skills.md) — conditional recommendations, project-local installation commands, and runtime boundaries
 - [Development](docs/development.md) — repository layout and contributor verification
