@@ -66,6 +66,8 @@ def load_routing_recommendations(
         raise runtime.DotAiError(f"Unable to read routing recommendations from {path}: {exc}") from exc
     except json.JSONDecodeError as exc:
         raise runtime.DotAiError(f"Invalid JSON in {path}: {exc}") from exc
+    except UnicodeError as exc:
+        raise runtime.DotAiError(f"Routing recommendations are not UTF-8: {path}: {exc}") from exc
     return validate_routing_recommendations(value)
 
 
@@ -299,7 +301,7 @@ def configure_omp_routing(
         if current[key] != value:
             writes.append((key, json.dumps(value, separators=(",", ":"))))
     for key, value in scalar_values.items():
-        if current[key] != value:
+        if type(current[key]) is not type(value) or current[key] != value:
             serialized = str(value).lower() if isinstance(value, bool) else str(value)
             writes.append((key, serialized))
 
@@ -398,6 +400,6 @@ def omp_routing_status(manifest: dict[str, Any], runner: runtime.Runner) -> tupl
         if current["task.agentModelOverrides"].get(agent) != model:
             return "DRIFT", f"agent override differs: {agent}"
     for key, value in scalar_values.items():
-        if current[key] != value:
+        if type(current[key]) is not type(value) or current[key] != value:
             return "DRIFT", f"{key} differs"
     return "OK", "configured roles match"

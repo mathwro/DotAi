@@ -356,10 +356,14 @@ def manifest_diff(before: dict[str, Any], after: dict[str, Any], path: Path) -> 
 def backup_manifest(path: Path) -> Path:
     stamp = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
     backup = path.with_name(f"{path.name}.bak.{stamp}")
-    with path.open("rb") as source, os.fdopen(
-        os.open(backup, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "wb"
-    ) as destination:
-        shutil.copyfileobj(source, destination)
+    with path.open("rb") as source:
+        descriptor = os.open(backup, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        try:
+            with os.fdopen(descriptor, "wb") as destination:
+                shutil.copyfileobj(source, destination)
+        except Exception:
+            backup.unlink(missing_ok=True)
+            raise
     return backup
 
 
@@ -373,8 +377,14 @@ def write_manifest(
     payload = json.dumps(manifest, indent=2) + "\n"
     backup_path = backup_manifest(path) if backup else None
     path.parent.mkdir(parents=True, exist_ok=True)
-    with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=path.parent, delete=False) as handle:
-        handle.write(payload)
-        temp_path = Path(handle.name)
-    os.replace(temp_path, path)
+    temp_path = None
+    try:
+        with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=path.parent, delete=False) as handle:
+            temp_path = Path(handle.name)
+            handle.write(payload)
+        os.replace(temp_path, path)
+    except Exception:
+        if temp_path is not None:
+            temp_path.unlink(missing_ok=True)
+        raise
     return backup_path

@@ -118,6 +118,18 @@
       "agent": "universal",
       "skills": ["choosing-branch-structure", "commit-and-document"],
       "checkSkills": ["choosing-branch-structure", "commit-and-document"]
+    },
+    {
+      "source": "emilkowalski/skills",
+      "agent": "universal",
+      "skills": ["emil-design-eng"],
+      "checkSkills": ["emil-design-eng"]
+    },
+    {
+      "source": "vercel-labs/agent-skills",
+      "agent": "universal",
+      "skills": ["web-design-guidelines"],
+      "checkSkills": ["web-design-guidelines"]
     }
   ],
   "marketplaces": [],

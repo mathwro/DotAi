@@ -12,6 +12,8 @@ For skills, MCP servers, marketplaces, and plugins, preview with `./dotai.py syn
 
 Skills default to the `universal` agent target, which installs into `~/.agents/skills/`, the user-level location OMP discovers. Repeat `--skill` to select several skills. DotAi preserves the original selections for installation and infers agent-scoped health-check directories using the skills installer's name normalization: lowercase, replace runs outside `a-z`, `0-9`, `.`, and `_` with `-`, trim leading/trailing dots and hyphens, then cap at 255 characters (falling back to `unnamed-skill` if empty). For example, `--skill ALPHA` checks `~/.agents/skills/alpha/SKILL.md`.
 
+For optional skills that belong only in a particular project, use the [vetted project skills guide](project-skills.md). Its commands run the Skills CLI from the target project and install into local `.agents/skills/`; DotAi's `add skill` and `sync` continue to manage user-global manifest entries.
+
 Use `--check-skill NAME` to override inferred checks when the installed directory differs. Explicit check names are used exactly as provided, without normalization; repeat the option for each expected directory.
 
 If no skills are named (or `--skill '*'` is used), status reports `UNVERIFIED` rather than guessing whether the source installed correctly, and exits nonzero. Specify `--check-skill NAME` for each expected installed skill to make the health check actionable.
@@ -107,6 +109,8 @@ Define referenced variables in the environment where OMP starts; adding a refere
 ```
 
 Plugin scope can be `user` or `project`.
+
+`status` and `doctor` check marketplace registration and the plugin's selected user or project registry. Missing, malformed, or unreadable registries, including invalid UTF-8, are unhealthy rather than successful installations. Extension health independently requires both global registration and an available source file; registering a path alone does not make the extension healthy.
 
 ## Add a command-line tool
 

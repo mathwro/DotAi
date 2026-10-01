@@ -45,13 +45,28 @@ def mcp_config_paths(target: Path) -> list[Path]:
     return unique
 
 
+def load_mcp_config(path: Path) -> dict[str, Any]:
+    try:
+        config = manifests.load_json_object(path)
+    except OSError as exc:
+        raise runtime.DotAiError(f"Unable to read MCP configuration at {path}: {exc}") from exc
+    except UnicodeError as exc:
+        raise runtime.DotAiError(f"Invalid UTF-8 MCP configuration at {path}") from exc
+    if not isinstance(config.get("mcpServers", {}), dict):
+        raise runtime.DotAiError(f"Invalid MCP configuration at {path}: 'mcpServers' must be an object")
+    disabled = config.get("disabledServers", [])
+    if not isinstance(disabled, list) or any(not isinstance(name, str) for name in disabled):
+        raise runtime.DotAiError(f"Invalid MCP configuration at {path}: 'disabledServers' must be an array of server names")
+    return config
+
+
 def discover_mcp_servers(target: Path) -> list[tuple[str, dict[str, Any], Path, str, bool]]:
     discovered: list[tuple[str, dict[str, Any], Path, str, bool]] = []
     for path in mcp_config_paths(target):
         if not path.is_file():
             continue
         try:
-            config = manifests.load_json_object(path)
+            config = load_mcp_config(path)
         except (OSError, runtime.DotAiError):
             continue
         disabled = set(config.get("disabledServers", []))
@@ -100,7 +115,7 @@ def server_satisfies(found: dict[str, Any], required: dict[str, Any]) -> bool:
 
 def sync_mcp(manifest: dict[str, Any], runner: runtime.Runner) -> bool:
     target, mcp = desired_mcp(manifest)
-    existing = manifests.load_json_object(target)
+    existing = load_mcp_config(target)
     servers = dict(existing.get("mcpServers", {}))
     discovered = discover_mcp_servers(target)
     changes = 0
@@ -206,7 +221,7 @@ def sync_mcp(manifest: dict[str, Any], runner: runtime.Runner) -> bool:
 def mcp_status(manifest: dict[str, Any]) -> tuple[bool, str]:
     target, mcp = desired_mcp(manifest)
     try:
-        manifests.load_json_object(target)
+        load_mcp_config(target)
     except runtime.DotAiError as exc:
         return False, str(exc)
     discovered = discover_mcp_servers(target)
