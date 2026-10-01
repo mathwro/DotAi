@@ -51,6 +51,8 @@ The manifest declares RTK's `minimumVersion` as `0.43`. Package checks compare t
 
 For packages with `updateGroup: "dependency"`, normal `update` leaves a present binary unchanged unless `--include-dependencies` is supplied, even when its version is below `minimumVersion` or cannot be parsed. This opt-in takes precedence over minimum-version upgrades during updates; missing dependencies are still installed. A skipped dependency with an unresolved minimum-version check remains unhealthy and causes reconciliation verification to fail. `install` still upgrades present packages below their minimum, and normal updates still upgrade core packages.
 
+On Windows, command execution refreshes the machine and user `PATH` so newly installed shims are visible to later commands. Refreshing repeatedly preserves other inherited entries without accumulating another copy of the registry paths on each command.
+
 The Pi extension is independent of RTK's optional Codex integration. DotAi also enables OMP's **Hide Secrets** privacy setting (`secrets.enabled`) during installation and updates, so configured secrets are obfuscated before prompts are sent to providers.
 
 ## Optional Graphify

@@ -171,6 +171,28 @@ class RuntimeCoverageTests(unittest.TestCase):
         self.assertEqual(child_path, new_path + os.pathsep + original_path)
         self.assertEqual(runner.failures, [])
 
+    def test_repeated_windows_refresh_keeps_registry_paths_once(self) -> None:
+        runner = runtime.Runner("windows")
+        inherited = str(self.home / "inherited")
+        shared = str(self.home / "shared")
+        installed = str(self.home / "new-shims")
+        runner.env["PATH"] = os.pathsep.join([inherited, shared])
+        registry_path = os.pathsep.join([shared, installed])
+        expected = os.pathsep.join([shared, installed, inherited])
+        real_run = subprocess.run
+
+        def windows_boundary(command, **kwargs):
+            if command[0] == "powershell.exe":
+                return subprocess.CompletedProcess(command, 0, registry_path + "\n")
+            return real_run(command, **kwargs)
+
+        with mock.patch.object(runtime.subprocess, "run", side_effect=windows_boundary), contextlib.redirect_stdout(io.StringIO()):
+            for _ in range(3):
+                result = runner.run(self.python("print('refreshed')"), "refresh", capture=True)
+                self.assertEqual(result.returncode, 0)
+                self.assertEqual(runner.output(self.python("import os; print(os.environ['PATH'])")), expected)
+        self.assertEqual(runner.failures, [])
+
     def test_windows_refresh_failure_does_not_break_successful_command(self) -> None:
         for outcome in (OSError("PowerShell unavailable"), (1, "bad-path"), (0, " \n")):
             with self.subTest(outcome=outcome):
