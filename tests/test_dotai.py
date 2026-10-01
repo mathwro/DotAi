@@ -1563,7 +1563,7 @@ class DotAiTests(unittest.TestCase):
 
     def test_runner_formats_only_original_supported_placeholders(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
-            home = Path(directory) / "{python}"
+            home = Path(directory).resolve() / "{python}"
             literal_json = '{"literal":{"braces":true}}'
             with mock.patch.dict(os.environ, {"DOTAI_HOME": str(home)}):
                 runner = runtime.Runner("ubuntu")
