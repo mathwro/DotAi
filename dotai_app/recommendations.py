@@ -112,6 +112,23 @@ def apply_recommended_skill_changes(
     return updated, accepted
 
 
+def print_recommended_skill_notice(manifest: dict[str, Any], manifest_path: Path) -> None:
+    _, changes, conflicts = recommended_skill_plan(manifest, manifest_path)
+    if not changes and not conflicts:
+        return
+    if changes:
+        print(terminal.heading("Available recommended skill changes (not applied):"))
+        for change in changes:
+            skill = change["after"] if change["after"] is not None else change["before"]
+            selections = ", ".join(skill.get("skills", ["*"]))
+            print(f"  {change['kind'].capitalize()} {change['source']} ({selections})")
+    for source in conflicts:
+        print(f"{terminal.badge('DRIFT')} Recommended source {source}: local entry differs; preserving it")
+    print("Review with sync --recommended-skills --dry-run; apply with sync --recommended-skills.")
+    if conflicts:
+        print("Add --enforce to explicitly adopt recommendations for locally differing sources.")
+
+
 def review_recommended_skills(
     manifest: dict[str, Any], manifest_path: Path, runner: runtime.Runner, enforce: bool = False
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:

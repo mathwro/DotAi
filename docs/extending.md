@@ -30,7 +30,9 @@ Use `./dotai.py sync --update-skills` to refresh healthy skills explicitly; `./d
 
 Sources without named `checkSkills` cannot be confirmed installed and are still reconciled on each run. Naming the expected skills enables source and content verification; it does not override missing or ambiguous ownership evidence.
 
-To review skill recommendations added, changed, or removed from `stack.example.json`, run:
+Normal `sync`, including `sync --dry-run`, compares your existing manifest with the repository's recommended skills. Pending additions, updates, and removals appear as a human-readable list of `owner/repository` sources and selected skill names, with instructions for reviewing them; locally differing recommended sources are reported and preserved. This notice does not prompt, adopt recommendations, or install skills absent from your manifest. No notice is shown when recommendations already match.
+
+To review and accept skill recommendations added, changed, or removed from `stack.example.json`, run:
 
 ```sh
 ./dotai.py sync --recommended-skills

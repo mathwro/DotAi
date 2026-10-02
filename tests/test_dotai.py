@@ -2748,6 +2748,49 @@ class DotAiTests(unittest.TestCase):
             self.assertEqual(json.loads(path.read_text(encoding="utf-8")), manifest)
             self.assertIn("--agent pi", output.getvalue())
 
+    def test_sync_notifies_about_new_recommendations_without_adopting_them(self) -> None:
+        added = {
+            "source": "owner/added",
+            "agent": "universal",
+            "skills": ["new-skill"],
+            "checkSkills": ["new-skill"],
+        }
+        for dry_run in (True, False):
+            with self.subTest(dry_run=dry_run), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                path = root / "stack.json"
+                example_path = root / "stack.example.json"
+                manifest = self.minimal_manifest(str(root / "mcp.json"))
+                manifest["mcp"]["servers"] = {}
+                original = json.dumps(manifest)
+                path.write_text(original, encoding="utf-8")
+                example_path.write_text(json.dumps({**manifest, "skills": [added]}), encoding="utf-8")
+                output = io.StringIO()
+                with (
+                    mock.patch.dict(os.environ, {
+                        "DOTAI_HOME": str(root), "DOTAI_STATE_DIR": str(root / "state"),
+                        "XDG_STATE_HOME": str(root / "xdg-state"),
+                    }),
+                    mock.patch.object(manifests, "EXAMPLE_MANIFEST", example_path),
+                    mock.patch.object(releases, "latest_release_version", return_value=None),
+                    mock.patch("builtins.input", side_effect=AssertionError("ordinary sync must not prompt")),
+                    contextlib.redirect_stdout(output),
+                ):
+                    result = cli.main([
+                        "--manifest", str(path), "sync", *(["--dry-run"] if dry_run else []),
+                    ])
+                self.assertEqual(result, 0)
+                self.assertIn("owner/added", output.getvalue())
+                self.assertIn("new-skill", output.getvalue())
+                self.assertIn("--recommended-skills", output.getvalue())
+                self.assertEqual(path.read_text(encoding="utf-8"), original)
+                self.assertFalse((root / ".agents" / "skills").exists())
+                if dry_run:
+                    self.assertFalse((root / "state").exists())
+                else:
+                    history = json.loads((root / "state" / "recommended-skills.json").read_text(encoding="utf-8"))
+                    self.assertEqual(history[os.path.normcase(str(path.resolve()))]["skills"], [])
+
     def test_accepted_recommendation_refreshes_a_healthy_skill_source(self) -> None:
         before = {"source": "owner/recommended", "agent": "universal", "skills": ["*"], "checkSkills": ["keep"]}
         after = {**before, "skills": ["keep"]}

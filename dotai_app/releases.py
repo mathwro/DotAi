@@ -9,7 +9,7 @@ import re
 from . import terminal
 
 
-VERSION = "0.4.0"
+VERSION = "0.4.1"
 
 
 RELEASE_URL = "https://api.github.com/repos/mathwro/DotAi/releases/latest"

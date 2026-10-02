@@ -73,6 +73,8 @@ Use `./dotai.py` on Linux, WSL, and macOS, or `python dotai.py` in PowerShell. T
 ./dotai.py platform         # Print the detected platform
 ```
 
+`sync`, including `sync --dry-run`, lists pending recommended skill changes by `owner/repository` and selected skill names without changing your manifest. Use `sync --recommended-skills` to review and accept them; locally differing sources remain preserved unless explicitly adopted with `--enforce`.
+
 Common options:
 
 ```sh

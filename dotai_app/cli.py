@@ -191,6 +191,12 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "sync":
         managed_skills = None
         refresh_sources: set[str] = set()
+        if not args.recommended_skills:
+            try:
+                skill_recommendations.print_recommended_skill_notice(manifest, args.manifest)
+            except (OSError, runtime.DotAiError) as exc:
+                print(f"{terminal.styled('dotai:', 'red', 'bold')} {exc}", file=sys.stderr)
+                return 2
         if args.recommended_skills:
             try:
                 old_skills = manifest["skills"]
