@@ -37,7 +37,7 @@ DotAi updates configuration conservatively:
 - Skill health is agent-scoped. A skill found only in a Codex plugin cache is reported as `INACTIVE` until installed for the configured OMP skill target.
 - Avoiding skill fetches requires matching source metadata and a matching GitHub folder tree hash for the configured agent's installed files; the name-only global lock cannot establish ownership of another agent's independent copy. Missing or uncertain provenance triggers a refresh, not a silent skip.
 - The skills.sh lock is read from `$XDG_STATE_HOME/skills/.skill-lock.json` when set, otherwise from `~/.agents/.skill-lock.json`. Installed universal skills remain in `~/.agents/skills/`; DotAi adds no separate ownership database. See [skill refresh behavior and limits](extending.md#add-a-skill-source).
-- Recommended skill synchronization preserves user-added and locally modified sources, backs up `stack.json`, and removes installed files only for accepted retirements.
+- Recommended skill synchronization preserves user-added and locally modified sources by default, backs up `stack.json`, and removes installed files only for accepted retirements. With `--enforce`, an initial cleanup prompt can explicitly remove user-owned sources outside the recommendations; declining preserves them and skips their installation for that run before recommendation review continues.
 - Release checks run for `install`, `sync`, `status`, and `version`; an available newer release is shown as a warning, while network failures are ignored.
 - After manifest initialization, dry runs do not modify existing files or managed machine state.
 

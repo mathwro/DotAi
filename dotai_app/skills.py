@@ -107,8 +107,11 @@ def skill_source_owned(skill: dict[str, Any], owners: dict[str, Any]) -> bool:
 
 def reconcile_skills(
     manifest: dict[str, Any], runner: runtime.Runner, *, update_skills: bool = False,
-    refresh_sources: set[str] | None = None,
+    refresh_sources: set[str] | None = None, recommended_only: bool = False,
 ) -> None:
+    recommended_sources = {
+        skill["source"] for skill in manifests.load_manifest(manifests.EXAMPLE_MANIFEST)["skills"]
+    } if recommended_only else None
     xdg_state = os.environ.get("XDG_STATE_HOME")
     lock_path = Path(xdg_state) / "skills" / ".skill-lock.json" if xdg_state else runtime.home_dir() / ".agents" / ".skill-lock.json"
     try:
@@ -118,6 +121,9 @@ def reconcile_skills(
     owned = lock.get("skills") if lock.get("version") == 3 else None
     owners = owned if isinstance(owned, dict) else {}
     for skill in manifest["skills"]:
+        if recommended_sources is not None and skill["source"] not in recommended_sources:
+            print(f"{terminal.badge('INACTIVE')} Skills from {skill['source']}: preserved; skipped during enforced sync")
+            continue
         refresh = update_skills or (refresh_sources is not None and skill["source"] in refresh_sources)
         if not refresh and skill_status(skill)[0] and skill_source_owned(skill, owners):
             print(f"{terminal.badge('OK')} Skills from {skill['source']}: already installed")
@@ -168,8 +174,14 @@ def installed_skill_records(agent: str, runner: runtime.Runner, source: str | No
         parent = path.parent.resolve()
         if agent == "universal" and parent == skill_root({"agent": "pi"}).resolve() and any(agent_display_matches("pi", display) for display in skill["agents"]):
             continue
-        if not path.is_absolute() or path.name in {"", ".", ".."} or parent not in {root, canonical}:
+        if not path.is_absolute() or path.name in {"", ".", ".."}:
             return None
+        if parent not in {root, canonical}:
+            # The installer can include other agents despite --agent. Ignore
+            # them for verification, but never trust foreign deletion targets.
+            if source is not None:
+                return None
+            continue
         if agent == "universal" and parent != canonical:
             continue
         records.append(skill)

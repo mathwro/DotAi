@@ -49,6 +49,7 @@ if action == "list":
                 if canonical.exists():
                     record["path"] = str(canonical)
             result.append(record)
+        result.extend(data.get("other_agent_entries", []))
         print(json.dumps(result))
 elif action == "remove":
     if data.get("remove_fail"):
@@ -78,6 +79,14 @@ elif action == "add":
     if data.get("add_fail"):
         sys.exit(9)
     (home / "fetched.json").write_text(json.dumps(args))
+    if data.get("refresh_files"):
+        agent = args[args.index("--agent") + 1]
+        root = home / ".agents" / "skills" if agent == "universal" else home / ".pi" / "agent" / "skills"
+        for index, arg in enumerate(args):
+            if arg == "--skill" and args[index + 1] != "*":
+                folder = root / identity(args[index + 1])
+                folder.mkdir(parents=True, exist_ok=True)
+                (folder / "SKILL.md").write_text("refreshed by installer")
 else:
     sys.exit(11)
 '''
@@ -296,6 +305,28 @@ class SkillCoverageTests(unittest.TestCase):
         self.assertTrue((owned / "SKILL.md").is_file())
         self.assertEqual((foreign / "SKILL.md").read_text(), "user-owned")
 
+    def test_retirement_verification_ignores_other_agent_roots_even_with_same_skill_name(self):
+        before = source(["alpha"])
+        retired = self.installed("alpha")
+        foreign = self.home / ".codex" / "skills" / "alpha"
+        foreign.mkdir(parents=True)
+        (foreign / "SKILL.md").write_text("independent Codex skill")
+        record = {
+            "name": "alpha", "path": str(foreign), "scope": "global",
+            "agents": ["Codex", "Pi"], "source": None,
+            "sourceUrl": None, "sourceType": None,
+        }
+        self.configure(other_agent_entries=[record])
+        original = self.prepare([before], [], [before])
+        updated, baseline, runner = self.review(original)
+        self.assertEqual(runner.failures, [])
+        self.assertEqual(updated["skills"], [])
+        self.assertEqual(json.loads(self.path.read_text())["skills"], [])
+        self.assertEqual(state.managed_recommendations(self.path), [])
+        self.assertEqual(baseline, [])
+        self.assertFalse(retired.exists())
+        self.assertEqual((foreign / "SKILL.md").read_text(), "independent Codex skill")
+
     def test_unproven_shared_agent_keeps_retirement_pending(self):
         before = source(["alpha"])
         installed = self.installed("alpha")
@@ -390,14 +421,102 @@ class SkillCoverageTests(unittest.TestCase):
                 self.assertEqual(self.history.read_bytes(), history_bytes)
                 self.assertTrue(folder.exists())
 
-    def test_unknown_source_without_ownership_history_cannot_be_retired(self):
+    def test_unknown_source_without_ownership_history_is_preserved_without_cleanup_consent(self):
         local = source(["personal"])
         folder = self.installed("personal")
         original = self.prepare([local], [])
-        updated, baseline, runner = self.review(original, enforce=True)
+        updated, baseline, runner = self.review(original, answer="n", enforce=True)
         self.assertEqual((updated, baseline, runner.failures), (original, [], []))
         self.assertTrue(folder.exists())
         self.assertFalse(self.history.exists())
+
+    def test_enforce_removes_confirmed_user_sources_before_recommendation_review(self):
+        custom = {**source(["personal"]), "source": "user/custom"}
+        recommended = source(["recommended"], checks=["recommended"])
+        removed = self.installed("personal", repo="user/custom")
+        independent = self.installed("personal", repo="user/custom", agent="pi")
+        undeclared = self.installed("unmanaged", repo="user/other")
+        original = self.prepare([custom], [recommended], [])
+        original_bytes = self.path.read_bytes()
+        self.configure(refresh_files=True)
+
+        answers = iter(["y", "a"])
+        def answer(_prompt):
+            reply = next(answers)
+            if reply == "a":
+                self.assertFalse(removed.exists())
+                self.assertEqual(json.loads(self.path.read_text())["skills"], [])
+            return reply
+
+        with mock.patch("builtins.input", side_effect=answer):
+            result = cli.main(["--manifest", str(self.path), "sync", "--recommended-skills", "--enforce"])
+
+        self.assertEqual(result, 0)
+        self.assertEqual(json.loads(self.path.read_text())["skills"], [recommended])
+        self.assertEqual(state.managed_recommendations(self.path), [recommended])
+        self.assertFalse(removed.exists())
+        self.assertTrue(independent.is_dir())
+        self.assertTrue(undeclared.is_dir())
+        self.assertEqual((self.home / ".agents" / "skills" / "recommended" / "SKILL.md").read_text(), "refreshed by installer")
+        self.assertIn(original_bytes, [p.read_bytes() for p in self.home.glob("stack.json.bak.*")])
+
+    def test_enforce_declined_cleanup_preserves_and_skips_user_sources(self):
+        custom = {**source(["personal"]), "source": "user/custom"}
+        recommended = source(["recommended"], checks=["recommended"])
+        personal = self.installed("personal", repo="user/custom")
+        active = self.installed("recommended")
+        personal_bytes = (personal / "SKILL.md").read_bytes()
+        self.configure(refresh_files=True)
+        for answer in ("n", "", EOFError(), KeyboardInterrupt()):
+            with self.subTest(answer=answer):
+                self.prepare([custom, recommended], [recommended], [recommended])
+                (active / "SKILL.md").write_text("old recommended content")
+                with mock.patch("builtins.input", side_effect=[answer]):
+                    result = cli.main(["--manifest", str(self.path), "sync", "--recommended-skills", "--enforce", "--update-skills"])
+                self.assertEqual(result, 0)
+                self.assertEqual(json.loads(self.path.read_text())["skills"], [custom, recommended])
+                self.assertEqual((personal / "SKILL.md").read_bytes(), personal_bytes)
+                self.assertEqual((active / "SKILL.md").read_text(), "refreshed by installer")
+        self.assertFalse(list(self.home.glob("stack.json.bak.*")))
+        # Ordinary sync still manages declared custom sources.
+        self.assertEqual(cli.main(["--manifest", str(self.path), "sync", "--update-skills"]), 0)
+        self.assertEqual((personal / "SKILL.md").read_text(), "refreshed by installer")
+
+    def test_enforce_cleanup_failure_stops_before_recommended_installation(self):
+        custom = {**source(["personal"]), "source": "user/custom"}
+        recommended = source(["recommended"], checks=["recommended"])
+        personal = self.installed("personal", repo="user/custom")
+        original = self.prepare([custom], [recommended], [])
+        manifest_bytes, history_bytes = self.path.read_bytes(), self.history.read_bytes()
+        self.configure(malformed="initial", refresh_files=True)
+        with mock.patch("builtins.input", side_effect=["y"]):
+            result = cli.main(["--manifest", str(self.path), "sync", "--recommended-skills", "--enforce"])
+        self.assertEqual(result, 1)
+        self.assertEqual(json.loads(self.path.read_text()), original)
+        self.assertEqual(self.path.read_bytes(), manifest_bytes)
+        self.assertEqual(self.history.read_bytes(), history_bytes)
+        self.assertTrue(personal.is_dir())
+        self.assertFalse((self.home / ".agents" / "skills" / "recommended").exists())
+        self.assertFalse((self.home / "state" / "state.json").exists())
+
+    def test_enforce_cleanup_dry_run_previews_without_prompting_or_mutation(self):
+        custom = {**source(["personal"]), "source": "user/custom"}
+        recommended = source(["recommended"], checks=["recommended"])
+        personal = self.installed("personal", repo="user/custom")
+        self.prepare([custom], [recommended], [])
+        manifest_bytes, history_bytes = self.path.read_bytes(), self.history.read_bytes()
+        output = io.StringIO()
+        with mock.patch("builtins.input", side_effect=AssertionError("dry run prompted")), contextlib.redirect_stdout(output):
+            result = cli.main(["--manifest", str(self.path), "sync", "--recommended-skills", "--enforce", "--dry-run"])
+        self.assertEqual(result, 0)
+        self.assertIn(str(personal), output.getvalue())
+        self.assertIn("Reconcile skills from owner/repo", output.getvalue())
+        self.assertNotIn("Reconcile skills from user/custom", output.getvalue())
+        self.assertEqual(self.path.read_bytes(), manifest_bytes)
+        self.assertEqual(self.history.read_bytes(), history_bytes)
+        self.assertTrue(personal.is_dir())
+        self.assertEqual(json.loads((self.home / "installer.json").read_text()).get("lists", 0), 0)
+        self.assertFalse(list(self.home.glob("stack.json.bak.*")))
 
     def test_failed_accepted_install_retains_accepted_configuration_for_retry(self):
         added = source(["alpha"], checks=["alpha"])

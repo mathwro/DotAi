@@ -23,12 +23,14 @@ def reconcile(
     managed_skills: list[dict[str, Any]] | None = None,
     update_skills: bool = False,
     refresh_sources: set[str] | None = None,
+    recommended_only: bool = False,
 ) -> int:
     if mode != "sync":
         package_manager.reconcile_packages(manifest, runner, mode, force, include_dependencies)
     omp_config.reconcile_omp_extensions(manifest, runner)
     skill_manager.reconcile_skills(
-        manifest, runner, update_skills=force or update_skills, refresh_sources=refresh_sources
+        manifest, runner, update_skills=force or update_skills, refresh_sources=refresh_sources,
+        recommended_only=recommended_only,
     )
     omp_config.reconcile_plugins(manifest, runner, "install" if mode == "sync" else mode)
     try:

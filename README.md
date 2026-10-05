@@ -65,7 +65,7 @@ Use `./dotai.py` on Linux, WSL, and macOS, or `python dotai.py` in PowerShell. T
 ./dotai.py sync             # Reconcile skills, plugins, and MCP servers; no package operations
 ./dotai.py sync --update-skills  # Explicitly refresh already installed skill sources
 ./dotai.py sync --recommended-skills  # Review and apply repository skill recommendations
-./dotai.py sync --recommended-skills --enforce  # Fully adopt and clean recommended skill sources
+./dotai.py sync --recommended-skills --enforce  # Offer user-skill cleanup, then review exact recommendations
 ./dotai.py status           # Show installed, missing, inactive, or drifting components
 ./dotai.py doctor           # Check the stack plus platform prerequisites
 ./dotai.py validate         # Initialize when absent, then validate stack.json
@@ -74,6 +74,8 @@ Use `./dotai.py` on Linux, WSL, and macOS, or `python dotai.py` in PowerShell. T
 ```
 
 `sync`, including `sync --dry-run`, lists pending recommended skill changes by `owner/repository` and selected skill names without changing your manifest. Use `sync --recommended-skills` to review and accept them; locally differing sources remain preserved unless explicitly adopted with `--enforce`.
+
+`--enforce` first lists user-owned sources declared in your manifest but absent from the current recommendations as `owner/repository/skill` (or `owner/repository` for wildcard or unspecified selections), without a JSON diff, and asks whether to remove them. **Yes** removes their manifest entries and source-verified installed copies; **No** (the default) preserves them and skips their installation for this run. It then continues to the recommendation review, including exact selections for locally differing recommended sources. Old defaults without recorded recommendation ownership appear in the cleanup list too. Skills outside the manifest and other agents' independent copies are not removed. Add `--dry-run` to preview optional cleanup and recommendation changes without prompts or mutations.
 
 Common options:
 

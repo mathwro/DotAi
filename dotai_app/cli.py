@@ -51,7 +51,7 @@ def build_parser() -> argparse.ArgumentParser:
     sync.add_argument(
         "--enforce",
         action="store_true",
-        help="Offer exact repository recommendations for existing matching skill sources",
+        help="Offer user-owned skill cleanup, then enforce recommendations; skip preserved user-owned skills",
     )
     configure = sub.add_parser("configure", help="Configure explicit post-authentication integrations")
     configure_sub = configure.add_subparsers(dest="configure_target", required=True)
@@ -203,6 +203,8 @@ def main(argv: list[str] | None = None) -> int:
                 manifest, managed_skills = skill_recommendations.review_recommended_skills(
                     manifest, args.manifest, runner, args.enforce
                 )
+                if runner.failures:
+                    return 1
                 previous = {skill["source"]: skill for skill in old_skills}
                 refresh_sources = {
                     skill["source"] for skill in manifest["skills"]
@@ -214,6 +216,7 @@ def main(argv: list[str] | None = None) -> int:
         return reconciliation.reconcile(
             manifest, args.manifest, runner, "sync", managed_skills=managed_skills,
             update_skills=args.update_skills, refresh_sources=refresh_sources,
+            recommended_only=args.enforce,
         )
     if args.command == "update":
         skill_manager.print_legacy_skill_notice(manifest)

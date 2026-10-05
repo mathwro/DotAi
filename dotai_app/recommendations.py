@@ -129,10 +129,63 @@ def print_recommended_skill_notice(manifest: dict[str, Any], manifest_path: Path
         print("Add --enforce to explicitly adopt recommendations for locally differing sources.")
 
 
+def _apply_skill_changes(
+    manifest: dict[str, Any], manifest_path: Path, runner: runtime.Runner,
+    managed: list[dict[str, Any]], selected: list[dict[str, Any]],
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    updated, accepted = apply_recommended_skill_changes(manifest, managed, selected)
+    backup = None
+    if not runner.dry_run:
+        backup = manifests.write_manifest(manifest_path, updated, backup=True)
+        print(f"{terminal.badge('OK')} Manifest backup written to {backup}")
+    skill_manager.remove_retired_skills(selected, runner)
+    if runner.failures:
+        if backup is not None:
+            shutil.copy2(backup, manifest_path)
+            print(f"{terminal.badge('OK')} Restored {manifest_path} after skill removal failure")
+        return manifest, managed
+    if not runner.dry_run:
+        app_state.save_managed_recommendations(manifest_path, accepted)
+    return updated, accepted
+
+
 def review_recommended_skills(
     manifest: dict[str, Any], manifest_path: Path, runner: runtime.Runner, enforce: bool = False
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     managed, changes, conflicts = recommended_skill_plan(manifest, manifest_path, enforce)
+    if enforce:
+        recommended_sources = {skill["source"] for skill in manifests.load_manifest(manifests.EXAMPLE_MANIFEST)["skills"]}
+        managed_sources = {skill["source"] for skill in managed}
+        user_skills = [
+            skill for skill in manifest["skills"]
+            if skill["source"] not in recommended_sources and skill["source"] not in managed_sources
+        ]
+        if user_skills:
+            print(terminal.heading("User-owned skill sources outside the recommendations:"))
+            for skill in user_skills:
+                for name in skill.get("skills", ["*"]):
+                    suffix = f"/{name}" if name != "*" else ""
+                    print(f"  {skill['source']}{suffix}")
+            removals = [
+                {"kind": "remove", "source": skill["source"], "before": skill, "after": None}
+                for skill in user_skills
+            ]
+            if runner.dry_run:
+                print(f"{terminal.badge('RUN')} Optional cleanup preview: applied only if removal is confirmed; no files changed.")
+                remove_users = True
+            else:
+                try:
+                    answer = input("Remove these sources from the manifest and their installed skills? [y/N] ")
+                except (EOFError, KeyboardInterrupt):
+                    answer = ""
+                remove_users = answer.strip().lower() in {"y", "yes"}
+            if remove_users:
+                manifest, managed = _apply_skill_changes(manifest, manifest_path, runner, managed, removals)
+                if runner.failures:
+                    return manifest, managed
+                managed, changes, conflicts = recommended_skill_plan(manifest, manifest_path, enforce)
+            else:
+                print(f"{terminal.badge('INACTIVE')} Preserving user-owned skills; skipping their installation during enforced sync.")
     for source in conflicts:
         print(f"{terminal.badge('DRIFT')} Recommended source {source}: local entry was modified; preserving it")
     if not changes:
@@ -168,17 +221,4 @@ def review_recommended_skills(
         print(f"{terminal.badge('OK')} No recommended skill changes applied.")
         return manifest, managed
 
-    updated, accepted = apply_recommended_skill_changes(manifest, managed, selected)
-    backup = None
-    if not runner.dry_run:
-        backup = manifests.write_manifest(manifest_path, updated, backup=True)
-        print(f"{terminal.badge('OK')} Manifest backup written to {backup}")
-    skill_manager.remove_retired_skills(selected, runner)
-    if runner.failures:
-        if backup is not None:
-            shutil.copy2(backup, manifest_path)
-            print(f"{terminal.badge('OK')} Restored {manifest_path} after skill removal failure")
-        return manifest, managed
-    if not runner.dry_run:
-        app_state.save_managed_recommendations(manifest_path, accepted)
-    return updated, accepted
+    return _apply_skill_changes(manifest, manifest_path, runner, managed, selected)
