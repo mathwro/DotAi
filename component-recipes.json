@@ -1,0 +1,53 @@
+{
+  "version": 1,
+  "integrationRequires": {"skills": ["node", "npx", "git"], "marketplaces": ["omp"], "plugins": ["omp"], "ompExtensions": ["omp"], "ompRouting": ["omp"], "mcp": ["omp"]},
+  "prerequisites": {
+    "node": {"name": "node", "check": ["node", "--version"], "hint": "Install a supported Node.js runtime yourself."},
+    "npx": {"name": "npx", "check": ["npx", "--version"], "hint": "Install npm/npx with Node.js yourself."},
+    "uv": {"name": "uv", "check": ["uv", "--version"], "hint": "Install uv yourself: https://docs.astral.sh/uv/getting-started/installation/"},
+    "curl": {"name": "curl", "check": ["curl", "--version"], "hint": "Install curl using your operating system package manager."},
+    "git": {"name": "git", "check": ["git", "--version"], "hint": "Install Git yourself."},
+    "brew": {"name": "brew", "check": ["brew", "--version"], "hint": "Install Homebrew yourself: https://brew.sh/"},
+    "omp": {"name": "omp", "check": ["omp", "--version"], "hint": "Install the optional OMP harness yourself or explicitly manage its recipe."},
+    "scoop": {"name": "scoop", "check": ["scoop", "--version"], "hint": "Install Scoop yourself and add the relevant component bucket."},
+    "tar": {"name": "tar", "check": ["tar", "--version"], "hint": "Install tar yourself."},
+    "sha256sum": {"name": "sha256sum", "check": ["sha256sum", "--version"], "hint": "Install coreutils yourself."}
+  },
+  "recipes": {
+    "omp": {
+      "check": ["omp", "--version"],
+      "provides": ["omp"],
+      "requires": {"windows": ["scoop"], "macos": ["brew"], "linux": ["curl"]},
+      "source": "https://github.com/can1357/oh-my-pi",
+      "install": {"windows": [["scoop", "install", "oh-my-pi"]], "macos": [["brew", "install", "can1357/tap/omp"]], "linux": ["curl -fsSL https://omp.sh/install | sh"]},
+      "update": {"windows": [["scoop", "update", "oh-my-pi"]], "macos": [["brew", "upgrade", "can1357/tap/omp"]], "linux": [["omp", "update"]]},
+      "uninstall": {"windows": [["scoop", "uninstall", "oh-my-pi"]], "macos": [["brew", "uninstall", "can1357/tap/omp"]]},
+      "configure": {"default": [["omp", "config", "set", "secrets.enabled", "true"]]}
+    },
+    "rtk": {
+      "check": ["rtk", "--version"],
+      "minimumVersion": "0.43",
+      "requires": {"windows": ["scoop"], "macos": ["brew"], "linux": ["curl", "tar", "sha256sum"]},
+      "source": "https://github.com/rtk-ai/rtk",
+      "supportedVersions": ["0.50.0"],
+      "install": {
+        "windows": [["scoop", "install", "rtk"]],
+        "macos": [["brew", "install", "rtk"]],
+        "linux": ["set -eu; case \"$(uname -m)\" in x86_64|amd64) target=x86_64-unknown-linux-musl; digest=bc2b8902b0d9c796c82ef45f16ae2307e17757afeca5ee156235a3dc7bda5f89;; arm64|aarch64) target=aarch64-unknown-linux-gnu; digest=d1cc49dfa2cd443fc32625444b59fe616b6c80478cca210985118347174dd758;; *) printf \"Unsupported RTK architecture\\n\" >&2; exit 1;; esac; tmp=$(mktemp -d); trap 'rm -rf \"$tmp\"' EXIT; curl -fsSL \"https://github.com/rtk-ai/rtk/releases/download/v0.50.0/rtk-${target}.tar.gz\" -o \"$tmp/rtk.tar.gz\"; printf '%s  %s\\n' \"$digest\" \"$tmp/rtk.tar.gz\" | sha256sum -c -; tar -xzf \"$tmp/rtk.tar.gz\" -C \"$tmp\" rtk; install_dir=${RTK_INSTALL_DIR:-$HOME/.local/bin}; mkdir -p \"$install_dir\"; install -m 755 \"$tmp/rtk\" \"$install_dir/rtk\""]
+      },
+      "pinInstall": {"linux": ["set -eu; case \"$(uname -m)\" in x86_64|amd64) target=x86_64-unknown-linux-musl; digest=bc2b8902b0d9c796c82ef45f16ae2307e17757afeca5ee156235a3dc7bda5f89;; arm64|aarch64) target=aarch64-unknown-linux-gnu; digest=d1cc49dfa2cd443fc32625444b59fe616b6c80478cca210985118347174dd758;; *) printf \"Unsupported RTK architecture\\n\" >&2; exit 1;; esac; tmp=$(mktemp -d); trap 'rm -rf \"$tmp\"' EXIT; curl -fsSL \"https://github.com/rtk-ai/rtk/releases/download/v{version}/rtk-${target}.tar.gz\" -o \"$tmp/rtk.tar.gz\"; printf '%s  %s\\n' \"$digest\" \"$tmp/rtk.tar.gz\" | sha256sum -c -; tar -xzf \"$tmp/rtk.tar.gz\" -C \"$tmp\" rtk; install_dir=${RTK_INSTALL_DIR:-$HOME/.local/bin}; mkdir -p \"$install_dir\"; install -m 755 \"$tmp/rtk\" \"$install_dir/rtk\""]},
+      "update": {"windows": [["scoop", "update", "rtk"]], "macos": [["brew", "upgrade", "rtk"]], "linux": ["current=$(rtk --version 2>/dev/null || true); current=${current#rtk }; if [ -n \"$current\" ] && [ \"$(printf '%s\\n' '0.50.0' \"$current\" | sort -V | sed -n '1p')\" = '0.50.0' ]; then printf 'RTK %s is already at least 0.50.0\\n' \"$current\"; else set -eu; case \"$(uname -m)\" in x86_64|amd64) target=x86_64-unknown-linux-musl; digest=bc2b8902b0d9c796c82ef45f16ae2307e17757afeca5ee156235a3dc7bda5f89;; arm64|aarch64) target=aarch64-unknown-linux-gnu; digest=d1cc49dfa2cd443fc32625444b59fe616b6c80478cca210985118347174dd758;; *) printf \"Unsupported RTK architecture\\n\" >&2; exit 1;; esac; tmp=$(mktemp -d); trap 'rm -rf \"$tmp\"' EXIT; curl -fsSL \"https://github.com/rtk-ai/rtk/releases/download/v0.50.0/rtk-${target}.tar.gz\" -o \"$tmp/rtk.tar.gz\"; printf '%s  %s\\n' \"$digest\" \"$tmp/rtk.tar.gz\" | sha256sum -c -; tar -xzf \"$tmp/rtk.tar.gz\" -C \"$tmp\" rtk; install_dir=${RTK_INSTALL_DIR:-$HOME/.local/bin}; mkdir -p \"$install_dir\"; install -m 755 \"$tmp/rtk\" \"$install_dir/rtk\"; fi"]},
+      "uninstall": {"windows": [["scoop", "uninstall", "rtk"]], "macos": [["brew", "uninstall", "rtk"]]},
+      "configure": {"default": [["rtk", "init", "-g", "--agent", "pi"]]}
+    },
+    "graphify": {
+      "check": ["graphify", "--version"],
+      "requires": ["uv"],
+      "source": "https://pypi.org/project/graphifyy/",
+      "install": {"default": [["uv", "tool", "install", "--upgrade", "graphifyy"]]},
+      "update": {"default": [["uv", "tool", "install", "--upgrade", "graphifyy"]]},
+      "pinInstall": {"default": [["uv", "tool", "install", "graphifyy=={version}"]]},
+      "uninstall": {"default": [["uv", "tool", "uninstall", "graphifyy"]]}
+    }
+  }
+}
