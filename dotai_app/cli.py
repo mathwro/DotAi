@@ -6,6 +6,7 @@ from pathlib import Path
 import argparse
 import os
 import sys
+from . import conversion
 from . import health
 from . import integrations
 from . import manifest as manifests
@@ -21,7 +22,7 @@ from . import terminal
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="dotai", description="Install and reconcile a portable AI development stack.")
-    parser.add_argument("--manifest", type=Path, default=manifests.DEFAULT_MANIFEST, help="Stack manifest (default: stack.json)")
+    parser.add_argument("--manifest", type=Path, help="Stack manifest (default: stack.json); convert requires an explicit source")
     parser.add_argument("--platform", choices=["windows", "wsl", "ubuntu", "arch", "macos", "linux"], help=argparse.SUPPRESS)
     parser.add_argument("--verbose", action="store_true")
     parser.add_argument(
@@ -60,6 +61,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     sub.add_parser("version", help="Print the current DotAi version")
     sub.add_parser("init", help="Generate a new manifest from stack.example.json")
+    convert = sub.add_parser("convert", help="Preview and explicitly convert a version-1 manifest; no environment operations")
+    convert.add_argument("--dry-run", action="store_true", help="Review changes without creating files or backups")
+    convert.add_argument("--destination", type=Path, help="New destination; defaults to the explicit source path")
+    convert.add_argument("--manage", action="append", metavar="NAME", help="Authorize a reviewed legacy package's management; repeatable")
+    convert.add_argument("--yes", action="store_true", help="Confirm the file write after explicit package ownership review")
     fix = sub.add_parser("fix", help="Review and migrate legacy Pi-targeted skills to OMP")
     fix.add_argument("--dry-run", action="store_true", help="Show the migration without changing files or machine state")
     add = sub.add_parser("add", help="Add a tool, skill, marketplace, plugin, or MCP server to the manifest")
@@ -120,6 +126,10 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
+    if args.command == "convert" and args.manifest is None:
+        parser.error("convert requires an explicit --manifest PATH source")
+    if args.manifest is None:
+        args.manifest = manifests.DEFAULT_MANIFEST
     if args.command == "sync" and args.enforce and not args.recommended_skills:
         parser.error("--enforce requires --recommended-skills")
     terminal.configure_color(args.color)
@@ -129,6 +139,15 @@ def main(argv: list[str] | None = None) -> int:
         print(releases.VERSION)
         releases.print_release_notice()
         return 0
+    if args.command == "convert":
+        try:
+            return conversion.convert_manifest(
+                args.manifest, destination=args.destination, dry_run=args.dry_run,
+                manage=args.manage, yes=args.yes,
+            )
+        except (OSError, runtime.DotAiError) as exc:
+            print(f"{terminal.styled('dotai:', 'red', 'bold')} {terminal.redact(exc)}", file=sys.stderr)
+            return 2
     platform_name = runtime.detect_platform()
     if args.command == "platform":
         print(platform_name)
@@ -140,7 +159,7 @@ def main(argv: list[str] | None = None) -> int:
             if not manifests.initialize_manifest(args.manifest, allow_custom=True):
                 raise runtime.DotAiError(f"Manifest already exists: {args.manifest}")
         except (OSError, runtime.DotAiError) as exc:
-            print(f"{terminal.styled('dotai:', 'red', 'bold')} {exc}", file=sys.stderr)
+            print(f"{terminal.styled('dotai:', 'red', 'bold')} {terminal.redact(exc)}", file=sys.stderr)
             return 2
         return 0
     allow_legacy_routing = (
@@ -151,16 +170,16 @@ def main(argv: list[str] | None = None) -> int:
             args.manifest, allow_legacy_routing=allow_legacy_routing
         )
     except (OSError, runtime.DotAiError) as exc:
-        print(f"{terminal.styled('dotai:', 'red', 'bold')} {exc}", file=sys.stderr)
+        print(f"{terminal.styled('dotai:', 'red', 'bold')} {terminal.redact(exc)}", file=sys.stderr)
         return 2
     if args.command == "validate":
-        print(f"{terminal.badge('OK')} Valid manifest: {args.manifest}")
+        print(f"{terminal.badge('OK')} Valid manifest: {terminal.redact(args.manifest)}")
         return 0
     if args.command == "add":
         try:
             return integrations.add_integration(args, manifest, args.manifest)
         except (OSError, runtime.DotAiError) as exc:
-            print(f"{terminal.styled('dotai:', 'red', 'bold')} {exc}", file=sys.stderr)
+            print(f"{terminal.styled('dotai:', 'red', 'bold')} {terminal.redact(exc)}", file=sys.stderr)
             return 2
     runner = runtime.Runner(platform_name, getattr(args, "dry_run", False), args.verbose)
     if args.command in {"install", "update", "sync", "fix"} and not prerequisites.preflight(manifest, runner, args.command):
@@ -171,13 +190,13 @@ def main(argv: list[str] | None = None) -> int:
                 manifest, args.manifest, runner, args.primary
             )
         except (OSError, runtime.DotAiError) as exc:
-            print(f"{terminal.styled('dotai:', 'red', 'bold')} {exc}", file=sys.stderr)
+            print(f"{terminal.styled('dotai:', 'red', 'bold')} {terminal.redact(exc)}", file=sys.stderr)
             return 2
     if args.command == "fix":
         try:
             return skill_manager.fix_legacy_skills(manifest, args.manifest, runner)
         except (OSError, runtime.DotAiError) as exc:
-            print(f"{terminal.styled('dotai:', 'red', 'bold')} {exc}", file=sys.stderr)
+            print(f"{terminal.styled('dotai:', 'red', 'bold')} {terminal.redact(exc)}", file=sys.stderr)
             return 2
     if args.command == "status":
         return 0 if health.print_status(manifest, runner) else 1
@@ -190,7 +209,7 @@ def main(argv: list[str] | None = None) -> int:
             try:
                 skill_recommendations.print_recommended_skill_notice(manifest, args.manifest)
             except (OSError, runtime.DotAiError) as exc:
-                print(f"{terminal.styled('dotai:', 'red', 'bold')} {exc}", file=sys.stderr)
+                print(f"{terminal.styled('dotai:', 'red', 'bold')} {terminal.redact(exc)}", file=sys.stderr)
                 return 2
         if args.recommended_skills:
             try:
@@ -206,7 +225,7 @@ def main(argv: list[str] | None = None) -> int:
                     if previous.get(skill["source"]) != skill
                 }
             except (OSError, runtime.DotAiError) as exc:
-                print(f"{terminal.styled('dotai:', 'red', 'bold')} {exc}", file=sys.stderr)
+                print(f"{terminal.styled('dotai:', 'red', 'bold')} {terminal.redact(exc)}", file=sys.stderr)
                 return 2
         return reconciliation.reconcile(
             manifest, args.manifest, runner, "sync", managed_skills=managed_skills,
