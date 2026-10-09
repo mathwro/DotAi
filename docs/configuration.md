@@ -16,6 +16,23 @@ To create a separate manifest, use:
 
 `validate` checks required sections and supported package, skill, plugin, and MCP entry shapes before they can be applied, including valid HTTP(S) server URLs and port numbers. The same validation runs before initializing a manifest or saving changes from `add`, recommended skill synchronization, skill migration, or routing configuration. Invalid additions (for example, an MCP URL with an invalid port, a malformed `plugin@marketplace` ID, or an empty tool check command) exit with code `2` without changing the existing manifest or creating backups; correct the input and retry. User-owned extra fields and credential references remain untouched, and unconfigured routing remains `null` when saved. See [`stack.schema.json`](../stack.schema.json) for the declarative format.
 
+## Convert version-1 manifests
+
+Normal commands accept version 2 only. Conversion is a separate, one-way, file-only operation:
+
+```sh
+./dotai.py --manifest path/to/legacy-stack.json convert --dry-run
+./dotai.py --manifest path/to/legacy-stack.json convert
+```
+
+The preview identifies general prerequisites whose installation, update, and configuration commands will be retired, and packages whose management permission needs review. Existing skills, marketplaces, plugins, extensions, routing, MCP entries (including credential references), custom component commands, and user metadata are preserved. Unknown/custom component ownership is never inferred from installed presence.
+
+The interactive command asks permission for each retained package, then confirms the complete write. For automation, use repeatable `--manage NAME` to authorize the reviewed package names and `--yes` to confirm; `--yes` alone cannot grant custom ownership. Declining review leaves the complete original untouched.
+
+Use `--destination path/to/new-stack.json` to preserve the source file and write converted intent to a new location. The destination must not exist (except when it is the source itself). After validation and confirmation, conversion makes a timestamped exact source backup, private (`0600`) on POSIX, then writes the converted manifest. Preview, refused ownership, invalid input, and destination conflicts detected before writing create no backup, directories, or environment changes. A destination created concurrently during the write is never overwritten; a completed source backup may remain after that refusal. No component commands, package manager operations, OMP lookups, or lock creation occur during conversion.
+
+Legacy static routing roles remain intact for the separate explicit `configure omp-routing` migration; conversion does not discover providers or configure routing.
+
 ## Configuration safety
 
 DotAi updates configuration conservatively:
@@ -57,7 +74,7 @@ The manifest declares RTK's `minimumVersion` as `0.43`. Package checks compare t
 
 Version 2 separates managed components from external prerequisites. Package entries require `managed: true`; general dependencies such as Node.js/npm, `uv`, Python, Git, curl, and platform package managers cannot be managed packages. The obsolete `updateGroup` and `--include-dependencies` paths are removed.
 
-Declare external requirements in `prerequisites` as `{name, check, minimumVersion?, hint?}`. These objects accept checks only, never install, update, configure, or uninstall commands. A component's `requires` names the checks it needs (a list, or platform-keyed lists). Only enabled, selected components contribute requirements. DotAi checks the complete selected set before dependent mutations, reports missing or unsupported requirements with guidance, and refuses the run without attempting prerequisite repair.
+Declare external requirements in `prerequisites` as `{name, check, minimumVersion?, hint?}`. Inert user metadata such as notes is preserved, but operation and management fields are forbidden: these objects accept checks only, never install, update, configure, or uninstall commands. A component's `requires` names the checks it needs (a list, or platform-keyed lists). Only enabled, selected components contribute requirements. DotAi checks the complete selected set before dependent mutations, reports missing or unsupported requirements with guidance, and refuses the run without attempting prerequisite repair.
 
 `status` and `doctor` check only relevant prerequisites. An unused definition or an unselected platform manager does not make a stack unhealthy. Packages and integration entries can use `enabled: false` to exclude them from reconciliation and health checks.
 

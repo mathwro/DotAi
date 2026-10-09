@@ -94,6 +94,20 @@ Version-1 manifests are rejected by normal commands before environment changes. 
 
 Packages require explicit `managed: true` permission. Disabled components are not reconciled. Dry runs describe changes without creating a manifest or changing files.
 
+### Convert an existing manifest
+
+```sh
+./dotai.py --manifest path/to/legacy-stack.json convert --dry-run
+./dotai.py --manifest path/to/legacy-stack.json convert
+# Noninteractive ownership review must name each package you authorize:
+./dotai.py --manifest path/to/legacy-stack.json convert --manage custom-ai --yes
+# Keep the original manifest and write the converted intent elsewhere:
+./dotai.py --manifest path/to/legacy-stack.json convert --destination path/to/new-stack.json
+```
+
+Conversion is file-only: it never installs or updates tools or rewrites their settings. It preserves skills, MCP entries, routing, custom package commands, and user metadata, while moving known general dependencies to checks-only prerequisites and retiring their mutation commands. Review management permission for each retained package. An exact private source backup is created before the confirmed write; an existing destination is never overwritten. See [conversion details](docs/configuration.md#convert-version-1-manifests).
+
+
 ### Status output
 
 | Label | Color | Meaning |

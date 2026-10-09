@@ -61,12 +61,13 @@ def required_prerequisites(manifest: dict[str, Any], runner: runtime.Runner, mod
 
 
 def status(manifest: dict[str, Any], runner: runtime.Runner, *, record_failures: bool = False, mode: str = "status") -> bool:
+    secrets = terminal.credential_values(manifest) + terminal.credential_values(runner.env)
     try:
         requirements = required_prerequisites(manifest, runner, mode)
     except runtime.DotAiError as exc:
         if record_failures:
-            runner.failures.append(str(exc))
-        print(f"{terminal.badge('FAIL')} Prerequisites: {exc}")
+            runner.failures.append(terminal.redact(exc, secrets))
+        print(f"{terminal.badge('FAIL')} Prerequisites: {terminal.redact(exc, secrets)}")
         return False
     healthy = True
     if requirements:
@@ -76,9 +77,9 @@ def status(manifest: dict[str, Any], runner: runtime.Runner, *, record_failures:
         healthy &= available
         hint = prerequisite.get("hint", f"Install {prerequisite['name']} externally and retry.")
         detail = "available" if available else hint
-        print(f"  {terminal.badge('OK' if available else 'FAIL')} {prerequisite['name']}: {detail}")
+        print(f"  {terminal.badge('OK' if available else 'FAIL')} {terminal.redact(prerequisite['name'], secrets)}: {terminal.redact(detail, secrets)}")
         if not available and record_failures:
-            runner.failures.append(f"Prerequisite {prerequisite['name']}: {hint}")
+            runner.failures.append(terminal.redact(f"Prerequisite {prerequisite['name']}: {hint}", secrets))
     return healthy
 
 

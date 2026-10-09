@@ -6,7 +6,6 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 import datetime as dt
-import difflib
 import json
 import os
 import re
@@ -47,6 +46,12 @@ PREREQUISITE_ALIASES = {
     "brew": "brew", "homebrew": "brew", "scoop": "scoop", "apt": "apt-get",
     "apt-get": "apt-get", "pacman": "pacman",
 }
+
+
+NON_CHECK_PREREQUISITE_FIELDS = frozenset({
+    "install", "update", "configure", "uninstall", "pinInstall", "updateGroup", "managed",
+    "recipe", "version", "updatePolicy", "requires", "provides", "enabled", "updateRequires",
+})
 
 
 def prerequisite_name(name: Any) -> str | None:
@@ -327,8 +332,8 @@ def validate_manifest(data: Any, *, allow_legacy_routing: bool = False) -> dict[
         path_name = f"prerequisites[{index}]"
         if not isinstance(prerequisite, dict):
             raise runtime.DotAiError(f"Manifest '{path_name}' must be an object")
-        if set(prerequisite) - {"name", "check", "minimumVersion", "hint"}:
-            raise runtime.DotAiError(f"Manifest '{path_name}' is checks-only; supported fields are name, check, minimumVersion, hint")
+        if set(prerequisite) & NON_CHECK_PREREQUISITE_FIELDS:
+            raise runtime.DotAiError(f"Manifest '{path_name}' is checks-only; operation and management fields are forbidden")
         require_nonempty_string(prerequisite.get("name"), f"{path_name}.name")
         if prerequisite["name"] in prerequisite_names:
             raise runtime.DotAiError(f"Duplicate prerequisite: {prerequisite['name']}")
@@ -462,17 +467,7 @@ def recommended_skills() -> list[dict[str, Any]]:
 
 
 def manifest_diff(before: dict[str, Any], after: dict[str, Any], path: Path) -> str:
-    old = json.dumps(before, indent=2).splitlines()
-    new = json.dumps(after, indent=2).splitlines()
-    return "\n".join(
-        difflib.unified_diff(
-            old,
-            new,
-            fromfile=str(path),
-            tofile=f"{path} (proposed)",
-            lineterm="",
-        )
-    )
+    return terminal.describe_changes(before, after, path)
 
 
 def backup_manifest(path: Path) -> Path:
@@ -490,12 +485,15 @@ def backup_manifest(path: Path) -> Path:
 
 
 def write_manifest(
-    path: Path, manifest: dict[str, Any], *, backup: bool = False
+    path: Path, manifest: dict[str, Any], *, backup: bool = False,
+    allow_legacy_routing: bool = False, exclusive: bool = False,
 ) -> Path | None:
     # The loader represents unconfigured routing as {}; persist its schema form.
     if manifest.get("ompRouting") == {}:
         manifest = {**manifest, "ompRouting": None}
-    validate_manifest(manifest)
+    validate_manifest(manifest, allow_legacy_routing=allow_legacy_routing)
+    if exclusive and path.exists():
+        raise FileExistsError(f"Refusing to overwrite manifest destination: {path}")
     payload = json.dumps(manifest, indent=2) + "\n"
     backup_path = backup_manifest(path) if backup else None
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -504,7 +502,11 @@ def write_manifest(
         with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=path.parent, delete=False) as handle:
             temp_path = Path(handle.name)
             handle.write(payload)
-        os.replace(temp_path, path)
+        if exclusive:
+            os.link(temp_path, path)
+            temp_path.unlink()
+        else:
+            os.replace(temp_path, path)
     except Exception:
         if temp_path is not None:
             temp_path.unlink(missing_ok=True)
