@@ -196,6 +196,22 @@ requires explicit `install` or `update`; `sync` cannot silently resolve latest.
 An existing unpinned tool can establish a lock from its observed version without
 upgrading it. Stale intent or changed catalog provenance requires explicit review
 and install/update, not an automatic sync upgrade.
+A valid lock is reused when installing a missing component on another machine
+or repairing an owned copy. A healthy latest-policy installation retains its
+current observed version, even when newer than a transferred lock; explicit
+update is the operation that advances source resolution. Exact pinned targets
+remain authoritative. Force-install honors valid resolved targets rather than
+substituting a newer release. Healthy unchanged installations need no network
+resolution.
+
+Reviewed recipes may declare source metadata endpoints and JSON field paths.
+Before a needed installation/update, DotAi resolves the actual source version
+and verifies its declared Python requirement against the interpreter running
+DotAi. Numeric comparison constraints (`>=`, `>`, `<=`, `<`, `==`, `!=`, including
+comma-separated combinations) are supported; other requirement grammars fail
+visibly, not as assumed compatibility. The execution copy uses the resolved
+exact installer path. Cached, previously resolved requirements can be reused
+for locked reinstalls without looking up latest.
 
 Skills resolve public GitHub repository roots to immutable 40-character commits
 and complete selected-folder tree hashes through the GitHub API. Retrieval errors,
@@ -210,6 +226,15 @@ installer or newer and its declared Node engine prerequisite. Older installers
 are rejected. A healthy unchanged locked sync reuses existing immutable facts
 without looking up mutable HEAD or the latest installer again.
 
+Explicit skill-refresh requests and accepted recommendation changes can advance
+only their selected sources during a sync. Existing copies must first pass
+current source/agent ownership proof (including full folder hashes or a valid
+machine-local adoption receipt) before target lookup and replacement. A receipt
+does not supply an invented revision: target commit and trees are independently
+resolved, then matched against successful installed observations. The reviewed
+execution plan is frozen across manifest review/write/reconciliation so a
+moving upstream HEAD cannot silently change the approved target.
+
 After success, actual tool versions, actual installer version, selected installed
 skill trees plus upstream v3 source metadata, and scoped plugin registry records
 must match the prepared resolution. Local modifications are drift, not new
@@ -217,12 +242,20 @@ resolution. Plugin locks contain observed registry version, Git commit when
 available, and installed tree. OMP's marketplace plugin installer does not expose
 an exact-version override: a missing locked plugin or mismatched explicit pin
 fails before changes instead of installing latest.
+Plugin tree observations are confined to OMP's user cache
+`~/.omp/plugins/cache/plugins`, including project-scope entries whose registry
+lives under the current directory. Redirected cache roots, outside paths, and
+ambiguous shared ID/scope references refuse lock provenance before reading tree
+contents. Only the trusted configured-home prefix is canonicalized; symlinks
+below that prefix are not treated as independent installed copies.
 
 Locks are private atomic sidecars (mode `0600` on POSIX), ignored by default.
 Dry runs, failed operations, unobservable versions, and provenance failures never
-replace the lock. A concurrent lock change refuses replacement; retry after the
-other reconciliation finishes. Selected updates replace only selected records,
-retaining unrelated records. An unchanged lock is not rewritten.
+replace the lock. A changed preflight snapshot or concurrent reconciliation
+refuses execution before component actions. Applied actions and recording hold
+one exclusive stack lease; retry after the other reconciliation finishes.
+Selected updates replace only selected records, retaining unrelated records.
+An unchanged lock retains its exact bytes and modification time.
 
 You may deliberately transfer a reviewed lock alongside its manifest: source
 versions/revisions do not contain absolute home or repository paths. The recorded
