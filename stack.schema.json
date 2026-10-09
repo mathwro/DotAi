@@ -52,7 +52,16 @@
     },
     "ompExtensions": {
       "type": "array",
-      "items": {"type": "string", "minLength": 1},
+      "items": {
+        "oneOf": [
+          {"type": "string", "minLength": 1},
+          {"type": "object", "required": ["path"], "properties": {
+            "path": {"type": "string", "minLength": 1},
+            "enabled": {"type": "boolean"},
+            "requires": {"$ref": "#/definitions/requirements"}
+          }, "additionalProperties": true}
+        ]
+      },
       "uniqueItems": true,
       "default": []
     },

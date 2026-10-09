@@ -143,3 +143,58 @@ For more complex entries, edit the local `stack.json` directly and run the runti
 ```sh
 ./dotai.py validate
 ```
+
+## Inspect and manage one component
+
+Selectors use `TYPE:ID`. Supported types are `tool`, `skill`, `plugin`, `marketplace`, `mcp`, and `extension`. Skill IDs are sources; plugin IDs include the marketplace; extension IDs are their declared paths. When a source is declared for several agents, qualify it as `skill:owner/repository@universal`. Qualify an ambiguous plugin scope as `plugin:review@team#user`.
+
+```sh
+./dotai.py list
+./dotai.py show skill:owner/repository
+./dotai.py list mcp:docs plugin:review@team
+./dotai.py sync --only skill:owner/repository --dry-run
+./dotai.py update --only plugin:review@team
+```
+
+`list` and `show` describe desired and observed state, enabled status, management, ownership, scope, source, known versions/revisions, and paths. Declaring a component is not proof that DotAi owns the installed copy. Unknown provenance and local changes remain visible rather than becoming ownership merely because a file or registration exists. Targeted reconciliation retains checks-only prerequisite definitions but excludes unrelated tools, skills, plugins, marketplaces, MCP requirements, extensions, and routing.
+
+### Adopt matching existing content
+
+```sh
+./dotai.py adopt skill:owner/repository --dry-run
+./dotai.py adopt skill:owner/repository
+./dotai.py adopt mcp:docs
+```
+
+Explicit adoption grants permission only for existing content matching the declaration and its scope/source. Skill adoption verifies installer source records and independent configured-agent paths; it does not adopt an unrelated folder with the same name. MCP adoption requires one matching registration in the selected target's `mcpServers` container, preserving its actual alias and additional authentication fields. External provider files, ambiguous matches, redirected directories, and unrelated content are not writable through adoption.
+
+Machine-local ownership receipts live in DotAi's state directory as `component-receipts.json`. They record scoped identities and content fingerprints, not MCP authentication values. Receipts are separate from the portable manifest and version lock: adopting a copy does not invent an immutable source revision or installer version. Installation/configuration records ownership only after a successful permitted operation; a healthy skipped unmanaged copy is never silently adopted. Synchronization can use explicit adoption receipts as well as the authoritative installer ownership proof and refuses later modifications.
+
+### Forget or uninstall
+
+```sh
+./dotai.py remove skill:owner/repository
+./dotai.py remove mcp:docs --uninstall --dry-run
+./dotai.py remove mcp:docs --uninstall
+```
+
+Removal without `--uninstall` forgets only the selected declaration and leaves installed content and other components untouched. With `--uninstall`, DotAi preflights ownership, unchanged fingerprints, source/scope, and sharing before deleting files or invoking an upstream command. Modified, unmanaged, redirected, or shared content is refused. Skills are removed directly from their independently owned agent directory instead of using an installer removal command that could affect other agents. Owned disabled-skill storage is also removed when explicitly uninstalling that source.
+
+MCP removal affects only the owned target alias; unrelated servers, provider sections, extra fields, and other providers survive. A registration satisfying another declared requirement cannot be disabled or removed through just one requirement. Plugins use OMP's explicitly scoped uninstall command only when their cache and runtime package association remain independent and unchanged. A retargeted runtime link to unrelated npm content is not permission to remove it. Marketplaces with installed plugin dependents cannot be unregistered.
+
+Tool removal requires an owned executable fingerprint and a reviewed catalog/custom uninstall command; it never guesses a package-manager operation. Unsupported operations fail with a next step rather than reporting a no-op as uninstall success.
+
+### Enable and disable actual activation
+
+```sh
+./dotai.py disable skill:owner/repository
+./dotai.py enable skill:owner/repository
+./dotai.py disable plugin:review@team
+./dotai.py disable extension:~/extension.ts
+```
+
+Disabling is not merely a flag that skips future sync. Owned skills move out of the active agent root into scoped disabled storage and can be restored only when that storage is unchanged and the active destination is safe. OMP plugins use scoped `enable`/`disable`; extensions lose only their owned registration, not their source file; MCP aliases change their actual provider enabled state without dropping authentication fields. Marketplaces unregister only when no installed plugins depend on them. Tools need a supported owned uninstall operation to become inactive.
+
+Every collection honors `enabled: false`; actual active state that cannot be changed safely produces actionable drift. Unmanaged and other-agent copies are preserved. Existing project-scoped plugin registrations and read-only MCP discovery use the invocation directory, never the DotAi checkout; this does not introduce project manifest layering or project skill management.
+
+Mutation previews change neither declarations, receipts, backups, nor runtime files. Applied manifest/config changes receive backups. If an external command, file operation, or persistence step fails, already completed runtime changes are not universally rolled back: DotAi stops and reports the failure without claiming the whole component transaction succeeded.

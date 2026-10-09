@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 import json
 import os
 from . import manifest as manifests
@@ -11,43 +11,149 @@ from . import runtime
 from . import terminal
 
 
-def reconcile_plugins(manifest: dict[str, Any], runner: runtime.Runner, mode: str) -> None:
+def reconcile_plugins(
+    manifest: dict[str, Any], runner: runtime.Runner, mode: str, *,
+    deactivate: Callable[..., bool] | None = None,
+    record_installed: Callable[..., None] | None = None,
+    ownership_check: Callable[..., None] | None = None,
+) -> None:
     for marketplace in manifest["marketplaces"]:
         if marketplace.get("enabled") is False:
-            print(f"{terminal.badge('INACTIVE')} Marketplace {marketplace['name']}: disabled")
+            if deactivate is not None:
+                deactivate("marketplace", marketplace["name"], marketplace, manifest, runner)
+            elif registry_contains(runtime.home_dir() / ".omp/marketplaces.json", marketplace["name"]):
+                detail = f"Marketplace {marketplace['name']}: disabling requires verified ownership; run 'dotai disable marketplace:{marketplace['name']}'"
+                runner.failures.append(detail)
+                print(f"{terminal.badge('DRIFT')} {detail}")
+            else:
+                print(f"{terminal.badge('INACTIVE')} Marketplace {marketplace['name']}: not registered")
             continue
         registry = runtime.home_dir() / ".omp" / "marketplaces.json"
         if mode != "update" and registry_contains(registry, marketplace["name"]):
             print(f"{terminal.badge('OK')} Marketplace {marketplace['name']}: already registered")
             continue
+        if mode == "update" and registry_contains(registry, marketplace["name"]):
+            try:
+                if ownership_check is None:
+                    raise runtime.DotAiError("existing marketplace update requires verified ownership; adopt matching content first")
+                ownership_check("marketplace", marketplace["name"], marketplace, manifest, runner)
+            except (OSError, ValueError, runtime.DotAiError) as exc:
+                runner.failures.append(f"Marketplace {marketplace['name']}: {exc}")
+                print(f"{terminal.badge('DRIFT')} Marketplace {marketplace['name']}: {exc}")
+                continue
         if mode == "update":
             command = ["omp", "plugin", "marketplace", "update", marketplace["name"]]
         else:
             command = ["omp", "plugin", "marketplace", "add", marketplace["source"]]
-        runner.run(command, f"Reconcile marketplace {marketplace['name']}")
+        result = runner.run(command, f"Reconcile marketplace {marketplace['name']}")
+        if not runner.dry_run and result is not None and result.returncode == 0 and record_installed is not None:
+            record_installed("marketplace", marketplace["name"], marketplace, manifest, runner)
     for plugin in manifest["plugins"]:
         if plugin.get("enabled") is False:
-            print(f"{terminal.badge('INACTIVE')} Plugin {plugin['id']}: disabled")
+            if deactivate is not None:
+                deactivate("plugin", plugin["id"], plugin, manifest, runner)
+            elif registry_contains(plugin_registry(plugin), plugin["id"]):
+                detail = f"Plugin {plugin['id']}: disabling requires verified ownership; run 'dotai disable plugin:{plugin['id']}'"
+                runner.failures.append(detail)
+                print(f"{terminal.badge('DRIFT')} {detail}")
+            else:
+                print(f"{terminal.badge('INACTIVE')} Plugin {plugin['id']}: not installed")
             continue
         registry = plugin_registry(plugin)
-        if mode != "update" and registry_contains(registry, plugin["id"]):
-            print(f"{terminal.badge('OK')} Plugin {plugin['id']}: already installed; retained current version")
+        try:
+            installed = installed_plugin(plugin)
+        except (OSError, UnicodeError, runtime.DotAiError) as exc:
+            runner.failures.append(f"Plugin {plugin['id']}: {exc}")
+            print(f"{terminal.badge('DRIFT')} Plugin {plugin['id']}: {exc}")
             continue
         if plugin.get("version") not in (None, "latest"):
-            detail = f"Plugin {plugin['id']}: this marketplace installer cannot honor an exact version; pin the marketplace source instead"
+            matches = installed is not None and installed["version"] == plugin["version"] and Path(installed["installPath"]).is_dir()
+            if matches:
+                print(f"{terminal.badge('OK')} Plugin {plugin['id']}: retained observed pinned version {plugin['version']}")
+            else:
+                detail = f"Plugin {plugin['id']}: requested exact version is absent or mismatched; OMP cannot install an exact marketplace plugin version, so no changes were made"
+                runner.failures.append(detail)
+                print(f"{terminal.badge('FAIL')} {detail}")
+            continue
+        if mode == "update" and plugin.get("updatePolicy") == "pinned":
+            detail = f"Plugin {plugin['id']}: pinned policy requires an exact observed target version; lock or declare it before update"
             runner.failures.append(detail)
             print(f"{terminal.badge('FAIL')} {detail}")
             continue
-        if mode == "update":
+        if mode != "update" and installed is not None:
+            print(f"{terminal.badge('OK')} Plugin {plugin['id']}: already installed; retained current version")
+            continue
+        if mode == "update" and installed is not None:
+            try:
+                if ownership_check is None:
+                    raise runtime.DotAiError("existing plugin update requires verified ownership; adopt matching content first")
+                ownership_check("plugin", plugin["id"], plugin, manifest, runner)
+            except (OSError, ValueError, runtime.DotAiError) as exc:
+                runner.failures.append(f"Plugin {plugin['id']}: {exc}")
+                print(f"{terminal.badge('DRIFT')} Plugin {plugin['id']}: {exc}")
+                continue
+        if installed is None:
+            try:
+                preflight_plugin_install(plugin)
+            except (OSError, UnicodeError, runtime.DotAiError) as exc:
+                runner.failures.append(f"Plugin {plugin['id']}: {exc}")
+                print(f"{terminal.badge('DRIFT')} Plugin {plugin['id']}: {exc}")
+                continue
+        if mode == "update" and installed is not None:
             command = ["omp", "plugin", "upgrade", "--scope", plugin.get("scope", "user"), plugin["id"]]
         else:
             command = ["omp", "plugin", "install", "--scope", plugin.get("scope", "user"), plugin["id"]]
-        runner.run(command, f"Reconcile plugin {plugin['id']}")
+        result = runner.run(command, f"Reconcile plugin {plugin['id']}")
+        if not runner.dry_run and result is not None and result.returncode == 0 and record_installed is not None:
+            record_installed("plugin", plugin["id"], plugin, manifest, runner)
 
 
 def plugin_registry(plugin: dict[str, Any]) -> Path:
-    root = runtime.ROOT if plugin.get("scope") == "project" else runtime.home_dir()
+    root = Path.cwd() if plugin.get("scope") == "project" else runtime.home_dir()
     return root / ".omp" / "plugins" / "installed_plugins.json"
+
+
+def read_plugin_registry(path: Path) -> dict[str, Any]:
+    if not path.exists():
+        return {"version": 2, "plugins": {}}
+    data = manifests.load_json_object(path)
+    records = data.get("plugins")
+    if data.get("version") != 2 or not isinstance(records, dict):
+        raise runtime.DotAiError(f"Invalid plugin registry at {path}; repair it before installing or updating")
+    for entries in records.values():
+        if not isinstance(entries, list) or any(
+            not isinstance(entry, dict)
+            or entry.get("scope") not in ("user", "project")
+            or not isinstance(entry.get("installPath"), str)
+            or not Path(entry["installPath"]).is_absolute()
+            or not isinstance(entry.get("version"), str) or not entry["version"]
+            for entry in entries
+        ):
+            raise runtime.DotAiError(f"Incomplete plugin registry metadata at {path}; repair it before mutation")
+    return data
+
+
+def installed_plugin(plugin: dict[str, Any]) -> dict[str, Any] | None:
+    entries = read_plugin_registry(plugin_registry(plugin))["plugins"].get(plugin["id"], [])
+    selected = [entry for entry in entries if entry["scope"] == plugin.get("scope", "user")]
+    if len(selected) > 1:
+        raise runtime.DotAiError("Plugin scope has ambiguous installation records; resolve them before mutation")
+    return selected[0] if selected else None
+
+
+def preflight_plugin_install(plugin: dict[str, Any]) -> None:
+    for scope in ("user", "project"):
+        other = {"id": plugin["id"], "scope": scope}
+        if scope != plugin.get("scope", "user") and installed_plugin(other) is not None:
+            raise runtime.DotAiError("Plugin already belongs to another scope; installing could overwrite its shared cache, so no changes were made")
+    cache = runtime.home_dir() / ".omp/plugins/cache/plugins"
+    if cache.resolve() != cache:
+        raise runtime.DotAiError("Plugin cache root is redirected; resolve it before installation")
+    if cache.is_dir():
+        name, marketplace = plugin["id"].split("@", 1)
+        prefix = (marketplace + "___" + name + "___").lower()
+        if any(path.name.lower().startswith(prefix) for path in cache.iterdir()):
+            raise runtime.DotAiError("Unregistered or shared plugin cache content already exists; resolve provenance before installing")
 
 
 def extension_identity(value: str) -> str:
@@ -69,8 +175,22 @@ def configured_omp_extensions(runner: runtime.Runner) -> list[str] | None:
     return value
 
 
-def reconcile_omp_extensions(manifest: dict[str, Any], runner: runtime.Runner) -> None:
-    desired = manifest.get("ompExtensions", [])
+def reconcile_omp_extensions(
+    manifest: dict[str, Any], runner: runtime.Runner, *,
+    deactivate: Callable[..., bool] | None = None,
+    record_installed: Callable[..., None] | None = None,
+) -> None:
+    declarations = manifest.get("ompExtensions", [])
+    for value in declarations:
+        if isinstance(value, dict) and value.get("enabled") is False:
+            if deactivate is not None:
+                deactivate("extension", value["path"], value, manifest, runner)
+            else:
+                detail = f"Extension {value['path']}: disabling requires ownership verification; run 'dotai disable extension:{value['path']}'"
+                runner.failures.append(detail)
+                print(f"{terminal.badge('DRIFT')} {detail}")
+    desired = [value if isinstance(value, str) else value["path"] for value in declarations
+               if isinstance(value, str) or value.get("enabled", True)]
     if not desired:
         return
     current = configured_omp_extensions(runner)
@@ -90,14 +210,19 @@ def reconcile_omp_extensions(manifest: dict[str, Any], runner: runtime.Runner) -
     if runner.dry_run:
         print(f"{terminal.badge('RUN')} OMP extensions: add {', '.join(additions)}")
         return
-    runner.run(
+    result = runner.run(
         ["omp", "config", "set", "extensions", json.dumps(merged, separators=(",", ":"))],
         "Configure OMP extensions",
     )
+    if result is not None and result.returncode == 0 and record_installed is not None:
+        for path in additions:
+            record_installed("extension", path, {"path": path}, manifest, runner)
 
 
 def omp_extension_status(manifest: dict[str, Any], runner: runtime.Runner) -> tuple[bool, str]:
-    desired = manifest.get("ompExtensions", [])
+    declarations = manifest.get("ompExtensions", [])
+    desired = [value if isinstance(value, str) else value["path"] for value in declarations
+               if isinstance(value, str) or value.get("enabled", True)]
     if not desired:
         return True, "no managed extensions"
     current = configured_omp_extensions(runner)
