@@ -1,39 +1,27 @@
 {
   "$schema": "./stack.schema.json",
-  "version": 1,
+  "version": 2,
+  "integrationRequires": {
+    "skills": ["node", "npx", "git"],
+    "marketplaces": ["omp"], "plugins": ["omp"],
+    "ompExtensions": ["omp"], "ompRouting": ["omp"], "mcp": ["omp"]
+  },
+  "prerequisites": [
+    {"name": "node", "check": ["node", "--version"], "minimumVersion": "22.20.0", "hint": "Install a supported Node.js externally."},
+    {"name": "npx", "check": ["npx", "--version"], "hint": "Install npm/npx externally with Node.js."},
+    {"name": "git", "check": ["git", "--version"], "hint": "Install Git externally."},
+    {"name": "curl", "check": ["curl", "--version"], "hint": "Install curl externally."},
+    {"name": "uv", "check": ["uv", "--version"], "hint": "Install uv externally."},
+    {"name": "brew", "check": ["brew", "--version"], "hint": "Install Homebrew externally."},
+    {"name": "scoop", "check": ["scoop", "--version"], "hint": "Install Scoop externally."},
+    {"name": "omp", "check": ["omp", "--version"], "hint": "Select the omp component or install OMP externally."}
+  ],
   "packages": [
     {
-      "name": "curl",
-      "check": ["curl", "--version"],
-      "install": {
-        "windows": [["scoop", "install", "curl"]],
-        "macos": [["brew", "install", "curl"]],
-        "ubuntu": ["if [ \"$(id -u)\" -eq 0 ]; then apt-get update && apt-get install -y curl; else sudo apt-get update && sudo apt-get install -y curl; fi"],
-        "arch": ["if [ \"$(id -u)\" -eq 0 ]; then pacman -S --needed --noconfirm curl; else sudo pacman -S --needed --noconfirm curl; fi"]
-      },
-      "update": {
-        "default": []
-      }
-    },
-    {
-      "name": "Node.js",
-      "updateGroup": "dependency",
-      "check": ["node", "--version"],
-      "install": {
-        "windows": [["scoop", "install", "nodejs-lts"]],
-        "macos": [["brew", "install", "node"]],
-        "ubuntu": ["if [ \"$(id -u)\" -eq 0 ]; then apt-get update && apt-get install -y nodejs npm; else sudo apt-get update && sudo apt-get install -y nodejs npm; fi"],
-        "arch": ["if [ \"$(id -u)\" -eq 0 ]; then pacman -S --needed --noconfirm nodejs npm; else sudo pacman -S --needed --noconfirm nodejs npm; fi"]
-      },
-      "update": {
-        "windows": ["scoop update nodejs-lts; if ($LASTEXITCODE -ne 0) { scoop install nodejs-lts }"],
-        "macos": ["brew upgrade node || brew install node"],
-        "ubuntu": ["if [ \"$(id -u)\" -eq 0 ]; then apt-get install -y nodejs npm; else sudo apt-get install -y nodejs npm; fi"],
-        "arch": ["if [ \"$(id -u)\" -eq 0 ]; then pacman -S --needed --noconfirm nodejs npm; else sudo pacman -S --needed --noconfirm nodejs npm; fi"]
-      }
-    },
-    {
       "name": "Oh My Pi",
+      "managed": true,
+      "provides": ["omp"],
+      "requires": {"windows": ["scoop"], "macos": ["brew"], "linux": ["curl"]},
       "check": ["omp", "--version"],
       "install": {
         "windows": [["scoop", "install", "oh-my-pi"]],
@@ -51,6 +39,8 @@
     },
     {
       "name": "RTK",
+      "managed": true,
+      "requires": {"windows": ["scoop"], "macos": ["brew"], "linux": ["curl"]},
       "check": ["rtk", "--version"],
       "minimumVersion": "0.43",
       "install": {
@@ -68,22 +58,9 @@
       }
     },
     {
-      "name": "uv",
-      "updateGroup": "dependency",
-      "check": ["uv", "--version"],
-      "install": {
-        "windows": [["scoop", "install", "uv"]],
-        "macos": [["brew", "install", "uv"]],
-        "linux": ["curl -LsSf https://astral.sh/uv/install.sh | sh"]
-      },
-      "update": {
-        "windows": ["scoop update uv; if ($LASTEXITCODE -ne 0) { scoop install uv }"],
-        "macos": ["brew upgrade uv || brew install uv"],
-        "linux": [["uv", "self", "update"]]
-      }
-    },
-    {
       "name": "Graphify",
+      "managed": true,
+      "requires": ["uv"],
       "check": ["graphify", "--version"],
       "install": {
         "default": [["uv", "tool", "install", "--upgrade", "graphifyy"]]
