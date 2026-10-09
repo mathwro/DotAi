@@ -67,7 +67,24 @@ def add_integration(args: argparse.Namespace, manifest: dict[str, Any], path: Pa
             "skills": skills,
             "checkSkills": check_skills,
         }
-        upsert(manifest["skills"], "source", value)
+        if getattr(args, "revision", None):
+            value["revision"] = args.revision
+        if getattr(args, "installer_version", None):
+            value["installerVersion"] = args.installer_version
+        for index, previous in enumerate(manifest["skills"]):
+            if previous["source"] != value["source"] or previous.get("agent", "universal") != value["agent"]:
+                continue
+            if not getattr(args, "replace", False):
+                value = {
+                    **previous,
+                    **value,
+                    "skills": list(dict.fromkeys([*previous.get("skills", []), *skills])),
+                    "checkSkills": list(dict.fromkeys([*previous.get("checkSkills", []), *check_skills])),
+                }
+            manifest["skills"][index] = value
+            break
+        else:
+            manifest["skills"].append(value)
     elif kind == "marketplace":
         upsert(manifest["marketplaces"], "name", {"name": args.name, "source": args.source})
     elif kind == "plugin":

@@ -1,6 +1,6 @@
 # Extending the stack
 
-Use `./dotai.py` on Linux, WSL, and macOS, or `python dotai.py` in PowerShell. The `add` commands validate and save entries in your user-owned `stack.json`; they do not install or start integrations. Reusing a skill source, MCP or marketplace name, plugin ID, or tool name replaces that entire manifest entry, so repeat every skill selection or option you want to retain.
+Use `./dotai.py` on Linux, WSL, and macOS, or `python dotai.py` in PowerShell. The `add` commands validate and save entries in your selected manifest; they do not install or start integrations. Reusing an MCP or marketplace name, plugin ID, or tool name replaces that manifest entry. Skill additions merge selections for the same source and agent; use `--replace` to replace that source's selections explicitly.
 
 For skills, MCP servers, marketplaces, and plugins, preview with `./dotai.py sync --dry-run`, then apply with `./dotai.py sync`. For command-line tools, use `./dotai.py install --dry-run` and `./dotai.py install`; `sync` skips package checks, installation, updates, and package configuration. Invalid additions leave the existing manifest unchanged, so correct the input and retry. On a fresh clone, initialize the default manifest with `./dotai.py validate` before previews if you want to separate first-use initialization from a dry run.
 
@@ -20,15 +20,13 @@ If no skills are named (or `--skill '*'` is used), status reports `UNVERIFIED` r
 
 After synchronization, restart OMP so it discovers newly installed skills. With OMP's default `skills.enableSkillCommands` setting, invoke them as `/skill:<name>` commands, for example `/skill:grilling` or `/skill:commit-and-document`; the shorter `/<name>` form is not the registered command syntax.
 
-Normal `install`, `update`, and `sync` leave named skills untouched only when their configured-agent files match the GitHub folder tree hash in the skills.sh v3 global lock and its source metadata matches the requested repository. The lock is keyed by skill name, not agent: another agent's independent copy does not prove ownership of the configured target. DotAi checks the entire installed folder, including supporting files and executable modes, rather than trusting a matching name or `SKILL.md` alone.
+Normal synchronization installs missing skills but never refreshes an existing copy silently. A healthy copy with proven source and full-folder ownership remains unchanged. Unknown provenance, local modifications, partial selections, and unverifiable wildcard selections report actionable `DRIFT` instead of overwriting content. The configured agent's files, including supporting files and executable modes, must match the recorded source; another agent's independent copy is not proof.
 
 DotAi reads `$XDG_STATE_HOME/skills/.skill-lock.json` when `XDG_STATE_HOME` is set; otherwise it reads `~/.agents/.skill-lock.json`. Setting XDG changes only the lock location, not the installed skill directory. It does not fall back to a stale home-directory lock when the XDG lock is missing or unreadable.
 
-Public GitHub repository-root spellings such as `owner/repo`, `github:owner/repo`, and `https://github.com/owner/repo` (with an optional `.git` suffix or trailing slash on the URL) are treated as equivalent. Different repositories, hosts, refs, and subpaths are not collapsed together. Refresh avoidance is conservative: non-GitHub sources, ref/subpath selections, missing or invalid hashes, changed content or modes, and copies whose original tree cannot be reconstructed are reconciled rather than attributed to the wrong source. Such sources may be fetched again on each run.
+Public GitHub repository-root spellings such as `owner/repo`, `github:owner/repo`, and `https://github.com/owner/repo` (with an optional `.git` suffix or trailing slash on the URL) are treated as equivalent for ownership checks. Different repositories, hosts, refs, and subpaths are not collapsed together. Add `--revision COMMIT` and `--installer-version VERSION` to declare a reproducible source and installer; unsupported revision/source combinations refuse rather than fetching latest.
 
-Use `./dotai.py sync --update-skills` to refresh healthy skills explicitly; `./dotai.py install --force` refreshes them too. Accepting a changed recommended source also refreshes it.
-
-Sources without named `checkSkills` cannot be confirmed installed and are still reconciled on each run. Naming the expected skills enables source and content verification; it does not override missing or ambiguous ownership evidence.
+Use `./dotai.py update` to refresh selected skills and plugins explicitly. The compatibility `sync --update-skills` option and accepted recommendation changes are also explicit skill refresh requests. Existing copies with uncertain ownership or local changes still require explicit adoption or manual resolution before refresh. Missing named selections install only when doing so cannot overwrite existing uncertain content. Wildcard sources cannot prove that an upstream add is safe and require explicit review.
 
 Normal `sync`, including `sync --dry-run`, compares your existing manifest with the repository's recommended skills. Pending additions, updates, and removals appear as a human-readable list of `owner/repository` sources and selected skill names, with instructions for reviewing them; locally differing recommended sources are reported and preserved. This notice does not prompt, adopt recommendations, or install skills absent from your manifest. No notice is shown when recommendations already match.
 
@@ -124,6 +122,8 @@ Plugin scope can be `user` or `project`.
 
 `status` and `doctor` check marketplace registration and the plugin's selected user or project registry. Missing, malformed, or unreadable registries, including invalid UTF-8, are unhealthy rather than successful installations. Extension health independently requires both global registration and an available source file; registering a path alone does not make the extension healthy.
 
+Synchronization leaves registered marketplaces and installed plugins at their current versions; missing plugins install without `--force`. Use `update` for explicit marketplace/plugin refresh. An exact plugin version that OMP cannot install is rejected rather than silently replaced with latest. Keep a pinned plugin's marketplace source reproducible.
+
 ## Add a command-line tool
 
 ```sh
@@ -136,10 +136,65 @@ Plugin scope can be `user` or `project`.
 
 Add repeatable `--update PLATFORM=COMMAND` options when the tool has a separate update operation. Platform keys are `windows`, `wsl`, `ubuntu`, `arch`, `macos`, `linux`, and `default`.
 
-Use `--update-group dependency` for supporting tools that should be installed when missing but updated only by `./dotai.py update --include-dependencies`.
+Declare checks-only supporting prerequisites with repeatable `--requires NAME`. DotAi never installs Node.js, npm, uv, Git, curl, or platform package managers as an incidental dependency.
 
 For more complex entries, edit the local `stack.json` directly and run the runtime validator; [`stack.schema.json`](../stack.schema.json) also describes the format for editors:
 
 ```sh
 ./dotai.py validate
 ```
+
+## Inspect and manage one component
+
+Selectors use `TYPE:ID`. Supported types are `tool`, `skill`, `plugin`, `marketplace`, `mcp`, and `extension`. Skill IDs are sources; plugin IDs include the marketplace; extension IDs are their declared paths. When a source is declared for several agents, qualify it as `skill:owner/repository@universal`. Qualify an ambiguous plugin scope as `plugin:review@team#user`.
+
+```sh
+./dotai.py list
+./dotai.py show skill:owner/repository
+./dotai.py list mcp:docs plugin:review@team
+./dotai.py sync --only skill:owner/repository --dry-run
+./dotai.py update --only plugin:review@team
+```
+
+`list` and `show` describe desired and observed state, enabled status, management, ownership, scope, source, known versions/revisions, and paths. Declaring a component is not proof that DotAi owns the installed copy. Unknown provenance and local changes remain visible rather than becoming ownership merely because a file or registration exists. Targeted reconciliation retains checks-only prerequisite definitions but excludes unrelated tools, skills, plugins, marketplaces, MCP requirements, extensions, and routing.
+
+### Adopt matching existing content
+
+```sh
+./dotai.py adopt skill:owner/repository --dry-run
+./dotai.py adopt skill:owner/repository
+./dotai.py adopt mcp:docs
+```
+
+Explicit adoption grants permission only for existing content matching the declaration and its scope/source. Skill adoption verifies installer source records and independent configured-agent paths; it does not adopt an unrelated folder with the same name. MCP adoption requires one matching registration in the selected target's `mcpServers` container, preserving its actual alias and additional authentication fields. External provider files, ambiguous matches, redirected directories, and unrelated content are not writable through adoption.
+
+Machine-local ownership receipts live in DotAi's state directory as `component-receipts.json`. They record scoped identities and content fingerprints, not MCP authentication values. Receipts are separate from the portable manifest and version lock: adopting a copy does not invent an immutable source revision or installer version. Installation/configuration records ownership only after a successful permitted operation; a healthy skipped unmanaged copy is never silently adopted. Synchronization can use explicit adoption receipts as well as the authoritative installer ownership proof and refuses later modifications.
+
+### Forget or uninstall
+
+```sh
+./dotai.py remove skill:owner/repository
+./dotai.py remove mcp:docs --uninstall --dry-run
+./dotai.py remove mcp:docs --uninstall
+```
+
+Removal without `--uninstall` forgets only the selected declaration and leaves installed content and other components untouched. With `--uninstall`, DotAi preflights ownership, unchanged fingerprints, source/scope, and sharing before deleting files or invoking an upstream command. Modified, unmanaged, redirected, or shared content is refused. Skills are removed directly from their independently owned agent directory instead of using an installer removal command that could affect other agents. Owned disabled-skill storage is also removed when explicitly uninstalling that source.
+
+MCP removal affects only the owned target alias; unrelated servers, provider sections, extra fields, and other providers survive. A registration satisfying another declared requirement cannot be disabled or removed through just one requirement. Plugins use OMP's explicitly scoped uninstall command only when their cache and runtime package association remain independent and unchanged. A retargeted runtime link to unrelated npm content is not permission to remove it. Marketplaces with installed plugin dependents cannot be unregistered.
+
+Tool removal requires an owned executable fingerprint and a reviewed catalog/custom uninstall command; it never guesses a package-manager operation. Unsupported operations fail with a next step rather than reporting a no-op as uninstall success.
+
+### Enable and disable actual activation
+
+```sh
+./dotai.py disable skill:owner/repository
+./dotai.py enable skill:owner/repository
+./dotai.py disable plugin:review@team
+./dotai.py disable extension:~/extension.ts
+```
+
+Disabling is not merely a flag that skips future sync. Owned skills move out of the active agent root into scoped disabled storage and can be restored only when that storage is unchanged and the active destination is safe. OMP plugins use scoped `enable`/`disable`; extensions lose only their owned registration, not their source file; MCP aliases change their actual provider enabled state without dropping authentication fields. Marketplaces unregister only when no installed plugins depend on them. Tools need a supported owned uninstall operation to become inactive.
+
+Every collection honors `enabled: false`; actual active state that cannot be changed safely produces actionable drift. Unmanaged and other-agent copies are preserved. Existing project-scoped plugin registrations and read-only MCP discovery use the invocation directory, never the DotAi checkout; this does not introduce project manifest layering or project skill management.
+
+Mutation previews change neither declarations, receipts, backups, nor runtime files. Applied manifest/config changes receive backups. If an external command, file operation, or persistence step fails, already completed runtime changes are not universally rolled back: DotAi stops and reports the failure without claiming the whole component transaction succeeded.
