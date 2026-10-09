@@ -13,17 +13,41 @@ from . import terminal
 
 def reconcile_plugins(manifest: dict[str, Any], runner: runtime.Runner, mode: str) -> None:
     for marketplace in manifest["marketplaces"]:
+        if marketplace.get("enabled") is False:
+            print(f"{terminal.badge('INACTIVE')} Marketplace {marketplace['name']}: disabled")
+            continue
+        registry = runtime.home_dir() / ".omp" / "marketplaces.json"
+        if mode != "update" and registry_contains(registry, marketplace["name"]):
+            print(f"{terminal.badge('OK')} Marketplace {marketplace['name']}: already registered")
+            continue
         if mode == "update":
             command = ["omp", "plugin", "marketplace", "update", marketplace["name"]]
         else:
             command = ["omp", "plugin", "marketplace", "add", marketplace["source"]]
         runner.run(command, f"Reconcile marketplace {marketplace['name']}")
     for plugin in manifest["plugins"]:
+        if plugin.get("enabled") is False:
+            print(f"{terminal.badge('INACTIVE')} Plugin {plugin['id']}: disabled")
+            continue
+        registry = plugin_registry(plugin)
+        if mode != "update" and registry_contains(registry, plugin["id"]):
+            print(f"{terminal.badge('OK')} Plugin {plugin['id']}: already installed; retained current version")
+            continue
+        if plugin.get("version") not in (None, "latest"):
+            detail = f"Plugin {plugin['id']}: this marketplace installer cannot honor an exact version; pin the marketplace source instead"
+            runner.failures.append(detail)
+            print(f"{terminal.badge('FAIL')} {detail}")
+            continue
         if mode == "update":
             command = ["omp", "plugin", "upgrade", "--scope", plugin.get("scope", "user"), plugin["id"]]
         else:
-            command = ["omp", "plugin", "install", "--force", "--scope", plugin.get("scope", "user"), plugin["id"]]
+            command = ["omp", "plugin", "install", "--scope", plugin.get("scope", "user"), plugin["id"]]
         runner.run(command, f"Reconcile plugin {plugin['id']}")
+
+
+def plugin_registry(plugin: dict[str, Any]) -> Path:
+    root = runtime.ROOT if plugin.get("scope") == "project" else runtime.home_dir()
+    return root / ".omp" / "plugins" / "installed_plugins.json"
 
 
 def extension_identity(value: str) -> str:
