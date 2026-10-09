@@ -79,9 +79,9 @@ Manifest and reconciliation-state writes use temporary files before replacement.
 
 ## Managed OMP extensions
 
-RTK 0.43 or newer can be managed as a CLI alone. Pi setup is a separate explicit selection: declare `~/.pi/agent/extensions/rtk.ts` in `ompExtensions` only if you want its OMP integration. The reviewed recipe then runs `rtk init -g --agent pi` to create the selected extension; otherwise it never touches Pi. OMP extension registration preserves unrelated user paths, and status checks both registration and source availability.
+RTK 0.43 or newer can be configured through `rtk init -g --agent pi`. The reviewed recipe runs this command only when the selected, enabled OMP extension is explicitly `~/.pi/agent/extensions/rtk.ts`; installing RTK alone does not write Pi configuration. DotAi appends the selected extension to OMP without removing user-configured entries. Restart OMP after the first configuration; `./dotai.py status` verifies both registration and source availability.
 
-The Linux RTK recipe in `component-recipes.json` uses reviewed v0.50.0 binary archives and architecture-specific SHA-256 digests. Updating the pinned release requires changing its version and digests together. Other platforms use only reviewed supported installer paths; unsupported pins fail before any changes.
+The RTK recipe uses reviewed v0.50.0 release archives and architecture-specific SHA-256 digests: Linux and macOS install only the standalone binary, while Windows uses a minimal local Scoop manifest. Updating the reviewed release requires changing its version and digests together; existing user-owned manifests never receive such changes automatically. No RTK recipe updates Homebrew, Scoop, their buckets, or unrelated packages.
 
 Recipes may declare `minimumVersion` constraints. Package checks compare the reported numeric `major.minor[.patch]` version from stdout or stderr. Effective exact versions must match as well: an installed newer version does not satisfy a requested older pin. Missing or unparseable versions remain unhealthy.
 
@@ -162,7 +162,10 @@ Recipes `omp`, `rtk`, and `graphify` live in `component-recipes.json`; materiali
 only changes an in-memory copy. Explicit command fields override recipe fields,
 and a custom package without `recipe` is the escape hatch for a reviewed installer.
 Neither recipe selection nor installed presence grants management permission:
-package operations require explicit `managed:true`.
+package operations require explicit `managed:true`. Disabled or unmanaged recipe
+intent remains inert, so its unknown recipe or unsupported desired pin cannot
+block unrelated selected components. Explicit uninstall resolves the removal
+recipe independently of a desired installation pin.
 
 The default personal manifest is `%APPDATA%/DotAi/stack.json` on Windows, or
 `$XDG_CONFIG_HOME/dotai/stack.json` (normally `~/.config/dotai/stack.json`) on Unix.
@@ -171,20 +174,49 @@ does not create them. An explicit manifest path keeps its own adjacent lock:
 `my-stack.json` uses `my-stack.lock.json`. The repository-local `stack.json` is
 not moved or overwritten.
 
-Prerequisites are checks only: Node/npm/npx, uv, Git, curl, Homebrew, Scoop, and
-archive/checksum utilities must be installed by the user. Recipes select the
-checks needed on the current platform. OMP uses Scoop on Windows, Homebrew on
-macOS, and its installer/version-aware update on Linux. RTK keeps the reviewed
-Linux 0.50.0 release with architecture-specific SHA-256 verification; Windows
-and macOS use their package managers.
+Prerequisites are checks only: Node/npm/npx, uv, Python, Git, curl, Homebrew,
+Scoop, and archive/checksum utilities must be installed by the user. Recipes
+select only the checks needed on the current platform; they never repair or
+update an external runtime or package manager.
 
-Exact Graphify pins use the supported [uv tool requirement syntax](https://docs.astral.sh/uv/concepts/tools/),
-`uv tool install graphifyy==VERSION`, without `--force` that could overwrite
-an unmanaged executable. RTK pins support only the reviewed Linux 0.50.0
-release. Arbitrary RTK package-manager pins and OMP pins are rejected rather
-than silently installing latest. Custom numeric pins require an explicit
-`pinInstall` template containing `{version}`. Platform compatibility and pin
-support are checked before installation.
+On Linux and macOS, OMP uses its [official installer](https://github.com/can1357/oh-my-pi/blob/main/scripts/install.sh)
+with `--binary`, never the Bun/source fallback. It stages and verifies the
+download before replacing `~/.local/bin/omp`. Redirected installation directories
+are refused. An explicit `install --force` may replace a launcher symlink with a
+separate standalone copy without modifying its old package-manager target.
+All platforms use `omp update` for native updates. Its [upstream updater](https://github.com/can1357/oh-my-pi/blob/main/packages/coding-agent/src/cli/update-cli.ts)
+can route Homebrew installations through an explicit `brew update`, so the
+checks-only `updateRequires` guard rejects manager-routed launchers before an
+update; use the explicit standalone cutover instead.
+
+Windows installs OMP as Scoop app `dotai-omp` using reviewed release 18.8.7
+native executables and SHA-256 digests. RTK uses reviewed release 0.50.0;
+its Windows artifact is x64 only. No foreign bucket, hooks, or install scripts
+are supplied. [`scoop download`](https://github.com/ScoopInstaller/Scoop/blob/master/libexec/scoop-download.ps1)
+verifies the transient local manifest before a scoped RTK replacement.
+[`scoop install`](https://github.com/ScoopInstaller/Scoop/blob/master/libexec/scoop-install.ps1)
+uses `--independent --no-update-scoop`; download also uses `--no-update-scoop`.
+Existing app manifests and directories are checked before uninstalling: hooks,
+foreign binary aliases, and redirected paths refuse the cutover. Uninstall never
+uses `--purge`; persisted data and unrelated apps are preserved. A replacement
+failure after uninstall is reported as partial completion, not a successful
+upgrade or an automatic rollback.
+
+RTK's [reviewed 0.50.0 checksums](https://github.com/rtk-ai/rtk/releases/download/v0.50.0/checksums.txt)
+cover x64/arm64 Linux and macOS archives. These recipes install only
+`~/.local/bin/rtk`, with no Homebrew update, dependencies, or cleanup.
+Exact RTK pins support only this reviewed release on supported architectures.
+Arbitrary RTK and OMP pins are rejected rather than silently installing latest.
+
+Exact Graphify pins use the supported [uv tool requirement syntax](https://docs.astral.sh/uv/concepts/tools/):
+`uv tool install --python CURRENT_CLI_PYTHON --no-python-downloads graphifyy==VERSION`.
+The running DotAi interpreter must satisfy the source's declared Python
+requirement; DotAi does not download another interpreter. No `--force` is used
+to overwrite an unmanaged executable. Recipe `versionMetadata` declares the
+PyPI latest/exact endpoints and JSON field paths consumed by the lock resolver,
+not a second catalog networking path. Custom numeric pins require an explicit
+`pinInstall` template containing `{version}`. Compatibility and pin support
+are checked before installation.
 
 ## Reproducibility and observed locks
 
