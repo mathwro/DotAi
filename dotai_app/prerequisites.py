@@ -21,7 +21,7 @@ def has_integrations(manifest: dict[str, Any]) -> bool:
                 or any(server.get("enabled", True) for server in manifest.get("mcp", {}).get("servers", {}).values()))
 
 
-def required_prerequisites(manifest: dict[str, Any], runner: runtime.Runner, mode: str = "status") -> list[dict[str, Any]]:
+def required_prerequisites(manifest: dict[str, Any], runner: runtime.Runner, mode: str = "status", force: bool = False) -> list[dict[str, Any]]:
     definitions = {item["name"]: item for item in manifest.get("prerequisites", [])}
     names: list[str] = []
     metadata = manifest.get("integrationRequires", {})
@@ -31,6 +31,12 @@ def required_prerequisites(manifest: dict[str, Any], runner: runtime.Runner, mod
             names.extend(runtime.selected(metadata.get(section, []), runner.platform))
         for entry in entries:
             names.extend(runtime.selected(entry.get("requires", []), runner.platform))
+            if section == "packages" and mode in {"install", "update"}:
+                operation = packages.package_operation(entry, runner, mode, force)
+                if operation and not runtime.selected(entry.get(operation, []), runner.platform):
+                    raise runtime.DotAiError(f"{entry['name']}: no supported {operation} commands for {runner.platform}")
+                if operation == "update":
+                    names.extend(runtime.selected(entry.get("updateRequires", []), runner.platform))
     other_selections = {
         "ompExtensions": enabled_extensions(manifest),
         "ompRouting": manifest.get("ompRouting"),
@@ -60,10 +66,10 @@ def required_prerequisites(manifest: dict[str, Any], runner: runtime.Runner, mod
     return [definitions[name] for name in names]
 
 
-def status(manifest: dict[str, Any], runner: runtime.Runner, *, record_failures: bool = False, mode: str = "status") -> bool:
+def status(manifest: dict[str, Any], runner: runtime.Runner, *, record_failures: bool = False, mode: str = "status", force: bool = False) -> bool:
     secrets = terminal.credential_values(manifest) + terminal.credential_values(runner.env)
     try:
-        requirements = required_prerequisites(manifest, runner, mode)
+        requirements = required_prerequisites(manifest, runner, mode, force)
     except runtime.DotAiError as exc:
         if record_failures:
             runner.failures.append(terminal.redact(exc, secrets))
@@ -83,5 +89,5 @@ def status(manifest: dict[str, Any], runner: runtime.Runner, *, record_failures:
     return healthy
 
 
-def preflight(manifest: dict[str, Any], runner: runtime.Runner, mode: str = "sync") -> bool:
-    return status(manifest, runner, record_failures=True, mode=mode)
+def preflight(manifest: dict[str, Any], runner: runtime.Runner, mode: str = "sync", force: bool = False) -> bool:
+    return status(manifest, runner, record_failures=True, mode=mode, force=force)

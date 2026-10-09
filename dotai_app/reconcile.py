@@ -34,7 +34,7 @@ def reconcile(
     except runtime.DotAiError as exc:
         runner.fail("Manifest plan", str(exc))
         return 1
-    if not prerequisites.preflight(manifest, runner, mode):
+    if not prerequisites.preflight(manifest, runner, mode, force=force):
         return 1
     try:
         manifest = locking.prepare(intent, manifest_path, runner, mode)

@@ -2,9 +2,9 @@
 
 ## Local stack configuration
 
-`stack.example.json` is the version-controlled baseline for new users. Run `./dotai.py init` explicitly to create a missing manifest. `version`, `platform`, and help do not need a manifest; inspection and dry-run commands never create one.
+`stack.example.json` is an empty version-2 baseline. Run `./dotai.py init` explicitly to create your personal manifest at the user configuration location described under [Portable personal stack](#portable-personal-stack). `version`, `platform`, and help do not need a manifest; inspection and dry-run commands never create one.
 
-The generated `stack.json` is ignored by Git. Pulling repository updates therefore cannot replace personal tools, skills, plugins, MCP servers, or credential references. Changes to `stack.example.json` affect new configurations automatically; existing users can opt into recommended skill changes with `./dotai.py sync --recommended-skills`.
+No packages, harnesses, skills, plugins, extensions, or MCP servers are selected automatically. Personal intent is separate from repository defaults and is not overwritten by pulls. The old repository-local `stack.json` remains untouched. Skill suggestions live in `skill-recommendations.json`, not the baseline, and require explicit review with `./dotai.py sync --recommended-skills`.
 
 To create a separate manifest, use:
 
@@ -32,6 +32,21 @@ The interactive command asks permission for each retained package, then confirms
 Use `--destination path/to/new-stack.json` to preserve the source file and write converted intent to a new location. The destination must not exist (except when it is the source itself). After validation and confirmation, conversion makes a timestamped exact source backup, private (`0600`) on POSIX, then writes the converted manifest. Preview, refused ownership, invalid input, and destination conflicts detected before writing create no backup, directories, or environment changes. A destination created concurrently during the write is never overwritten; a completed source backup may remain after that refusal. No component commands, package manager operations, OMP lookups, or lock creation occur during conversion.
 
 Legacy static routing roles remain intact for the separate explicit `configure omp-routing` migration; conversion does not discover providers or configure routing.
+
+## Select optional components
+
+```sh
+# A fresh manifest may select zero or several reviewed recipes:
+./dotai.py --manifest path/to/new-stack.json init --component graphify
+# Add a recipe to an existing manifest, without installing it yet:
+./dotai.py add component rtk
+./dotai.py add component omp
+./dotai.py install --dry-run
+```
+
+Selections save portable intent (`name`, `recipe`, `managed: true`, and optional version policy), not expanded installer commands. Catalog commands and checks-only prerequisite metadata are materialized only in memory. Custom tools remain declarative `add tool` entries, with explicit check/install commands and repeatable `--requires NAME` checks.
+
+OMP, RTK, and Graphify are independent optional selections. No OMP lookup, manager check, or configuration-target check runs for omitted integrations. Component identity is unique by tool name, skill source plus agent, marketplace name, plugin ID plus scope, and semantic extension path; ambiguous duplicates are rejected before applying anything.
 
 ## Configuration safety
 
@@ -64,13 +79,13 @@ Manifest and reconciliation-state writes use temporary files before replacement.
 
 ## Managed OMP extensions
 
-RTK 0.43 or newer is configured through `rtk init -g --agent pi`. This creates `~/.pi/agent/extensions/rtk.ts`, which DotAi appends to OMP's global extensions without removing user-configured entries. Restart OMP after the first installation; `./dotai.py status` verifies both registration and source availability.
+RTK 0.43 or newer can be managed as a CLI alone. Pi setup is a separate explicit selection: declare `~/.pi/agent/extensions/rtk.ts` in `ompExtensions` only if you want its OMP integration. The reviewed recipe then runs `rtk init -g --agent pi` to create the selected extension; otherwise it never touches Pi. OMP extension registration preserves unrelated user paths, and status checks both registration and source availability.
 
-The Linux RTK commands in `stack.example.json` use the reviewed v0.50.0 binary archives and architecture-specific SHA-256 digests. Updating the pinned release requires updating its version and archive digests together; existing user-owned `stack.json` files never receive such baseline changes automatically. Windows and macOS continue to use Scoop and Homebrew.
+The Linux RTK recipe in `component-recipes.json` uses reviewed v0.50.0 binary archives and architecture-specific SHA-256 digests. Updating the pinned release requires changing its version and digests together. Other platforms use only reviewed supported installer paths; unsupported pins fail before any changes.
 
-The manifest declares RTK's `minimumVersion` as `0.43`. Package checks compare the command's reported `major.minor[.patch]` version from stdout or stderr; an older installed binary is upgraded, while a missing binary is installed. Status does not silently accept an unsupported or unparseable RTK. Other packages may declare the same optional constraint.
+Recipes may declare `minimumVersion` constraints. Package checks compare the reported numeric `major.minor[.patch]` version from stdout or stderr. Effective exact versions must match as well: an installed newer version does not satisfy a requested older pin. Missing or unparseable versions remain unhealthy.
 
-### Checks-only prerequisites and management permission
+## Checks-only prerequisites and management permission
 
 Version 2 separates managed components from external prerequisites. Package entries require `managed: true`; general dependencies such as Node.js/npm, `uv`, Python, Git, curl, and platform package managers cannot be managed packages. The obsolete `updateGroup` and `--include-dependencies` paths are removed.
 
@@ -78,13 +93,17 @@ Declare external requirements in `prerequisites` as `{name, check, minimumVersio
 
 `status` and `doctor` check only relevant prerequisites. An unused definition or an unselected platform manager does not make a stack unhealthy. Packages and integration entries can use `enabled: false` to exclude them from reconciliation and health checks.
 
+Operation-specific `updateRequires` checks apply only when the selected package will actually use its updater. A healthy normal installation does not run updater checks; `install --force` deliberately selects the installer instead, permitting a reviewed standalone cutover without modifying an old package-manager-owned copy. A missing unsafe-updater requirement blocks the complete selected run before any dependent changes.
+
+`configureWhen` is a declarative field map: expected selections must be a subset of enabled actual selections before a package's configure commands run. RTK's extension condition is one catalog example, not special-case Python logic. Disabled extension objects do not satisfy it.
+
 On Windows, command execution refreshes the machine and user `PATH` so newly installed shims are visible to later commands. Refreshing repeatedly preserves other inherited entries without accumulating another copy of the registry paths on each command.
 
-The Pi extension is independent of RTK's optional Codex integration. DotAi also enables OMP's **Hide Secrets** privacy setting (`secrets.enabled`) during installation and updates, so configured secrets are obfuscated before prompts are sent to providers.
+The Pi extension is independent of RTK's optional Codex integration. When OMP itself is explicitly managed, its recipe enables **Hide Secrets** (`secrets.enabled`) during installation and updates; a stack without OMP never writes this setting.
 
 ## Optional Graphify
 
-The recommended stack installs the Graphify CLI, but does not install its Pi skill or generate project graphs automatically. Invoke `graphify extract . --code-only` in a project only when you want a graph; it writes `graphify-out/` there.
+Graphify is selected explicitly with `add component graphify` (or `init --component graphify`). Its recipe manages only the CLI, not its Pi skill or project graphs. Supply the reported compatible Python and `uv` prerequisites externally; DotAi never bootstraps or updates either interpreter or installer. Invoke `graphify extract . --code-only` in a project only when you want a graph; it writes `graphify-out/` there.
 
 Existing `stack.json` files are user-owned and are not updated from `stack.example.json` by `sync` or `sync --recommended-skills`. If your Graphify package still has a `configure` command that runs `graphify install --platform pi`, remove that command from your local manifest before your next `install` or `update`. To retire the previously installed broad Pi skill, run `graphify pi uninstall` yourself. These steps leave the CLI available for explicit use.
 
@@ -92,9 +111,9 @@ Existing `stack.json` files are user-owned and are not updated from `stack.examp
 
 **Optional, post-authentication setup:** run the routing commands only after installing the stack, opening OMP for the first time, and authenticating at least one supported provider. DotAi does not perform provider login.
 
-Routing is never enabled automatically by `install`, `update`, or `sync`. Until it is configured, `status` and `doctor` display a non-failing `INACTIVE` hint with the preview command; they do not inspect credentials or change OMP configuration.
+Routing is never enabled automatically by `install`, `update`, or `sync`. A selected OMP integration without routing receives a non-failing `INACTIVE` hint; a stack without OMP integrations does not inspect OMP or display routing guidance. Status does not inspect credentials or change OMP configuration.
 
-1. Run `./dotai.py install` (or `python dotai.py install` on Windows).
+1. Explicitly select OMP with `./dotai.py add component omp`, then run `./dotai.py install` (use `python dotai.py` on Windows).
 2. Run `omp` to open OMP for the first time.
 3. Inside OMP, use `/login` to authenticate GitHub Copilot, OpenAI Codex, Anthropic, or any combination of them, then return to your shell. See [OMP's provider authentication guide](https://github.com/can1357/oh-my-pi/blob/main/packages/ai/README.md#oauth-providers) for supported login flows. Authentication belongs to OMP, not to `stack.json`.
 4. Only after those prerequisites, preview the detected providers, resolved roles, manifest diff, and pending OMP commands:
