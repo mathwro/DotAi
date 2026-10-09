@@ -10,6 +10,7 @@ from . import runtime
 from . import skills as skill_manager
 from . import state as app_state
 from . import terminal
+from . import catalog, prerequisites
 
 
 def replace_skill(skills: list[dict[str, Any]], source: str, value: dict[str, Any] | None) -> None:
@@ -27,7 +28,7 @@ def replace_skill(skills: list[dict[str, Any]], source: str, value: dict[str, An
 def recommended_skill_plan(
     manifest: dict[str, Any], manifest_path: Path, enforce: bool = False
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[str]]:
-    desired = manifests.load_manifest(manifests.EXAMPLE_MANIFEST)["skills"]
+    desired = manifests.recommended_skills()
     stored = app_state.managed_recommendations(manifest_path)
     if stored is not None:
         managed = stored
@@ -134,6 +135,8 @@ def _apply_skill_changes(
     managed: list[dict[str, Any]], selected: list[dict[str, Any]],
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     updated, accepted = apply_recommended_skill_changes(manifest, managed, selected)
+    if not prerequisites.preflight(catalog.materialize(updated, runner.platform), runner, mode="sync"):
+        return manifest, managed
     backup = None
     if not runner.dry_run:
         backup = manifests.write_manifest(manifest_path, updated, backup=True)
@@ -155,7 +158,7 @@ def review_recommended_skills(
     managed, changes, conflicts = recommended_skill_plan(manifest, manifest_path, enforce)
     conditional_cleanup = False
     if enforce:
-        recommended_sources = {skill["source"] for skill in manifests.load_manifest(manifests.EXAMPLE_MANIFEST)["skills"]}
+        recommended_sources = {skill["source"] for skill in manifests.recommended_skills()}
         managed_sources = {skill["source"] for skill in managed}
         user_skills = [
             skill for skill in manifest["skills"]

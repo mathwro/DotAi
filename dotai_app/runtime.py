@@ -171,7 +171,8 @@ class Runner:
                 if len(lines) > 30:
                     print(f"  {stream}: further diagnostics omitted.")
 
-    def _failure(self, label: str, cause: str, *, required: bool, command: str | list[str]) -> None:
+    def fail(self, label: str, cause: str, *, required: bool = True, command: str | list[str] | None = None) -> None:
+        command = command or []
         detail = terminal.redact(cause, self._secrets(command))[:300]
         message = terminal.redact(f"{label}: {detail}", self._secrets(command))
         if required:
@@ -209,14 +210,14 @@ class Runner:
                 check=False,
             )
         except OSError as exc:
-            self._failure(safe_label, str(exc), required=required, command=command)
+            self.fail(safe_label, str(exc), required=required, command=command)
             return None
         if result.returncode != 0:
             secrets = self._secrets(command)
             cause = terminal.failure_cause(result.stderr or "", secrets) or terminal.failure_cause(result.stdout or "", secrets)
             if not cause:
                 cause = "The tool did not provide a plain-language error."
-            self._failure(safe_label, f"exit {result.returncode}: {cause}", required=required, command=command)
+            self.fail(safe_label, f"exit {result.returncode}: {cause}", required=required, command=command)
         else:
             self.record_outcome(safe_label, "changed")
             print(f"{terminal.badge('OK')} {safe_label}: completed.", flush=True)
@@ -282,7 +283,16 @@ class Runner:
 def run_steps(steps: Any, runner: Runner, label: str) -> None:
     for index, step in enumerate(steps or [], start=1):
         step_label = f"{label} ({index}/{len(steps)})"
+        previous_failures = len(runner.failures)
         if isinstance(step, (str, list)):
             runner.run(step, step_label)
         else:
-            runner.failures.append(f"{step_label}: invalid command entry")
+            runner.fail(step_label, "invalid command entry")
+        if len(runner.failures) > previous_failures:
+            for pending in range(index + 1, len(steps) + 1):
+                runner.record_outcome(f"{label} ({pending}/{len(steps)})", "skipped", "Earlier step failed")
+            if index < len(steps):
+                print(terminal.redact(
+                    f"{terminal.badge('INACTIVE')} {label}: {len(steps) - index} later step(s) not run after failure."
+                ))
+            break
