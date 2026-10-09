@@ -21,7 +21,7 @@ def print_status(manifest: dict[str, Any], runner: runtime.Runner) -> bool:
     print(f"{terminal.heading('Platform:')} {terminal.redact(runner.platform, secrets)}")
     print(terminal.heading("Packages:"))
     for package in prerequisites.enabled_entries(manifest, "packages"):
-        if "minimumVersion" in package:
+        if "minimumVersion" in package or package.get("version", "latest") != "latest":
             installed, version = package_manager.package_version_check(package, runner, runtime.selected(package.get("check", []), runner.platform))
         else:
             installed = package_manager.package_check(package, runner)
@@ -30,6 +30,8 @@ def print_status(manifest: dict[str, Any], runner: runtime.Runner) -> bool:
         label = "OK" if installed else "MISSING"
         parsed_version = package_manager.PACKAGE_VERSION_PATTERN.search(version)
         detail = ".".join(part for part in parsed_version.groups() if part is not None) if parsed_version else ("installed" if installed else "check failed")
+        if package.get("version", "latest") != "latest":
+            detail += f" (requested {package['version']})"
         print(f"  {terminal.badge(label)} {terminal.redact(package['name'], secrets)}: {detail}")
     print(terminal.heading("Skills:"))
     for skill in prerequisites.enabled_entries(manifest, "skills"):

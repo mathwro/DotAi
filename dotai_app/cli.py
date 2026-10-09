@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import copy
 import argparse
 import os
 import sys
@@ -10,6 +11,8 @@ from . import conversion
 from . import health
 from . import integrations
 from . import manifest as manifests
+from . import catalog
+from . import portable
 from . import prerequisites
 from . import recommendations as skill_recommendations
 from . import reconcile as reconciliation
@@ -22,7 +25,7 @@ from . import terminal
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="dotai", description="Install and reconcile a portable AI development stack.")
-    parser.add_argument("--manifest", type=Path, help="Stack manifest (default: stack.json); convert requires an explicit source")
+    parser.add_argument("--manifest", type=Path, help="Personal stack manifest (default: user configuration directory); convert requires an explicit source")
     parser.add_argument("--platform", choices=["windows", "wsl", "ubuntu", "arch", "macos", "linux"], help=argparse.SUPPRESS)
     parser.add_argument("--verbose", action="store_true")
     parser.add_argument(
@@ -60,7 +63,8 @@ def build_parser() -> argparse.ArgumentParser:
         help="Interactive primary when both Anthropic and Codex are authenticated",
     )
     sub.add_parser("version", help="Print the current DotAi version")
-    sub.add_parser("init", help="Generate a new manifest from stack.example.json")
+    init = sub.add_parser("init", help="Create a new, initially empty personal stack manifest")
+    init.add_argument("--component", action="append", metavar="RECIPE", help="Explicitly select an optional reviewed recipe; repeatable")
     convert = sub.add_parser("convert", help="Preview and explicitly convert a version-1 manifest; no environment operations")
     convert.add_argument("--dry-run", action="store_true", help="Review changes without creating files or backups")
     convert.add_argument("--destination", type=Path, help="New destination; defaults to the explicit source path")
@@ -70,6 +74,11 @@ def build_parser() -> argparse.ArgumentParser:
     fix.add_argument("--dry-run", action="store_true", help="Show the migration without changing files or machine state")
     add = sub.add_parser("add", help="Add a tool, skill, marketplace, plugin, or MCP server to the manifest")
     add_sub = add.add_subparsers(dest="kind", required=True)
+
+    add_component = add_sub.add_parser("component", help="Select a reviewed optional component recipe")
+    add_component.add_argument("recipe")
+    add_component.add_argument("--version", dest="component_version", help="Requested exact version or latest")
+    add_component.add_argument("--update-policy", choices=["latest", "pinned"])
 
     add_tool = add_sub.add_parser("tool", help="Add or replace a command-line tool")
     add_tool.add_argument("name")
@@ -129,7 +138,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "convert" and args.manifest is None:
         parser.error("convert requires an explicit --manifest PATH source")
     if args.manifest is None:
-        args.manifest = manifests.DEFAULT_MANIFEST
+        args.manifest = portable.default_manifest_path(args.platform)
     if args.command == "sync" and args.enforce and not args.recommended_skills:
         parser.error("--enforce requires --recommended-skills")
     terminal.configure_color(args.color)
@@ -156,7 +165,7 @@ def main(argv: list[str] | None = None) -> int:
         releases.print_release_notice()
     if args.command == "init":
         try:
-            if not manifests.initialize_manifest(args.manifest, allow_custom=True):
+            if not manifests.initialize_manifest(args.manifest, allow_custom=True, components=args.component):
                 raise runtime.DotAiError(f"Manifest already exists: {args.manifest}")
         except (OSError, runtime.DotAiError) as exc:
             print(f"{terminal.styled('dotai:', 'red', 'bold')} {terminal.redact(exc)}", file=sys.stderr)
@@ -169,6 +178,8 @@ def main(argv: list[str] | None = None) -> int:
         manifest = manifests.load_manifest(
             args.manifest, allow_legacy_routing=allow_legacy_routing
         )
+        if args.command == "validate":
+            catalog.materialize(manifest)
     except (OSError, runtime.DotAiError) as exc:
         print(f"{terminal.styled('dotai:', 'red', 'bold')} {terminal.redact(exc)}", file=sys.stderr)
         return 2
@@ -177,12 +188,24 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.command == "add":
         try:
+            if args.kind == "component":
+                candidate = copy.deepcopy(manifest)
+                intent = manifests.component_intent(args.recipe, version=args.component_version, update_policy=args.update_policy)
+                integrations.upsert(candidate["packages"], "name", intent)
+                manifests.write_manifest(args.manifest, candidate, backup=True)
+                print(f"{terminal.badge('OK')} Selected {terminal.redact(args.recipe)}; preview 'dotai install --dry-run' before applying it.")
+                return 0
             return integrations.add_integration(args, manifest, args.manifest)
         except (OSError, runtime.DotAiError) as exc:
             print(f"{terminal.styled('dotai:', 'red', 'bold')} {terminal.redact(exc)}", file=sys.stderr)
             return 2
     runner = runtime.Runner(platform_name, getattr(args, "dry_run", False), args.verbose)
-    if args.command in {"install", "update", "sync", "fix"} and not prerequisites.preflight(manifest, runner, args.command):
+    try:
+        effective = catalog.materialize(manifest)
+    except (OSError, runtime.DotAiError) as exc:
+        print(f"{terminal.styled('dotai:', 'red', 'bold')} {terminal.redact(exc)}", file=sys.stderr)
+        return 2
+    if args.command in {"install", "update", "sync", "fix"} and not prerequisites.preflight(effective, runner, args.command, force=getattr(args, "force", False)):
         return 1
     if args.command == "configure":
         try:
@@ -199,9 +222,9 @@ def main(argv: list[str] | None = None) -> int:
             print(f"{terminal.styled('dotai:', 'red', 'bold')} {terminal.redact(exc)}", file=sys.stderr)
             return 2
     if args.command == "status":
-        return 0 if health.print_status(manifest, runner) else 1
+        return 0 if health.print_status(effective, runner) else 1
     if args.command == "doctor":
-        return 0 if health.doctor(manifest, runner) else 1
+        return 0 if health.doctor(effective, runner) else 1
     if args.command == "sync":
         managed_skills = None
         refresh_sources: set[str] = set()
