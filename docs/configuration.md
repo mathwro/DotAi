@@ -2,19 +2,36 @@
 
 ## Local stack configuration
 
-`stack.example.json` is the version-controlled baseline for new users. Any command that needs the default manifest initializes a missing `stack.json` once from that example; `version`, `platform`, and help do not need a manifest. This initialization also occurs before a first-use dry run. Run `./dotai.py validate` first to initialize and check the manifest separately from previewing changes.
+`stack.example.json` is the version-controlled baseline for new users. Run `./dotai.py init` explicitly to create a missing manifest. `version`, `platform`, and help do not need a manifest; inspection and dry-run commands never create one.
 
 The generated `stack.json` is ignored by Git. Pulling repository updates therefore cannot replace personal tools, skills, plugins, MCP servers, or credential references. Changes to `stack.example.json` affect new configurations automatically; existing users can opt into recommended skill changes with `./dotai.py sync --recommended-skills`.
 
-To recreate the defaults, first back up your local `stack.json`, then remove it and run:
+To create a separate manifest, use:
 
 ```sh
-./dotai.py validate
+./dotai.py --manifest path/to/new-stack.json init
 ```
 
-For a separate manifest, use `./dotai.py --manifest path/to/new-stack.json init`. Normal commands never initialize or overwrite an explicitly selected custom path, and `init` also refuses to overwrite an existing file.
+`init` refuses to overwrite an existing file. To recreate a manifest, first move the previous configuration to a safe backup and explicitly initialize the desired path.
 
 `validate` checks required sections and supported package, skill, plugin, and MCP entry shapes before they can be applied, including valid HTTP(S) server URLs and port numbers. The same validation runs before initializing a manifest or saving changes from `add`, recommended skill synchronization, skill migration, or routing configuration. Invalid additions (for example, an MCP URL with an invalid port, a malformed `plugin@marketplace` ID, or an empty tool check command) exit with code `2` without changing the existing manifest or creating backups; correct the input and retry. User-owned extra fields and credential references remain untouched, and unconfigured routing remains `null` when saved. See [`stack.schema.json`](../stack.schema.json) for the declarative format.
+
+## Convert version-1 manifests
+
+Normal commands accept version 2 only. Conversion is a separate, one-way, file-only operation:
+
+```sh
+./dotai.py --manifest path/to/legacy-stack.json convert --dry-run
+./dotai.py --manifest path/to/legacy-stack.json convert
+```
+
+The preview identifies general prerequisites whose installation, update, and configuration commands will be retired, and packages whose management permission needs review. Existing skills, marketplaces, plugins, extensions, routing, MCP entries (including credential references), custom component commands, and user metadata are preserved. Unknown/custom component ownership is never inferred from installed presence.
+
+The interactive command asks permission for each retained package, then confirms the complete write. For automation, use repeatable `--manage NAME` to authorize the reviewed package names and `--yes` to confirm; `--yes` alone cannot grant custom ownership. Declining review leaves the complete original untouched.
+
+Use `--destination path/to/new-stack.json` to preserve the source file and write converted intent to a new location. The destination must not exist (except when it is the source itself). After validation and confirmation, conversion makes a timestamped exact source backup, private (`0600`) on POSIX, then writes the converted manifest. Preview, refused ownership, invalid input, and destination conflicts detected before writing create no backup, directories, or environment changes. A destination created concurrently during the write is never overwritten; a completed source backup may remain after that refusal. No component commands, package manager operations, OMP lookups, or lock creation occur during conversion.
+
+Legacy static routing roles remain intact for the separate explicit `configure omp-routing` migration; conversion does not discover providers or configure routing.
 
 ## Configuration safety
 
@@ -39,7 +56,7 @@ DotAi updates configuration conservatively:
 - The skills.sh lock is read from `$XDG_STATE_HOME/skills/.skill-lock.json` when set, otherwise from `~/.agents/.skill-lock.json`. Installed universal skills remain in `~/.agents/skills/`; DotAi adds no separate ownership database. See [skill refresh behavior and limits](extending.md#add-a-skill-source).
 - Recommended skill synchronization preserves user-added and locally modified sources by default, backs up `stack.json`, and removes installed files only for accepted retirements. With `--enforce`, an initial cleanup prompt can explicitly remove user-owned sources outside the recommendations; declining preserves them and skips their installation for that run before recommendation review continues.
 - Release checks run for `install`, `sync`, `status`, and `version`; an available newer release is shown as a warning, while network failures are ignored.
-- After manifest initialization, dry runs do not modify existing files or managed machine state.
+- Dry runs never initialize a manifest or modify existing files or managed machine state.
 
 Backups retain the previous complete file, including any literal credentials already present. Newly created backups are private to the current user on POSIX, but DotAi does not delete historical backups: after rotating a credential, review and remove old `mcp.json.bak.*` and `stack.json.bak.*` copies yourself. Custom manifest names and backup paths inside other Git repositories need their own ignore rules; keep credentials as environment or secret-manager references rather than literals.
 
@@ -53,7 +70,13 @@ The Linux RTK commands in `stack.example.json` use the reviewed v0.50.0 binary a
 
 The manifest declares RTK's `minimumVersion` as `0.43`. Package checks compare the command's reported `major.minor[.patch]` version from stdout or stderr; an older installed binary is upgraded, while a missing binary is installed. Status does not silently accept an unsupported or unparseable RTK. Other packages may declare the same optional constraint.
 
-For packages with `updateGroup: "dependency"`, normal `update` leaves a present binary unchanged unless `--include-dependencies` is supplied, even when its version is below `minimumVersion` or cannot be parsed. This opt-in takes precedence over minimum-version upgrades during updates; missing dependencies are still installed. A skipped dependency with an unresolved minimum-version check remains unhealthy and causes reconciliation verification to fail. `install` still upgrades present packages below their minimum, and normal updates still upgrade core packages.
+### Checks-only prerequisites and management permission
+
+Version 2 separates managed components from external prerequisites. Package entries require `managed: true`; general dependencies such as Node.js/npm, `uv`, Python, Git, curl, and platform package managers cannot be managed packages. The obsolete `updateGroup` and `--include-dependencies` paths are removed.
+
+Declare external requirements in `prerequisites` as `{name, check, minimumVersion?, hint?}`. Inert user metadata such as notes is preserved, but operation and management fields are forbidden: these objects accept checks only, never install, update, configure, or uninstall commands. A component's `requires` names the checks it needs (a list, or platform-keyed lists). Only enabled, selected components contribute requirements. DotAi checks the complete selected set before dependent mutations, reports missing or unsupported requirements with guidance, and refuses the run without attempting prerequisite repair.
+
+`status` and `doctor` check only relevant prerequisites. An unused definition or an unselected platform manager does not make a stack unhealthy. Packages and integration entries can use `enabled: false` to exclude them from reconciliation and health checks.
 
 On Windows, command execution refreshes the machine and user `PATH` so newly installed shims are visible to later commands. Refreshing repeatedly preserves other inherited entries without accumulating another copy of the registry paths on each command.
 
@@ -143,3 +166,49 @@ release. Arbitrary RTK package-manager pins and OMP pins are rejected rather
 than silently installing latest. Custom numeric pins require an explicit
 `pinInstall` template containing `{version}`. Platform compatibility and pin
 support are checked before installation.
+
+## Reproducibility and observed locks
+
+The manifest's `version` and `updatePolicy` are requested intent. The adjacent
+lock's versions, revisions, installer version, and source trees are successful
+observations, not guesses or rewritten intent. DotAi preflights the entire
+selected plan before making a change. A missing mutable source without a lock
+requires explicit `install` or `update`; `sync` cannot silently resolve latest.
+An existing unpinned tool can establish a lock from its observed version without
+upgrading it. Stale intent or changed catalog provenance requires explicit review
+and install/update, not an automatic sync upgrade.
+
+Skills resolve public GitHub repository roots to immutable 40-character commits
+and complete selected-folder tree hashes through the GitHub API. Retrieval errors,
+truncated trees, ambiguous folders, and wildcard/unverified selections refuse
+resolution rather than fall back to latest. `revision` may declare a ref that is
+resolved before execution; the execution copy carries an immutable revision and
+an exact `installerVersion`. The supported upstream [skills source parser](https://github.com/vercel-labs/skills/blob/958f4b7389ba698b0a6a26a1e505ae2af82364d2/src/source-parser.ts)
+accepts GitHub tree refs, and its [Git implementation](https://github.com/vercel-labs/skills/blob/958f4b7389ba698b0a6a26a1e505ae2af82364d2/src/git.ts)
+can fetch a full commit SHA. [npm's exact package invocation](https://docs.npmjs.com/cli/v11/commands/npx/)
+selects `skills@VERSION`; immutable commit support requires the reviewed 1.7.1
+installer or newer and its declared Node engine prerequisite. Older installers
+are rejected. A healthy unchanged locked sync reuses existing immutable facts
+without looking up mutable HEAD or the latest installer again.
+
+After success, actual tool versions, actual installer version, selected installed
+skill trees plus upstream v3 source metadata, and scoped plugin registry records
+must match the prepared resolution. Local modifications are drift, not new
+resolution. Plugin locks contain observed registry version, Git commit when
+available, and installed tree. OMP's marketplace plugin installer does not expose
+an exact-version override: a missing locked plugin or mismatched explicit pin
+fails before changes instead of installing latest.
+
+Locks are private atomic sidecars (mode `0600` on POSIX), ignored by default.
+Dry runs, failed operations, unobservable versions, and provenance failures never
+replace the lock. A concurrent lock change refuses replacement; retry after the
+other reconciliation finishes. Selected updates replace only selected records,
+retaining unrelated records. An unchanged lock is not rewritten.
+
+You may deliberately transfer a reviewed lock alongside its manifest: source
+versions/revisions do not contain absolute home or repository paths. The recorded
+platform is the observation's origin, not an ownership grant. Another machine
+must re-observe its installation or use a reviewed exact installer for that
+version/platform; unsupported platform pins fail explicitly. A tree/version lock
+never grants uninstall rights. Machine-local adoption and ownership receipts
+remain separate, and must be established independently on the destination.

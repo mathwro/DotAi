@@ -40,7 +40,7 @@ def managed_recommendations(manifest_path: Path) -> list[dict[str, Any]] | None:
         if valid_skill_list(skills):
             return list(skills)
     if valid_skill_list(stored):
-        sources = {skill["source"] for skill in manifests.load_manifest(manifests.EXAMPLE_MANIFEST)["skills"]}
+        sources = {skill["source"] for skill in manifests.recommended_skills()}
         return [skill for skill in stored if skill["source"] in sources]
     legacy = read_state(manifest_path).get("managedRecommendedSkills")
     return list(legacy) if valid_skill_list(legacy) else None
@@ -89,7 +89,7 @@ def save_state(
         else:
             local_skills = manifests.load_manifest(manifest_path)["skills"]
             managed_skills = [
-                skill for skill in manifests.load_manifest(manifests.EXAMPLE_MANIFEST)["skills"] if skill in local_skills
+                skill for skill in manifests.recommended_skills() if skill in local_skills
             ]
     save_managed_recommendations(manifest_path, managed_skills)
     directory = runtime.state_dir()
