@@ -5,6 +5,7 @@ import contextlib
 import copy
 import io
 import json
+import os
 from pathlib import Path
 import sys
 import tempfile
@@ -12,7 +13,7 @@ import unittest
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from dotai_app import cli, health, manifest, packages, runtime
+from dotai_app import catalog, cli, health, manifest, packages, prerequisites, runtime
 
 
 def stack() -> dict:
@@ -111,8 +112,8 @@ class PrerequisiteBoundaryTests(unittest.TestCase):
 
     def test_inspection_missing_default_does_not_initialize(self):
         with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / "missing.json"
-            with mock.patch.object(manifest, "DEFAULT_MANIFEST", path), contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()), mock.patch.object(cli.releases, "print_release_notice"):
+            path = Path(directory) / "config" / "stack.json"
+            with mock.patch.dict(os.environ, {"DOTAI_CONFIG_DIR": str(path.parent)}), contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()), mock.patch.object(cli.releases, "print_release_notice"):
                 result = cli.main(["validate"])
             self.assertEqual(result, 2)
             self.assertFalse(path.exists())
@@ -224,10 +225,10 @@ class ManifestConversionTests(unittest.TestCase):
     def test_conversion_requires_explicit_source_not_default_manifest(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            path = root / "default.json"
+            path = root / "stack.json"
             path.write_text(json.dumps(self.legacy(root / "environment")))
             before = path.read_bytes()
-            with mock.patch.object(manifest, "DEFAULT_MANIFEST", path), contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            with mock.patch.dict(os.environ, {"DOTAI_CONFIG_DIR": str(root)}), contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
                 try:
                     result = cli.main(["convert", "--manage", "custom-ai", "--yes"])
                 except SystemExit as exc:
@@ -265,6 +266,152 @@ class ManifestConversionTests(unittest.TestCase):
             self.assertEqual(result, 2)
             self.assertEqual(destination.read_text(), "independent user file")
             self.assertEqual(json.loads(source.read_text())["version"], 1)
+
+
+class OptionalComponentTests(unittest.TestCase):
+    def invoke(self, path: Path, *arguments: str) -> int:
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()), mock.patch.object(cli.releases, "print_release_notice"):
+            try:
+                return cli.main(["--manifest", str(path), *arguments])
+            except SystemExit as exc:
+                self.fail(f"Optional component command unavailable: {exc.code}")
+
+    def test_explicit_empty_init_is_healthy_without_any_external_probe(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "stack.json"
+            self.assertEqual(self.invoke(path, "init"), 0)
+            data = json.loads(path.read_text())
+            for section in ("packages", "skills", "marketplaces", "plugins", "ompExtensions"):
+                self.assertEqual(data[section], [])
+            self.assertEqual(data["mcp"]["servers"], {})
+            with mock.patch.object(runtime.Runner, "succeeds", side_effect=AssertionError("Unused component probe")):
+                self.assertEqual(self.invoke(path, "status"), 0)
+                self.assertEqual(self.invoke(path, "doctor"), 0)
+
+    def test_recipe_selection_saves_intent_not_expanded_commands(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "stack.json"
+            self.assertEqual(self.invoke(path, "init", "--component", "graphify"), 0)
+            data = json.loads(path.read_text())
+            self.assertEqual(data["packages"], [{"name": "graphify", "recipe": "graphify", "managed": True}])
+            self.assertEqual(data["skills"], [])
+            self.assertEqual(self.invoke(path, "add", "component", "rtk"), 0)
+            after = json.loads(path.read_text())
+            self.assertEqual([entry["recipe"] for entry in after["packages"]], ["graphify", "rtk"])
+            self.assertFalse(any("install" in entry or "check" in entry for entry in after["packages"]))
+            self.assertEqual(after["ompExtensions"], [])
+
+    def test_unknown_recipe_refused_without_creating_manifest(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "not-created" / "stack.json"
+            self.assertEqual(self.invoke(path, "init", "--component", "does-not-exist"), 2)
+            self.assertFalse(path.parent.exists())
+
+    def test_default_manifest_location_resolved_at_command_time(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            desired = root / "portable" / "stack.json"
+            obsolete = root / "old-repository-location.json"
+            with mock.patch.dict(os.environ, {"DOTAI_CONFIG_DIR": str(desired.parent)}), mock.patch.object(manifest, "DEFAULT_MANIFEST", obsolete, create=True), contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(cli.main(["init"]), 0)
+            self.assertTrue(desired.exists())
+            self.assertFalse(obsolete.exists())
+
+    def test_exact_version_mismatch_runs_reviewed_pin_installer(self):
+        with tempfile.TemporaryDirectory() as directory:
+            version = Path(directory) / "version"
+            version.write_text("2.0.0")
+            check = command(f"from pathlib import Path; print(Path({str(version)!r}).read_text())")
+            install = command(f"from pathlib import Path; Path({str(version)!r}).write_text('1.2.0')")
+            data = stack()
+            data["packages"] = [{"name": "ai-helper", "managed": True, "version": "1.2.0", "updatePolicy": "pinned",
+                                 "check": check, "install": [install], "update": [install], "pinInstall": [install]}]
+            runner = runtime.Runner("macos")
+            self.assertFalse(packages.package_check(data["packages"][0], runner))
+            with contextlib.redirect_stdout(io.StringIO()):
+                packages.reconcile_packages(data, runner, "install")
+            self.assertEqual(version.read_text(), "1.2.0")
+            self.assertEqual(runner.failures, [])
+
+    def test_missing_updater_requirement_blocks_update_before_marker(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            marker, path = root / "updated", root / "stack.json"
+            data = stack()
+            data["prerequisites"] = [{"name": "safe-updater", "check": command("raise SystemExit(1)")}]
+            data["packages"] = [{"name": "ai-helper", "managed": True, "check": command("print('1.0.0')"),
+                                 "install": [], "updateRequires": ["safe-updater"],
+                                 "update": [command(f"from pathlib import Path; Path({str(marker)!r}).touch()")]}]
+            path.write_text(json.dumps(data))
+            with mock.patch.dict(os.environ, {"DOTAI_HOME": str(root / "home"), "DOTAI_STATE_DIR": str(root / "state")}):
+                self.assertEqual(self.invoke(path, "update"), 1)
+            self.assertFalse(marker.exists())
+            self.assertFalse((root / "state").exists())
+
+    def test_force_install_uses_installer_not_unsafe_update(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            version, marker, path = root / "version", root / "unsafe-updater", root / "stack.json"
+            version.write_text("1.0.0")
+            data = stack()
+            data["prerequisites"] = [{"name": "safe-updater", "check": command("raise SystemExit(1)")}]
+            data["packages"] = [{"name": "ai-helper", "managed": True, "minimumVersion": "2.0.0",
+                                 "check": command(f"from pathlib import Path; print(Path({str(version)!r}).read_text())"),
+                                 "install": [command(f"from pathlib import Path; Path({str(version)!r}).write_text('2.0.0')")],
+                                 "updateRequires": ["safe-updater"],
+                                 "update": [command(f"from pathlib import Path; Path({str(marker)!r}).touch()")]}]
+            path.write_text(json.dumps(data))
+            with mock.patch.dict(os.environ, {"DOTAI_HOME": str(root / "home"), "DOTAI_STATE_DIR": str(root / "state")}):
+                self.assertEqual(self.invoke(path, "install", "--force"), 0)
+            self.assertEqual(version.read_text(), "2.0.0")
+            self.assertFalse(marker.exists())
+
+    def test_configuration_condition_requires_enabled_matching_selection(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for selected in ([], [{"path": "~/selected-extension.ts", "enabled": False}], ["~/selected-extension.ts"]):
+                marker = root / "configured"
+                marker.unlink(missing_ok=True)
+                data = stack()
+                data["ompExtensions"] = selected
+                data["packages"] = [{"name": "ai-helper", "managed": True, "check": command("print('1.0.0')"), "install": [],
+                                     "configureWhen": {"ompExtensions": ["~/selected-extension.ts"]},
+                                     "configure": [command(f"from pathlib import Path; Path({str(marker)!r}).touch()")]}]
+                with self.subTest(selected=selected), contextlib.redirect_stdout(io.StringIO()):
+                    packages.reconcile_packages(data, runtime.Runner("macos"), "install")
+                    self.assertEqual(marker.exists(), selected == ["~/selected-extension.ts"])
+
+    def test_duplicate_component_identities_are_rejected(self):
+        cases = [
+            ("packages", [{"name": "same", "managed": True, "check": command("print('1.0.0')"), "install": []},
+                          {"name": "same", "managed": True, "check": command("print('2.0.0')"), "install": []}]),
+            ("skills", [{"source": "owner/repo", "skills": ["one"]}, {"source": "owner/repo", "agent": "universal", "skills": ["two"]}]),
+            ("marketplaces", [{"name": "same", "source": "owner/one"}, {"name": "same", "source": "owner/two"}]),
+            ("plugins", [{"id": "same@market"}, {"id": "same@market", "scope": "user"}]),
+        ]
+        for section, entries in cases:
+            data = stack()
+            data[section] = entries
+            with self.subTest(section=section), self.assertRaises(runtime.DotAiError):
+                manifest.validate_manifest(data)
+
+    def test_semantically_duplicate_extension_paths_are_rejected(self):
+        with tempfile.TemporaryDirectory() as directory, mock.patch.dict(os.environ, {"DOTAI_HOME": directory}):
+            data = stack()
+            data["ompExtensions"] = ["~/extensions/check.ts", str(Path(directory) / "extensions" / "check.ts")]
+            with self.assertRaises(runtime.DotAiError):
+                manifest.validate_manifest(data)
+
+    def test_updater_checks_selected_only_for_actual_update_operation(self):
+        data = stack()
+        data["prerequisites"] = [{"name": "safe-updater", "check": command("raise SystemExit(1)")}]
+        data["packages"] = [{"name": "ai-helper", "managed": True, "check": command("print('1.0.0')"),
+                             "install": [command("print('1.0.0')")],
+                             "update": [command("print('1.0.0')")], "updateRequires": ["safe-updater"]}]
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertFalse(prerequisites.preflight(data, runtime.Runner("macos"), "update"))
+            self.assertTrue(prerequisites.preflight(data, runtime.Runner("macos"), "install"))
+            self.assertTrue(prerequisites.preflight(data, runtime.Runner("macos"), "install", force=True))
 
 
 if __name__ == "__main__":
