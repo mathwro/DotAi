@@ -59,11 +59,21 @@ Supported platforms:
 - Named `add skill --skill` selections infer installer-normalized check directories; explicit `--check-skill` values stay authoritative. Missing or wildcard checks report `UNVERIFIED`, not guessed installation health.
 - Skip routine skill refreshes only when v3 lock source metadata and the configured agent's full GitHub folder tree hash prove ownership. Read the authoritative XDG lock when set; global name-only ownership cannot prove an independent agent copy. Unknown provenance refreshes conservatively; `sync --update-skills`, `install --force`, and accepted recommendation changes refresh explicitly.
 - Recommended skill reconciliation preserves locally modified entries by default. `sync --recommended-skills --enforce` first offers explicit cleanup of user-owned manifest sources absent from the recommendations; preserve and skip those sources for that run when cleanup is declined. Then review exact selections for sources in `stack.example.json`. Keep cleanup consent separate from recommendation acceptance, preserve undeclared skills and other agents' independent copies, and keep dry-run cleanup conditional and non-mutating.
-- Keep status labels consistent: `OK` is green, `RUN` is cyan, `INACTIVE`, `DRIFT`, and `UNVERIFIED` are yellow, and `MISSING` and `FAIL` are red. Respect `--color auto|always|never`, `NO_COLOR`, and `FORCE_COLOR`.
 - Windows package operations must use Scoop. Do not introduce Winget commands.
 - Installation, update, and synchronization must remain safe to rerun. After manifest initialization, dry runs must not modify files or machine state.
 - Do not commit generated Python caches, local state, credentials, MCP secrets, or machine-specific configuration.
 - Prefix shell commands with `rtk`.
+
+## Command output
+
+- Apply this contract to every existing or new command, including previews, prompts, progress, results, and failures. DotAi owns the user-facing output; use concise plain-language headings and component-level messages rather than JSON dumps, raw manifest diffs, or unfiltered subprocess chatter.
+- Before a mutation, explain the component, intended action, reason, and resolved target or scope. Dry runs describe proposed changes and conditional actions without implying they were applied.
+- Capture output from non-interactive external tools such as `npx`, installers, and package managers. Present DotAi progress and outcome messages by default; reserve sanitized diagnostic detail and exact commands for explicit `--verbose` output. Handle required interactive prompts explicitly rather than hiding them.
+- Keep failures actionable: identify the failed component and operation, explain the available cause, and give a concrete next step. Preserve nonzero exit codes and health semantics; quieter output must not turn failures into success or discard the evidence needed to diagnose them.
+- End multi-component mutations with a concise account of changed, unchanged, skipped, and failed components. State partial completion accurately, including any remaining changes and restart requirements.
+- Keep credential values out of all output, including verbose diagnostics, command arguments displayed to users, and configuration previews; show names or references instead.
+
+- Keep status labels consistent: `OK` is green, `RUN` is cyan, `INACTIVE`, `DRIFT`, and `UNVERIFIED` are yellow, and `MISSING` and `FAIL` are red. Respect `--color auto|always|never`, `NO_COLOR`, and `FORCE_COLOR`.
 
 ## Verification
 
