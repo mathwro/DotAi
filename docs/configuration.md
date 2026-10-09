@@ -116,3 +116,36 @@ Routing intent is saved and backed up before OMP settings are applied. If a sett
 If an existing manifest still contains static `ompRouting.roles`, run `./dotai.py configure omp-routing` to perform the backed-up, one-way migration to compact intent. Provider authentication changes appear as `DRIFT` while at least one persisted provider remains available; if none remains, `./dotai.py status` reports `INACTIVE`. Rerun `./dotai.py configure omp-routing` to refresh the persisted intent and managed OMP routes. Status is observational and never prompts or writes.
 
 Credentials belong in environment variables or a secret manager, not in `stack.json` or version control.
+
+## Portable personal stack
+
+Version 2 manifests describe intent, not expanded installation scripts. Opt in to
+reviewed components with, for example,
+`{"name":"Graphify","recipe":"graphify","managed":true,"version":"0.4.2","updatePolicy":"pinned"}`.
+Recipes `omp`, `rtk`, and `graphify` live in `component-recipes.json`; materialization
+only changes an in-memory copy. Explicit command fields override recipe fields,
+and a custom package without `recipe` is the escape hatch for a reviewed installer.
+Neither recipe selection nor installed presence grants management permission:
+package operations require explicit `managed:true`.
+
+The default personal manifest is `%APPDATA%/DotAi/stack.json` on Windows, or
+`$XDG_CONFIG_HOME/dotai/stack.json` (normally `~/.config/dotai/stack.json`) on Unix.
+`DOTAI_CONFIG_DIR` overrides the directory. Resolving or inspecting these paths
+does not create them. An explicit manifest path keeps its own adjacent lock:
+`my-stack.json` uses `my-stack.lock.json`. The repository-local `stack.json` is
+not moved or overwritten.
+
+Prerequisites are checks only: Node/npm/npx, uv, Git, curl, Homebrew, Scoop, and
+archive/checksum utilities must be installed by the user. Recipes select the
+checks needed on the current platform. OMP uses Scoop on Windows, Homebrew on
+macOS, and its installer/version-aware update on Linux. RTK keeps the reviewed
+Linux 0.50.0 release with architecture-specific SHA-256 verification; Windows
+and macOS use their package managers.
+
+Exact Graphify pins use the supported [uv tool requirement syntax](https://docs.astral.sh/uv/concepts/tools/),
+`uv tool install graphifyy==VERSION`, without `--force` that could overwrite
+an unmanaged executable. RTK pins support only the reviewed Linux 0.50.0
+release. Arbitrary RTK package-manager pins and OMP pins are rejected rather
+than silently installing latest. Custom numeric pins require an explicit
+`pinInstall` template containing `{version}`. Platform compatibility and pin
+support are checked before installation.
