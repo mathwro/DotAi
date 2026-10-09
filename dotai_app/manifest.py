@@ -410,18 +410,9 @@ def validate_manifest(data: Any, *, allow_legacy_routing: bool = False) -> dict[
         if "scope" in plugin and plugin["scope"] not in ("user", "project"):
             raise runtime.DotAiError(f"Manifest '{path_name}.scope' must be 'user' or 'project'")
     extensions = data.get("ompExtensions", [])
-    if not isinstance(extensions, list):
-        raise runtime.DotAiError("Manifest 'ompExtensions' must be an array")
-    extension_paths = []
-    for index, entry in enumerate(extensions):
-        if isinstance(entry, dict):
-            require_nonempty_string(entry.get("path"), f"ompExtensions[{index}].path")
-            validate_enabled(entry, f"ompExtensions[{index}]")
-            extension_paths.append(entry["path"])
-        else:
-            require_nonempty_string(entry, f"ompExtensions[{index}]")
-            extension_paths.append(entry)
-    if len(extension_paths) != len(set(extension_paths)):
+    if not isinstance(extensions, list) or any(not isinstance(item, str) or not item for item in extensions):
+        raise runtime.DotAiError("Manifest 'ompExtensions' must be an array of non-empty strings")
+    if len(extensions) != len(set(extensions)):
         raise runtime.DotAiError("Manifest 'ompExtensions' entries must be unique")
     if "ompRouting" in data:
         data = {
