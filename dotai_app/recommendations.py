@@ -10,6 +10,7 @@ from . import runtime
 from . import skills as skill_manager
 from . import state as app_state
 from . import terminal
+from . import catalog, prerequisites
 
 
 def replace_skill(skills: list[dict[str, Any]], source: str, value: dict[str, Any] | None) -> None:
@@ -27,7 +28,7 @@ def replace_skill(skills: list[dict[str, Any]], source: str, value: dict[str, An
 def recommended_skill_plan(
     manifest: dict[str, Any], manifest_path: Path, enforce: bool = False
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[str]]:
-    desired = manifests.load_manifest(manifests.EXAMPLE_MANIFEST)["skills"]
+    desired = manifests.recommended_skills()
     stored = app_state.managed_recommendations(manifest_path)
     if stored is not None:
         managed = stored
@@ -121,9 +122,9 @@ def print_recommended_skill_notice(manifest: dict[str, Any], manifest_path: Path
         for change in changes:
             skill = change["after"] if change["after"] is not None else change["before"]
             selections = ", ".join(skill.get("skills", ["*"]))
-            print(f"  {change['kind'].capitalize()} {change['source']} ({selections})")
+            print(terminal.redact(f"  {change['kind'].capitalize()} {change['source']} ({selections})"))
     for source in conflicts:
-        print(f"{terminal.badge('DRIFT')} Recommended source {source}: local entry differs; preserving it")
+        print(terminal.redact(f"{terminal.badge('DRIFT')} Recommended source {source}: local entry differs; preserving it"))
     print("Review with sync --recommended-skills --dry-run; apply with sync --recommended-skills.")
     if conflicts:
         print("Add --enforce to explicitly adopt recommendations for locally differing sources.")
@@ -134,15 +135,17 @@ def _apply_skill_changes(
     managed: list[dict[str, Any]], selected: list[dict[str, Any]],
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     updated, accepted = apply_recommended_skill_changes(manifest, managed, selected)
+    if not prerequisites.preflight(catalog.materialize(updated, runner.platform), runner, mode="sync"):
+        return manifest, managed
     backup = None
     if not runner.dry_run:
         backup = manifests.write_manifest(manifest_path, updated, backup=True)
-        print(f"{terminal.badge('OK')} Manifest backup written to {backup}")
+        print(terminal.redact(f"{terminal.badge('OK')} Manifest backup written to {backup}"))
     skill_manager.remove_retired_skills(selected, runner)
     if runner.failures:
         if backup is not None:
             shutil.copy2(backup, manifest_path)
-            print(f"{terminal.badge('OK')} Restored {manifest_path} after skill removal failure")
+            print(terminal.redact(f"{terminal.badge('OK')} Restored {manifest_path} after skill removal failure"))
         return manifest, managed
     if not runner.dry_run:
         app_state.save_managed_recommendations(manifest_path, accepted)
@@ -153,8 +156,9 @@ def review_recommended_skills(
     manifest: dict[str, Any], manifest_path: Path, runner: runtime.Runner, enforce: bool = False
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     managed, changes, conflicts = recommended_skill_plan(manifest, manifest_path, enforce)
+    conditional_cleanup = False
     if enforce:
-        recommended_sources = {skill["source"] for skill in manifests.load_manifest(manifests.EXAMPLE_MANIFEST)["skills"]}
+        recommended_sources = {skill["source"] for skill in manifests.recommended_skills()}
         managed_sources = {skill["source"] for skill in managed}
         user_skills = [
             skill for skill in manifest["skills"]
@@ -165,7 +169,7 @@ def review_recommended_skills(
             for skill in user_skills:
                 for name in skill.get("skills", ["*"]):
                     suffix = f"/{name}" if name != "*" else ""
-                    print(f"  {skill['source']}{suffix}")
+                    print(terminal.redact(f"  {skill['source']}{suffix}"))
             removals = [
                 {"kind": "remove", "source": skill["source"], "before": skill, "after": None}
                 for skill in user_skills
@@ -173,6 +177,7 @@ def review_recommended_skills(
             if runner.dry_run:
                 print(f"{terminal.badge('RUN')} Optional cleanup preview: applied only if removal is confirmed; no files changed.")
                 remove_users = True
+                conditional_cleanup = True
             else:
                 try:
                     answer = input("Remove these sources from the manifest and their installed skills? [y/N] ")
@@ -187,14 +192,17 @@ def review_recommended_skills(
             else:
                 print(f"{terminal.badge('INACTIVE')} Preserving user-owned skills; skipping their installation during enforced sync.")
     for source in conflicts:
-        print(f"{terminal.badge('DRIFT')} Recommended source {source}: local entry was modified; preserving it")
+        print(terminal.redact(f"{terminal.badge('DRIFT')} Recommended source {source}: local entry was modified; preserving it"))
     if not changes:
         print(f"{terminal.badge('OK')} Recommended skills: no changes available")
         return manifest, managed
 
     proposed, _ = apply_recommended_skill_changes(manifest, managed, changes)
-    print(f"{terminal.heading('Proposed recommended skill changes:')}")
-    print(manifests.manifest_diff(manifest, proposed, manifest_path))
+    if conditional_cleanup:
+        print(terminal.heading("Proposed recommended skill changes, conditional on approving the cleanup above:"))
+    else:
+        print(terminal.heading("Proposed recommended skill changes (apply only after confirmation):"))
+    print(terminal.describe_changes(manifest, proposed, manifest_path))
     if runner.dry_run:
         selected = changes
         print(f"{terminal.badge('RUN')} Dry run: no manifest or skill changes applied.")
@@ -209,7 +217,7 @@ def review_recommended_skills(
             selected = []
             for change in changes:
                 try:
-                    answer = input(f"Apply {change['kind']} for {change['source']}? [y/N] ")
+                    answer = input(terminal.redact(f"Apply {change['kind']} for {change['source']}? [y/N] "))
                 except (EOFError, KeyboardInterrupt):
                     answer = ""
                 if answer.strip().lower() in {"y", "yes"}:

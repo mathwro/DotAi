@@ -24,10 +24,15 @@ The Python entry point, manifests, and schema stay at the repository root becaus
 | --- | --- |
 | `cli.py` | Argument parsing and command dispatch |
 | `runtime.py` | Repository/home/state paths, platform selection, shared errors, and external command execution |
-| `terminal.py` | Color policy, headings, and status badges |
+| `terminal.py` | Color policy, status formatting, credential redaction, and human-readable change previews |
 | `releases.py` | Application version and best-effort release notices |
 | `manifest.py` | Manifest validation, initialization, diffs, backups, and safe JSON writes |
 | `integrations.py` | Parse and persist declared integrations from `add` commands |
+| `prerequisites.py` | Read-only presence and compatibility checks for selected external prerequisites |
+| `catalog.py` | Maintained installation recipes and effective command resolution without rewriting personal intent |
+| `portable.py` | Per-user manifest and adjacent stack-lock paths, without initialization |
+| `conversion.py` | Explicit reviewed legacy-manifest conversion, backups, and management permission |
+| `locking.py` | Immutable target preparation and verified resolved-version/source recording |
 | `packages.py` | Package presence, minimum versions, and install/update decisions |
 | `skills.py` | Agent-scoped installation, ownership checks, health, retirement, and legacy migration |
 | `recommendations.py` | Plan, review, and apply recommended skill changes |
@@ -43,6 +48,27 @@ Keep dependencies directed: CLI dispatch and orchestration call the domain modul
 The current user-facing contracts live in [Configuration](configuration.md) and [Extending the stack](extending.md). Dated files under `docs/superpowers/specs/` are historical design records, not current defaults or active instructions. Completed implementation plans have been removed; their history remains in Git.
 
 The [personal-stack roadmap](roadmap.md) records planned workstreams, acceptance criteria, and branch/commit boundaries. It is a planning record, not an implemented command contract.
+
+## Command output conventions
+
+DotAi owns the user-facing output. Normal commands describe the component and operation in prose, not exact shell commands, JSON protocols, raw configuration values, or upstream installer chatter. Print progress before starting a subprocess and flush it so a long operation is not silently waiting. Failures identify the operation, retain its nonzero exit status, give a bounded available cause, and offer a concrete next step. An optional probe failure may avoid the required-failure list, but must not be presented as successful work.
+
+`runtime.Runner.run(command, label, *, capture=False, required=True, interactive=False)` retains its `CompletedProcess` return contract. Noninteractive execution always captures **separate** `stdout` and `stderr`, including when `capture=False`, and closes stdin. Protocol consumers parse the original returned streams; sanitizing display must never rewrite the captured result. The compatibility `capture` argument does not opt into printing. Use `interactive=True` only when an operation explicitly requires terminal input; this inherits terminal streams and cannot be combined with `capture=True`. Interactive upstream output is not subject to DotAi's capture/redaction, so do not pass credentials to interactive tools or claim that their own terminal output is sanitized.
+
+Only `--verbose` displays sanitized commands and bounded diagnostic lines. Structured JSON responses and JSON configuration arguments are described as captured/structured content instead of dumped, even in verbose mode. `Runner.output` returns successful probe stdout without printing raw protocol responses; failed probes return an empty string. `Runner.succeeds` returns command success without counting observation as a mutation.
+
+Use `terminal.redact(text, secrets=())` at output boundaries. It hides declared secret-bearing environment values, supplied known secrets, common credential flags/assignments, authorization and cookie headers, and URL passwords. Runner also collects credentials from command/header/environment values so echoed credentials are masked. This is display protection for known credentials and recognizable syntax, not a promise to discover arbitrary unlabeled secrets. Do not put credentials in labels or logs; declare secret-bearing values explicitly and keep raw results internal.
+
+Use `terminal.describe_changes(before, after, target)` for previews. It returns prose naming added/removed components and changed fields, without rendering configuration values; an unchanged candidate returns an empty string. Recommendations and routing describe proposed actions, preserve unmanaged configuration, and state that dry runs apply nothing. Cleanup-dependent recommendations must be explicitly conditional on the separate cleanup approval, not described as already accepted.
+
+`Runner.record_outcome(label, status, detail='')` records `changed`, `unchanged`, `skipped`, `failed`, or `planned`; `Runner.summary()` prints and returns concise counts, including partial completion. Successful run operations record `changed`, failures record `failed`, and dry runs record `planned`. Orchestration should account for domain decisions such as unchanged/disabled components and invoke the summary once after the operation. Probe commands do not add mutation outcomes.
+
+Use `Runner.fail(label, cause, *, required=True, command=None)` for operational failures so the exit-status list, sanitized cause, and failed-action accounting agree. Ordered `runtime.run_steps` stops after a failed required step and records later steps as skipped; it does not imply rollback of a partially executed external tool.
+
+Orchestration validates and materializes the complete selected recipe plan before package operations, then records observed stack-lock facts only after successful non-preview reconciliation. Accepted skill-recommendation candidates must pass prerequisite checks before manifest backups, writes, retirement, or ownership-state changes. Keep the saved personal manifest as intent, not expanded commands.
+
+Output boundary regressions use isolated Python subprocess scripts, including a parent-process capture to catch inherited file-descriptor leaks. Run them with `rtk python3 -m unittest discover -s tests -p test_output_contract.py -v`; never exercise installers or authenticated personal tools to test presentation.
+
 
 ## Verification
 

@@ -94,6 +94,20 @@ Version-1 manifests are rejected by normal commands before environment changes. 
 
 Packages require explicit `managed: true` permission. Disabled components are not reconciled. Dry runs describe changes without creating a manifest or changing files.
 
+### Convert an existing manifest
+
+```sh
+./dotai.py --manifest path/to/legacy-stack.json convert --dry-run
+./dotai.py --manifest path/to/legacy-stack.json convert
+# Noninteractive ownership review must name each package you authorize:
+./dotai.py --manifest path/to/legacy-stack.json convert --manage custom-ai --yes
+# Keep the original manifest and write the converted intent elsewhere:
+./dotai.py --manifest path/to/legacy-stack.json convert --destination path/to/new-stack.json
+```
+
+Conversion is file-only: it never installs or updates tools or rewrites their settings. It preserves skills, MCP entries, routing, custom package commands, and user metadata, while moving known general dependencies to checks-only prerequisites and retiring their mutation commands. Review management permission for each retained package. An exact private source backup is created before the confirmed write; an existing destination is never overwritten. See [conversion details](docs/configuration.md#convert-version-1-manifests).
+
+
 ### Status output
 
 | Label | Color | Meaning |
@@ -130,9 +144,11 @@ Reusing a skill source, MCP or marketplace name, plugin ID, or tool name replace
 | Type | Components |
 | --- | --- |
 | Harness | [Oh My Pi](https://github.com/can1357/oh-my-pi) |
-| Tools | [RTK](https://github.com/rtk-ai/rtk), [Graphify](https://github.com/Graphify-Labs/graphify), Node.js, `uv`, `curl` |
+| Tools | [RTK](https://github.com/rtk-ai/rtk), [Graphify](https://github.com/Graphify-Labs/graphify) |
 | Skills | [Ponytail](https://github.com/DietrichGebert/ponytail), [Superpowers](https://github.com/obra/superpowers), [Grilling and Writing for Agents](https://github.com/mattpocock/skills), [Choose Branch Structure](https://github.com/mathwro/Skills/tree/main/skills/choosing-branch-structure), [Commit and Document](https://github.com/mathwro/Skills), [Emil Design Engineering](https://github.com/emilkowalski/skills/tree/main/skills/emil-design-eng), [Web Design Guidelines](https://github.com/vercel-labs/agent-skills/tree/main/skills/web-design-guidelines), installed through [skills.sh](https://skills.sh/) |
 | MCP servers | [Context7](https://context7.com/), [Microsoft Learn](https://learn.microsoft.com/training/support/mcp) |
+
+Node.js/npm, `uv`, Python, Git, curl, and platform package managers are externally supplied prerequisites, never managed components.
 
 RTK 0.43 or newer is configured for Pi and registered as an OMP global extension without replacing unrelated extensions. DotAi also enables OMP's **Hide Secrets** privacy setting during installation and updates.
 

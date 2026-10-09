@@ -52,16 +52,7 @@
     },
     "ompExtensions": {
       "type": "array",
-      "items": {
-        "oneOf": [
-          {"type": "string", "minLength": 1},
-          {"type": "object", "required": ["path"], "properties": {
-            "path": {"type": "string", "minLength": 1},
-            "enabled": {"type": "boolean"},
-            "requires": {"$ref": "#/definitions/requirements"}
-          }, "additionalProperties": true}
-        ]
-      },
+      "items": {"type": "string", "minLength": 1},
       "uniqueItems": true,
       "default": []
     },
@@ -179,7 +170,14 @@
     "prerequisite": {
       "type": "object",
       "required": ["name", "check"],
-      "additionalProperties": false,
+      "additionalProperties": true,
+      "not": {"anyOf": [
+        {"required": ["install"]}, {"required": ["update"]}, {"required": ["configure"]},
+        {"required": ["uninstall"]}, {"required": ["pinInstall"]}, {"required": ["managed"]},
+        {"required": ["recipe"]}, {"required": ["updateGroup"]}, {"required": ["version"]},
+        {"required": ["updatePolicy"]}, {"required": ["requires"]}, {"required": ["provides"]},
+        {"required": ["enabled"]}, {"required": ["updateRequires"]}
+      ]},
       "properties": {
         "name": {"type": "string", "minLength": 1},
         "check": {"$ref": "#/definitions/platformCheck"},
