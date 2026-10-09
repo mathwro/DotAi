@@ -166,3 +166,49 @@ release. Arbitrary RTK package-manager pins and OMP pins are rejected rather
 than silently installing latest. Custom numeric pins require an explicit
 `pinInstall` template containing `{version}`. Platform compatibility and pin
 support are checked before installation.
+
+## Reproducibility and observed locks
+
+The manifest's `version` and `updatePolicy` are requested intent. The adjacent
+lock's versions, revisions, installer version, and source trees are successful
+observations, not guesses or rewritten intent. DotAi preflights the entire
+selected plan before making a change. A missing mutable source without a lock
+requires explicit `install` or `update`; `sync` cannot silently resolve latest.
+An existing unpinned tool can establish a lock from its observed version without
+upgrading it. Stale intent or changed catalog provenance requires explicit review
+and install/update, not an automatic sync upgrade.
+
+Skills resolve public GitHub repository roots to immutable 40-character commits
+and complete selected-folder tree hashes through the GitHub API. Retrieval errors,
+truncated trees, ambiguous folders, and wildcard/unverified selections refuse
+resolution rather than fall back to latest. `revision` may declare a ref that is
+resolved before execution; the execution copy carries an immutable revision and
+an exact `installerVersion`. The supported upstream [skills source parser](https://github.com/vercel-labs/skills/blob/958f4b7389ba698b0a6a26a1e505ae2af82364d2/src/source-parser.ts)
+accepts GitHub tree refs, and its [Git implementation](https://github.com/vercel-labs/skills/blob/958f4b7389ba698b0a6a26a1e505ae2af82364d2/src/git.ts)
+can fetch a full commit SHA. [npm's exact package invocation](https://docs.npmjs.com/cli/v11/commands/npx/)
+selects `skills@VERSION`; immutable commit support requires the reviewed 1.7.1
+installer or newer and its declared Node engine prerequisite. Older installers
+are rejected. A healthy unchanged locked sync reuses existing immutable facts
+without looking up mutable HEAD or the latest installer again.
+
+After success, actual tool versions, actual installer version, selected installed
+skill trees plus upstream v3 source metadata, and scoped plugin registry records
+must match the prepared resolution. Local modifications are drift, not new
+resolution. Plugin locks contain observed registry version, Git commit when
+available, and installed tree. OMP's marketplace plugin installer does not expose
+an exact-version override: a missing locked plugin or mismatched explicit pin
+fails before changes instead of installing latest.
+
+Locks are private atomic sidecars (mode `0600` on POSIX), ignored by default.
+Dry runs, failed operations, unobservable versions, and provenance failures never
+replace the lock. A concurrent lock change refuses replacement; retry after the
+other reconciliation finishes. Selected updates replace only selected records,
+retaining unrelated records. An unchanged lock is not rewritten.
+
+You may deliberately transfer a reviewed lock alongside its manifest: source
+versions/revisions do not contain absolute home or repository paths. The recorded
+platform is the observation's origin, not an ownership grant. Another machine
+must re-observe its installation or use a reviewed exact installer for that
+version/platform; unsupported platform pins fail explicitly. A tree/version lock
+never grants uninstall rights. Machine-local adoption and ownership receipts
+remain separate, and must be established independently on the destination.
