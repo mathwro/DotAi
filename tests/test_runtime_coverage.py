@@ -322,7 +322,8 @@ class RuntimeCoverageTests(unittest.TestCase):
                 saved = state_dir / "state.json"
                 saved.write_text('{"lastSuccess":"previous"}\n', encoding="utf-8")
                 marker = self.home / failure
-                package = {"name": "synthetic", "managed": True, "check": self.python("import sys; sys.exit(1)"), "install": {"default": [self.marker_command(marker, "installed")]}}
+                binary = self.home / (failure + ("-tool.cmd" if os.name == "nt" else "-tool"))
+                package = {"name": "synthetic", "managed": True, "check": [str(binary), "--version"], "install": {"default": [self.marker_command(marker, "installed")]}}
                 if failure == "nonzero":
                     package["install"]["default"] = [self.python("import sys; sys.exit(8)")]
                 elif failure == "missing":
@@ -360,11 +361,12 @@ class RuntimeCoverageTests(unittest.TestCase):
                 version_file = self.home / "version.txt"
                 version_file.write_text(initial, encoding="utf-8")
                 unexpected = self.home / "install"
-                binary = self.home / "independent-tool"
+                binary = self.home / ("independent-tool.cmd" if os.name == "nt" else "independent-tool")
                 if os.name == "nt":
-                    self.skipTest("Independent executable fixture requires a POSIX launcher")
-                binary.write_text(f"#!/bin/sh\ncat {shlex.quote(str(version_file))}\n", encoding="utf-8")
-                binary.chmod(0o755)
+                    binary.write_bytes(f'@echo off\r\ntype "{version_file}"\r\n'.encode())
+                else:
+                    binary.write_bytes(f"#!/bin/sh\ncat {shlex.quote(str(version_file))}\n".encode())
+                    binary.chmod(0o755)
                 check = [str(binary), "--version"]
                 package = {"name": "tool", "managed": True, "minimumVersion": "2.0", "check": check, "install": {"default": [self.marker_command(unexpected, "wrong")]}, "update": {"default": [self.marker_command(version_file, "tool 2.0.0")]}}
                 runner = runtime.Runner(self.platform)
