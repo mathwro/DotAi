@@ -5,7 +5,7 @@ import copy
 import json
 import re
 from typing import Any
-from . import runtime
+from . import portable, runtime
 
 CATALOG_PATH = runtime.ROOT / "component-recipes.json"
 EXACT_VERSION = re.compile(r"\d+\.\d+(?:\.\d+)?")
@@ -34,7 +34,7 @@ def _substitute(value: Any, version: str) -> Any:
     return value
 
 
-def resolve_package(package: dict[str, Any], platform_name: str | None = None) -> dict[str, Any]:
+def _effective_package(package: dict[str, Any]) -> dict[str, Any]:
     recipe_id = package.get("recipe")
     recipe = {}
     if recipe_id:
@@ -42,7 +42,29 @@ def resolve_package(package: dict[str, Any], platform_name: str | None = None) -
         if recipe is None:
             raise runtime.DotAiError(f"Unknown component recipe {recipe_id!r}; supply an explicit custom recipe instead")
     effective = copy.deepcopy(recipe)
+    scoop = effective.get("scoopManifest")
+    if scoop:
+        app = effective["scoopApp"]
+        install = [portable.scoop_command(app, scoop, replace=True)]
+        effective.setdefault("install", {})["windows"] = install
+        if effective.get("scoopUpdate", False):
+            effective.setdefault("update", {})["windows"] = copy.deepcopy(install)
+        effective.setdefault("uninstall", {})["windows"] = [portable.scoop_command(app, scoop, uninstall=True)]
+        if effective.get("pinInstall"):
+            effective["pinInstall"]["windows"] = copy.deepcopy(install)
     effective.update(copy.deepcopy(package))
+    return effective
+
+
+def resolve_uninstall(package: dict[str, Any], platform_name: str | None = None) -> dict[str, Any]:
+    """Resolve explicit removal independently of the desired installation pin."""
+    return _effective_package(package)
+
+
+def resolve_package(package: dict[str, Any], platform_name: str | None = None) -> dict[str, Any]:
+    if not package.get("enabled", True) or package.get("managed") is not True:
+        return copy.deepcopy(package)
+    effective = _effective_package(package)
     version = effective.get("version", "latest")
     if effective.get("updatePolicy") == "pinned" and version == "latest":
         raise runtime.DotAiError(f"{package['name']}: pinned policy requires an exact version pin")
@@ -66,10 +88,11 @@ def resolve_package(package: dict[str, Any], platform_name: str | None = None) -
 def materialize(manifest: dict[str, Any], platform_name: str | None = None) -> dict[str, Any]:
     effective = copy.deepcopy(manifest)
     effective["packages"] = [resolve_package(package, platform_name) for package in manifest.get("packages", [])]
-    prerequisites = copy.deepcopy(load_catalog()["prerequisites"])
+    catalog = load_catalog()
+    prerequisites = copy.deepcopy(catalog["prerequisites"])
     for definition in manifest.get("prerequisites", []):
         prerequisites[definition["name"]] = copy.deepcopy(definition)
     effective["prerequisites"] = list(prerequisites.values())
-    effective["integrationRequires"] = copy.deepcopy(load_catalog().get("integrationRequires", {}))
+    effective["integrationRequires"] = copy.deepcopy(catalog.get("integrationRequires", {}))
     effective["integrationRequires"].update(copy.deepcopy(manifest.get("integrationRequires", {})))
     return effective

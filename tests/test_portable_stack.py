@@ -191,6 +191,242 @@ class StackLockTests(unittest.TestCase):
             self.locking.record(effective, self.path, self.runner, "sync")
         self.assertEqual(target.read_bytes(), before)
 
+    def test_install_of_missing_component_reuses_existing_lock_target(self):
+        package = self.package(version="latest")
+        self.install({"packages": [package]})
+        (self.root / "Sample.version").unlink()
+        effective = self.locking.prepare({"packages": [package]}, self.path, self.runner, "install")
+        self.assertEqual(effective["packages"][0]["version"], "1.2.3")
+        self.assertIn("1.2.3", effective["packages"][0]["install"][0][-1])
+
+    def source_recipe(self, version="latest"):
+        package = self.package(version=version)
+        package["recipe"] = "graphify"
+        recipes = self.locking.catalog.load_catalog()
+        recipes["recipes"]["graphify"]["versionMetadata"] = {
+            "latest": "https://pypi.org/pypi/graphifyy/json",
+            "exact": "https://pypi.org/pypi/graphifyy/{version}/json",
+            "versionPath": ["info", "version"],
+            "pythonRequirementPath": ["info", "requires_python"],
+        }
+        return package, recipes
+
+    def test_mutable_package_metadata_resolves_exact_supported_install(self):
+        package, recipes = self.source_recipe()
+        metadata = {"info": {"version": "2.3.4", "requires_python": ">=3.10"}}
+        with patch.object(self.locking.catalog, "load_catalog", return_value=recipes), patch.object(self.locking, "_fetch_json", return_value=metadata):
+            lock = self.install({"packages": [package]})
+        self.assertEqual(lock["packages"]["Sample"]["version"], "2.3.4")
+        self.assertEqual((self.root / "Sample.version").read_text(), "2.3.4")
+
+    def test_exact_source_version_mismatch_refuses_before_any_install(self):
+        package, recipes = self.source_recipe("1.2.3")
+        metadata = {"info": {"version": "9.9.9", "requires_python": ">=3.10"}}
+        with patch.object(self.locking.catalog, "load_catalog", return_value=recipes), patch.object(self.locking, "_fetch_json", return_value=metadata):
+            with self.assertRaisesRegex(RuntimeError, "source|version"):
+                self.locking.prepare({"packages": [package]}, self.path, self.runner, "install")
+        self.assertFalse((self.root / "Sample.version").exists())
+
+    def test_incompatible_source_python_refuses_without_downloading_interpreter(self):
+        package, recipes = self.source_recipe()
+        metadata = {"info": {"version": "2.3.4", "requires_python": ">=99.0"}}
+        with patch.object(self.locking.catalog, "load_catalog", return_value=recipes), patch.object(self.locking, "_fetch_json", return_value=metadata):
+            with self.assertRaisesRegex(RuntimeError, "Python|python"):
+                self.locking.prepare({"packages": [package]}, self.path, self.runner, "install")
+        self.assertFalse((self.root / "Sample.version").exists())
+
+    def test_unsupported_python_requirement_is_not_treated_as_compatible(self):
+        package, recipes = self.source_recipe()
+        metadata = {"info": {"version": "2.3.4", "requires_python": "~=3.10"}}
+        with patch.object(self.locking.catalog, "load_catalog", return_value=recipes), patch.object(self.locking, "_fetch_json", return_value=metadata):
+            with self.assertRaisesRegex(RuntimeError, "unsupported|requirement"):
+                self.locking.prepare({"packages": [package]}, self.path, self.runner, "install")
+
+    def test_healthy_install_reuses_observed_source_without_network(self):
+        package, recipes = self.source_recipe()
+        (self.root / "Sample.version").write_text("1.2.3")
+        with patch.object(self.locking.catalog, "load_catalog", return_value=recipes), patch.object(self.locking, "_fetch_json", side_effect=AssertionError("Healthy install must not resolve latest")):
+            effective = self.locking.prepare({"packages": [package]}, self.path, self.runner, "install")
+            self.assertEqual(effective["packages"][0]["version"], "1.2.3")
+            self.locking.record(effective, self.path, self.runner, "install")
+
+    def test_force_install_preflights_remote_source_before_exact_replacement(self):
+        package, recipes = self.source_recipe()
+        (self.root / "Sample.version").write_text("1.2.3")
+        metadata = {"info": {"version": "2.3.4", "requires_python": ">=3.10"}}
+        with patch.object(self.locking.catalog, "load_catalog", return_value=recipes), patch.object(self.locking, "_fetch_json", return_value=metadata):
+            effective = self.locking.prepare({"packages": [package]}, self.path, self.runner, "install", force=True)
+        self.assertEqual(effective["packages"][0]["version"], "2.3.4")
+
+    def test_frozen_reviewed_plan_does_not_resolve_a_moving_source_again(self):
+        package, recipes = self.source_recipe()
+        intent = {"packages": [package]}
+        metadata = {"info": {"version": "2.3.4", "requires_python": ">=3.10"}}
+        with patch.object(self.locking.catalog, "load_catalog", return_value=recipes), patch.object(self.locking, "_fetch_json", return_value=metadata):
+            self.locking.prepare(intent, self.path, self.runner, "install")
+        with patch.object(self.locking, "_fetch_json", side_effect=AssertionError("Reviewed source moved; must use frozen target")):
+            effective = self.locking.prepared(intent, self.path, self.runner, "install")
+        self.assertEqual(effective["packages"][0]["version"], "2.3.4")
+        changed = copy.deepcopy(intent)
+        changed["packages"][0]["source"] = "https://example.invalid/changed"
+        self.assertIsNone(self.locking.prepared(changed, self.path, self.runner, "install"))
+
+    def test_exact_current_update_checks_python_before_updater_mutation(self):
+        package, recipes = self.source_recipe("1.2.3")
+        observed = self.root / "Sample.version"
+        observed.write_text("1.2.3")
+        marker = self.root / "updated"
+        package["pinInstall"] = [[sys.executable, "-c", f"from pathlib import Path; Path({str(observed)!r}).write_text('{{version}}'); Path({str(marker)!r}).write_text('updated')"]]
+        metadata = {"info": {"version": "1.2.3", "requires_python": ">=99.0"}}
+        from dotai_app.runtime import run_steps, selected
+        with patch.object(self.locking.catalog, "load_catalog", return_value=recipes), patch.object(self.locking, "_fetch_json", return_value=metadata):
+            with self.assertRaisesRegex(RuntimeError, "Python|python"):
+                effective = self.locking.prepare({"packages": [package]}, self.path, self.runner, "update")
+                run_steps(selected(effective["packages"][0]["update"], self.runner.platform), self.runner, "Update fixture")
+        self.assertFalse(marker.exists())
+        self.assertEqual(observed.read_text(), "1.2.3")
+
+    def test_below_minimum_install_resolves_supported_target_not_unhealthy_current(self):
+        package, recipes = self.source_recipe()
+        package["minimumVersion"] = "2.0"
+        (self.root / "Sample.version").write_text("1.2.3")
+        metadata = {"info": {"version": "2.3.4", "requires_python": ">=3.10"}}
+        with patch.object(self.locking.catalog, "load_catalog", return_value=recipes), patch.object(self.locking, "_fetch_json", return_value=metadata):
+            effective = self.locking.prepare({"packages": [package]}, self.path, self.runner, "install")
+            from dotai_app.runtime import run_steps, selected
+            run_steps(selected(effective["packages"][0]["install"], self.runner.platform), self.runner, "Upgrade fixture")
+            self.locking.record(effective, self.path, self.runner, "install")
+        self.assertEqual((self.root / "Sample.version").read_text(), "2.3.4")
+        self.assertEqual(self.locking.load(self.path)["packages"]["Sample"]["version"], "2.3.4")
+
+    def test_healthy_install_preserves_newer_current_than_existing_lock(self):
+        package = self.package(version="latest")
+        self.install({"packages": [package]})
+        (self.root / "Sample.version").write_text("2.3.4")
+        effective = self.locking.prepare({"packages": [package]}, self.path, self.runner, "install")
+        self.locking.record(effective, self.path, self.runner, "install")
+        self.assertEqual((self.root / "Sample.version").read_text(), "2.3.4")
+        self.assertEqual(self.locking.load(self.path)["packages"]["Sample"]["version"], "2.3.4")
+
+    def test_exact_current_sync_and_pinned_update_need_no_remote_resolution(self):
+        package, recipes = self.source_recipe("1.2.3")
+        package["updatePolicy"] = "pinned"
+        (self.root / "Sample.version").write_text("1.2.3")
+        with patch.object(self.locking.catalog, "load_catalog", return_value=recipes), patch.object(self.locking, "_fetch_json", side_effect=AssertionError("Unchanged pinned source must not resolve remotely")):
+            for mode in ("sync", "update"):
+                effective = self.locking.prepare({"packages": [package]}, self.path, self.runner, mode)
+                self.locking.record(effective, self.path, self.runner, mode)
+        self.assertEqual((self.root / "Sample.version").read_text(), "1.2.3")
+
+    def test_frozen_plan_rejects_changed_sidecar_before_installer(self):
+        intent = {"packages": [self.package()]}
+        self.locking.prepare(intent, self.path, self.runner, "install")
+        target = self.root / "stack.lock.json"
+        concurrent = {"version": 1, "packages": {}, "skills": {}, "plugins": {}, "external": "retained"}
+        target.write_text(json.dumps(concurrent))
+        before = target.read_bytes()
+        from dotai_app.runtime import run_steps, selected
+        with self.assertRaisesRegex(RuntimeError, "changed|concurrent"):
+            effective = self.locking.prepared(intent, self.path, self.runner, "install")
+            for package in effective["packages"]:
+                run_steps(selected(package["install"], self.runner.platform), self.runner, "Install fixture")
+        self.assertFalse((self.root / "Sample.version").exists())
+        self.assertEqual(target.read_bytes(), before)
+
+    def test_execution_rechecks_sidecar_after_prepared_before_installer(self):
+        intent = {"packages": [self.package()]}
+        self.locking.prepare(intent, self.path, self.runner, "install")
+        effective = self.locking.prepared(intent, self.path, self.runner, "install")
+        target = self.root / "stack.lock.json"
+        target.write_text(json.dumps({"version": 1, "packages": {}, "skills": {}, "plugins": {}, "external": "retained"}))
+        from dotai_app.runtime import run_steps, selected
+        with self.assertRaisesRegex(RuntimeError, "changed|concurrent"):
+            with self.locking.execution(self.path, self.runner):
+                run_steps(selected(effective["packages"][0]["install"], self.runner.platform), self.runner, "Install fixture")
+        self.assertFalse((self.root / "Sample.version").exists())
+        self.assertFalse((self.root / "stack.lock.json.write").exists())
+
+    def test_overlapping_execution_refuses_second_mutation_and_retains_first_guard(self):
+        from dotai_app.runtime import Runner, run_steps, selected
+        intent = {"packages": [self.package()]}
+        second = Runner("linux")
+        self.locking.prepare(intent, self.path, self.runner, "install")
+        effective = self.locking.prepare(intent, self.path, second, "install")
+        guard = self.root / "stack.lock.json.write"
+        with self.locking.execution(self.path, self.runner):
+            if os.name != "nt":
+                self.assertEqual(guard.stat().st_mode & 0o777, 0o600)
+            with self.assertRaisesRegex(RuntimeError, "writer|active|exclusiv"):
+                with self.locking.execution(self.path, second):
+                    run_steps(selected(effective["packages"][0]["install"], second.platform), second, "Install fixture")
+            self.assertTrue(guard.exists())
+            self.assertFalse((self.root / "Sample.version").exists())
+        self.assertFalse(guard.exists())
+
+    def test_execution_releases_own_guard_after_action_exception(self):
+        self.locking.prepare({"packages": []}, self.path, self.runner, "install")
+        guard = self.root / "stack.lock.json.write"
+        with self.assertRaisesRegex(ValueError, "fixture"):
+            with self.locking.execution(self.path, self.runner):
+                raise ValueError("fixture action failed")
+        self.assertFalse(guard.exists())
+        with self.locking.execution(self.path, self.runner):
+            self.assertTrue(guard.exists())
+        self.assertFalse(guard.exists())
+
+    def test_execution_cleanup_preserves_replaced_guard(self):
+        self.locking.prepare({"packages": []}, self.path, self.runner, "install")
+        guard = self.root / "stack.lock.json.write"
+        replacement = self.root / "replacement"
+        replacement.write_text("another owner")
+        with self.locking.execution(self.path, self.runner):
+            os.replace(replacement, guard)
+        self.assertEqual(guard.read_text(), "another owner")
+
+    def test_execution_requires_preflight_and_creates_nothing_on_dry_run(self):
+        missing = self.root / "missing" / "stack.json"
+        with self.assertRaisesRegex(RuntimeError, "prepare|preflight"):
+            with self.locking.execution(missing, self.runner):
+                self.fail("Execution must not start without preflight")
+        self.assertFalse(missing.parent.exists())
+        self.runner.dry_run = True
+        effective = self.locking.prepare({"packages": []}, missing, self.runner, "install")
+        with self.locking.execution(missing, self.runner):
+            self.assertFalse(self.locking.record(effective, missing, self.runner, "install"))
+            self.assertFalse(missing.parent.exists())
+        self.assertFalse(missing.parent.exists())
+
+    def test_record_with_execution_lease_does_not_double_acquire_and_preserves_noop_bytes(self):
+        intent = {"packages": [self.package()]}
+        effective = self.locking.prepare(intent, self.path, self.runner, "install")
+        from dotai_app.runtime import run_steps, selected
+        guard = self.root / "stack.lock.json.write"
+        target = self.root / "stack.lock.json"
+        with self.locking.execution(self.path, self.runner):
+            run_steps(selected(effective["packages"][0]["install"], self.runner.platform), self.runner, "Install fixture")
+            self.assertTrue(self.locking.record(effective, self.path, self.runner, "install"))
+            self.assertTrue(guard.exists())
+        parsed = json.loads(target.read_text())
+        target.write_text(json.dumps(parsed, separators=(",", ":")))
+        before, modified = target.read_bytes(), target.stat().st_mtime_ns
+        effective = self.locking.prepare(intent, self.path, self.runner, "sync")
+        with self.locking.execution(self.path, self.runner):
+            self.assertFalse(self.locking.record(effective, self.path, self.runner, "sync"))
+            self.assertTrue(guard.exists())
+        self.assertEqual(target.read_bytes(), before)
+        self.assertEqual(target.stat().st_mtime_ns, modified)
+        self.assertFalse(guard.exists())
+
+    def test_independent_record_refuses_existing_guard_without_removing_it(self):
+        intent = {"packages": [self.package()]}
+        self.install(intent)
+        effective = self.locking.prepare(intent, self.path, self.runner, "sync")
+        guard = self.root / "stack.lock.json.write"
+        guard.write_text("another writer")
+        with self.assertRaisesRegex(RuntimeError, "writer|active|exclusiv"):
+            self.locking.record(effective, self.path, self.runner, "sync")
+        self.assertEqual(guard.read_text(), "another writer")
+
 
 class SkillLockTests(unittest.TestCase):
     def setUp(self):
@@ -314,6 +550,72 @@ class SkillLockTests(unittest.TestCase):
         lock = json.loads((self.root / "stack.lock.json").read_text())
         self.assertEqual(lock["skills"]["example/reviewed|universal"]["revision"], "a" * 40)
 
+    def test_explicit_selected_sync_refresh_advances_only_selected_skill_lock(self):
+        intent = self.establish_lock()
+        target = self.root / "stack.lock.json"
+        before = json.loads(target.read_text())
+        retained = copy.deepcopy(before["skills"]["example/reviewed|universal"])
+        retained["source"] = "example/unrelated"
+        before["skills"]["example/unrelated|universal"] = retained
+        target.write_text(json.dumps(before))
+        import hashlib
+        content = b"# Alpha updated\n"
+        blob = hashlib.sha1(b"blob " + str(len(content)).encode() + b"\0" + content).digest()
+        raw_tree = b"100644 SKILL.md\0" + blob
+        updated_tree = hashlib.sha1(b"tree " + str(len(raw_tree)).encode() + b"\0" + raw_tree).hexdigest()
+        self.responses["https://api.github.com/repos/example/reviewed/commits/HEAD"]["sha"] = "c" * 40
+        self.responses["https://api.github.com/repos/example/reviewed/git/trees/" + "b" * 40 + "?recursive=1"]["tree"][0]["sha"] = updated_tree
+        with patch.object(self.locking, "_fetch_json", side_effect=self.fetch), patch.object(self.runner, "output", side_effect=self.observed):
+            effective = self.locking.prepare(intent, self.path, self.runner, "sync", refresh_sources={"example/reviewed"}, skill_receipt_owned=lambda skill: True)
+            self.assertEqual(effective["skills"][0]["revision"], "c" * 40)
+            from dotai_app import skills
+            folder = skills.skill_root(self.source) / "alpha"
+            self.assertEqual((folder / "SKILL.md").read_text(), "# Alpha\n")
+            (folder / "SKILL.md").write_bytes(content)
+            upstream = self.root / "state" / "skills" / ".skill-lock.json"
+            value = json.loads(upstream.read_text())
+            value["skills"]["alpha"].update({"ref": "c" * 40, "skillFolderHash": updated_tree})
+            upstream.write_text(json.dumps(value))
+            self.locking.record(effective, self.path, self.runner, "sync")
+        after = json.loads(target.read_text())
+        self.assertEqual(after["skills"]["example/reviewed|universal"]["revision"], "c" * 40)
+        self.assertEqual(after["skills"]["example/unrelated|universal"], retained)
+
+    def test_explicit_skill_refresh_rejects_current_modified_unowned_copy(self):
+        intent = self.establish_lock()
+        from dotai_app import skills
+        (skills.skill_root(self.source) / "alpha" / "SKILL.md").write_text("locally modified")
+        before = (self.root / "stack.lock.json").read_bytes()
+        with patch.object(self.locking, "_fetch_json", side_effect=AssertionError("Unowned copy must reject before target lookup")):
+            with self.assertRaisesRegex(RuntimeError, "owned|provenance|modified"):
+                self.locking.prepare(intent, self.path, self.runner, "sync", update_skills=True, skill_receipt_owned=lambda skill: False)
+        self.assertEqual((self.root / "stack.lock.json").read_bytes(), before)
+
+    def test_normal_install_repairs_owned_current_tree_to_existing_locked_target(self):
+        intent = self.establish_lock()
+        from dotai_app import skills
+        folder = skills.skill_root(self.source) / "alpha"
+        (folder / "SKILL.md").write_text("# Alpha updated\n")
+        upstream = self.root / "state" / "skills" / ".skill-lock.json"
+        value = json.loads(upstream.read_text())
+        value["skills"]["alpha"].update({
+            "ref": "c" * 40,
+            "skillFolderHash": skills.installed_skill_tree_hash(folder),
+        })
+        upstream.write_text(json.dumps(value))
+        with patch.object(self.locking, "_fetch_json", side_effect=AssertionError("Locked repair must not resolve latest")):
+            effective = self.locking.prepare(intent, self.path, self.runner, "install", skill_receipt_owned=lambda skill: True)
+        self.assertEqual(effective["skills"][0]["revision"], self.revision)
+        self.assertTrue(self.runner._dotai_lock_plan["skills"]["example/reviewed|universal"]["refresh"])
+        self.assertEqual((folder / "SKILL.md").read_text(), "# Alpha updated\n")
+
+    def test_matching_existing_locked_skill_does_not_request_refresh(self):
+        intent = self.establish_lock()
+        with patch.object(self.locking, "_fetch_json", side_effect=AssertionError("Locked matching tree must not resolve latest")):
+            effective = self.locking.prepare(intent, self.path, self.runner, "install")
+        self.assertEqual(effective["skills"][0]["revision"], self.revision)
+        self.assertFalse(self.runner._dotai_lock_plan["skills"]["example/reviewed|universal"]["refresh"])
+
 
 class PluginLockTests(unittest.TestCase):
     def setUp(self):
@@ -328,7 +630,7 @@ class PluginLockTests(unittest.TestCase):
         from dotai_app.runtime import Runner
         self.runner = Runner("linux")
         self.plugin = {"id": "sample@reviewed", "scope": "user"}
-        self.folder = self.root / ".omp" / "plugins" / "cache" / "sample"
+        self.folder = self.root / ".omp" / "plugins" / "cache" / "plugins" / "sample"
         self.folder.mkdir(parents=True)
         (self.folder / "plugin.json").write_text('{"name":"sample","version":"1.2.3"}')
         self.registry = self.root / ".omp" / "plugins" / "installed_plugins.json"
@@ -362,6 +664,59 @@ class PluginLockTests(unittest.TestCase):
         (self.folder / "plugin.json").write_text("locally modified")
         with self.assertRaisesRegex(RuntimeError, "DRIFT|tree|modified"):
             self.locking.prepare(intent, self.path, self.runner, "sync")
+        self.assertEqual((self.root / "stack.lock.json").read_bytes(), before)
+
+    def test_redirected_plugin_cache_is_rejected_before_hashing(self):
+        redirected = self.root / "redirected-cache"
+        cache = self.folder.parent
+        cache.rename(redirected)
+        try:
+            cache.symlink_to(redirected, target_is_directory=True)
+        except OSError:
+            self.skipTest("Creating directory symlinks is unavailable")
+        from dotai_app import skills
+        with patch.object(skills, "installed_skill_tree_hash", side_effect=AssertionError("Redirected cache reached hashing")):
+            with self.assertRaisesRegex(RuntimeError, "linked|redirect|symlink"):
+                self.locking.prepare({"packages": [], "plugins": [self.plugin]}, self.path, self.runner, "install")
+
+    def test_plugin_registry_cannot_claim_an_outside_directory(self):
+        unrelated = self.root / "unrelated"
+        unrelated.mkdir()
+        (unrelated / "private.txt").write_text("not plugin data")
+        registry = json.loads(self.registry.read_text())
+        registry["plugins"]["sample@reviewed"][0]["installPath"] = str(unrelated)
+        self.registry.write_text(json.dumps(registry))
+        from dotai_app import skills
+        with patch.object(skills, "installed_skill_tree_hash", side_effect=AssertionError("Unrelated data reached hashing")):
+            with self.assertRaisesRegex(RuntimeError, "outside|cache|scope"):
+                self.locking.prepare({"packages": [], "plugins": [self.plugin]}, self.path, self.runner, "install")
+
+    def test_shared_plugin_directory_does_not_mint_scoped_lock_provenance(self):
+        registry = json.loads(self.registry.read_text())
+        shared = copy.deepcopy(registry["plugins"]["sample@reviewed"][0])
+        shared["scope"] = "project"
+        registry["plugins"]["another@reviewed"] = [shared]
+        self.registry.write_text(json.dumps(registry))
+        with self.assertRaisesRegex(RuntimeError, "shared|ambiguous|scope"):
+            self.locking.prepare({"packages": [], "plugins": [self.plugin]}, self.path, self.runner, "install")
+
+    def test_full_marketplace_provenance_survives_selected_execution_filter(self):
+        selected = {"packages": [], "plugins": [self.plugin]}
+        full = {**selected, "marketplaces": [{"name": "reviewed", "source": "example/original"}]}
+        effective = self.locking.prepare(selected, self.path, self.runner, "install", provenance_manifest=full)
+        self.locking.record(effective, self.path, self.runner, "install")
+        effective = self.locking.prepare(selected, self.path, self.runner, "sync", provenance_manifest=full)
+        self.assertEqual(effective["plugins"][0]["version"], "1.2.3")
+
+    def test_changed_marketplace_source_invalidates_selected_plugin_lock(self):
+        selected = {"packages": [], "plugins": [self.plugin]}
+        full = {**selected, "marketplaces": [{"name": "reviewed", "source": "example/original"}]}
+        effective = self.locking.prepare(selected, self.path, self.runner, "install", provenance_manifest=full)
+        self.locking.record(effective, self.path, self.runner, "install")
+        before = (self.root / "stack.lock.json").read_bytes()
+        full["marketplaces"][0]["source"] = "example/replacement"
+        with self.assertRaisesRegex(RuntimeError, "stale|intent|provenance"):
+            self.locking.prepare(selected, self.path, self.runner, "sync", provenance_manifest=full)
         self.assertEqual((self.root / "stack.lock.json").read_bytes(), before)
 
 
