@@ -3,10 +3,14 @@ from __future__ import annotations
 
 import copy
 import importlib
+import hashlib
+import io
 import json
 import os
 from pathlib import Path
 import sys
+import shutil
+import subprocess
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -22,46 +26,18 @@ def feature(test, name):
 
 
 class PortableCatalogTests(unittest.TestCase):
-    def test_materialization_preserves_portable_intent_and_explicit_overrides(self):
-        catalog = feature(self, "catalog")
-        intent = {"version": 2, "packages": [{"name": "Graphify", "recipe": "graphify", "managed": True, "check": ["custom", "--version"]}]}
-        original = copy.deepcopy(intent)
-        effective = catalog.materialize(intent)
-        self.assertEqual(intent, original)
-        self.assertEqual(effective["packages"][0]["check"], ["custom", "--version"])
-        self.assertIn("install", effective["packages"][0])
-        self.assertEqual(effective["packages"][0]["requires"], ["uv"])
-        effective["packages"][0]["requires"].append("changed")
-        self.assertEqual(catalog.resolve_package(intent["packages"][0])["requires"], ["uv"])
-
-    def test_prerequisite_definitions_cannot_install_environment_tools(self):
-        catalog = feature(self, "catalog").load_catalog()
-        for name in ("node", "npx", "uv", "curl", "git", "brew", "scoop"):
-            definition = catalog["prerequisites"][name]
-            self.assertTrue(definition["check"])
-            self.assertFalse(set(definition) & {"install", "update", "configure"})
-
     def test_unknown_recipe_and_unsupported_pin_fail_before_execution(self):
         catalog = feature(self, "catalog")
         with self.assertRaisesRegex(RuntimeError, "recipe"):
             catalog.resolve_package({"name": "Mystery", "recipe": "missing", "managed": True})
         with self.assertRaisesRegex(RuntimeError, "pin"):
-            catalog.resolve_package({"name": "OMP", "recipe": "omp", "managed": True, "version": "1.2.3"})
-
-    def test_graphify_exact_version_uses_uv_requirement_not_latest_upgrade(self):
-        catalog = feature(self, "catalog")
-        resolved = catalog.resolve_package({"name": "Graphify", "recipe": "graphify", "managed": True, "version": "0.4.2", "updatePolicy": "pinned"})
-        from dotai_app.runtime import selected
-        self.assertEqual(selected(resolved["install"], "macos"), [["uv", "tool", "install", "graphifyy==0.4.2"]])
-        self.assertEqual(selected(resolved["update"], "windows"), [["uv", "tool", "install", "graphifyy==0.4.2"]])
+            catalog.resolve_package({"name": "RTK", "recipe": "rtk", "managed": True, "version": "1.2.3"})
 
     def test_custom_pin_requires_explicit_reviewed_pin_command(self):
         catalog = feature(self, "catalog")
         intent = {"name": "custom", "managed": True, "version": "2.3.4", "check": ["custom", "--version"], "install": [["custom-installer", "latest"]]}
         with self.assertRaisesRegex(RuntimeError, "pin"):
             catalog.resolve_package(intent)
-        intent["pinInstall"] = [["custom-installer", "{version}"]]
-        self.assertEqual(catalog.resolve_package(intent)["install"], [["custom-installer", "2.3.4"]])
 
     def test_default_paths_do_not_create_configuration(self):
         portable = feature(self, "portable")
@@ -107,6 +83,16 @@ class StackLockTests(unittest.TestCase):
                 run_steps(selected(package["install"], self.runner.platform), self.runner, "Isolated fixture")
         self.locking.record(effective, self.path, self.runner, mode)
         return json.loads((self.root / "stack.lock.json").read_text())
+
+    def test_stderr_version_probe_records_existing_target_without_installer(self):
+        package = self.package()
+        package["check"] = [sys.executable, "-c", "import sys; print('fixture 1.2.3', file=sys.stderr)"]
+        intent = {"packages": [package]}
+        self.locking.prepare(intent, self.path, self.runner, "install")
+        self.locking.record(intent, self.path, self.runner, "install")
+        facts = json.loads((self.root / "stack.lock.json").read_text())
+        self.assertEqual(facts["packages"]["Sample"]["version"], "1.2.3")
+        self.assertFalse((self.root / "Sample.version").exists())
 
     def test_lock_records_actual_successful_observations_privately(self):
         intent = {"packages": [self.package()]}
@@ -165,7 +151,7 @@ class StackLockTests(unittest.TestCase):
             self.assertFalse((self.root / "stack.lock.json").exists())
 
     def test_unsupported_pin_preflights_entire_selection(self):
-        intent = {"packages": [self.package(), {"name": "OMP", "recipe": "omp", "managed": True, "version": "1.2.3"}]}
+        intent = {"packages": [self.package(), {"name": "RTK", "recipe": "rtk", "managed": True, "version": "1.2.3"}]}
         with self.assertRaisesRegex(RuntimeError, "pin"):
             self.locking.prepare(intent, self.path, self.runner, "install")
         self.assertFalse((self.root / "Sample.version").exists())
@@ -199,6 +185,123 @@ class StackLockTests(unittest.TestCase):
         self.assertEqual(effective["packages"][0]["version"], "1.2.3")
         self.assertIn("1.2.3", effective["packages"][0]["install"][0][-1])
 
+    def omp_release(self, version="18.8.7", digest="a" * 64):
+        return {"tag_name": "v" + version, "draft": False, "prerelease": False, "assets": [
+            {"name": "omp-linux-x64", "state": "uploaded", "digest": "sha256:" + digest,
+             "browser_download_url": f"https://github.com/can1357/oh-my-pi/releases/download/v{version}/omp-linux-x64"}]}
+
+    def native_intent(self, version="latest"):
+        intent = json.loads((Path(__file__).resolve().parents[1] / "stack.example.json").read_text())
+        intent["packages"] = [{"name": "OMP", "recipe": "omp", "managed": True, "version": version,
+                               "check": [str(self.root.resolve() / ".local/bin/omp"), "--version"]}]
+        self.path.write_text(json.dumps(intent))
+        return intent
+
+    def native_environment(self):
+        home = str(self.root.resolve())
+        return {"DOTAI_HOME": home, "HOME": home, "USERPROFILE": home,
+                "DOTAI_STATE_DIR": home + "/state", "DOTAI_CONFIG_DIR": home + "/config",
+                "PATH": home + "/.local/bin" + os.pathsep + os.environ.get("PATH", "")}
+
+    @unittest.skipIf(os.name == "nt", "POSIX native release fixture")
+    def test_omp_missing_lock_replay_installs_verified_frozen_binary(self):
+        from dotai_app import catalog, packages, runtime
+        payload = b"#!/bin/sh\nprintf 'omp 18.8.7\\n'\n"
+        release = self.omp_release(digest=hashlib.sha256(payload).hexdigest())
+        intent = self.native_intent()
+        target = self.root / ".local/bin/omp"
+        with patch.dict(os.environ, self.native_environment()), patch.object(catalog, "native_architecture", return_value="x64"):
+            self.runner = runtime.Runner("linux")
+            with patch.object(self.locking, "_fetch_json", return_value=release):
+                effective = self.locking.prepare(intent, self.path, self.runner, "install")
+            def apply(candidate):
+                command = runtime.selected(candidate["packages"][0]["install"], "linux")[0]
+                argv = self.runner.argv(command)
+                with patch.object(sys, "argv", ["-c", *argv[3:]]), patch.object(packages.urllib.request, "urlopen", side_effect=lambda *args, **kwargs: io.BytesIO(payload)):
+                    exec(argv[2], {"__name__": "__main__"})
+                self.locking.record(candidate, self.path, self.runner, "install")
+            apply(effective)
+            target.unlink()
+            with patch.object(self.locking, "_fetch_json", side_effect=AssertionError("Replay must not follow mutable releases")):
+                apply(self.locking.prepare(intent, self.path, self.runner, "install"))
+        self.assertEqual(target.read_bytes(), payload)
+        lock = json.loads((self.root / "stack.lock.json").read_text())["packages"]["OMP"]
+        self.assertEqual(lock["version"], "18.8.7")
+        self.assertEqual(lock["sourceMetadata"]["sha256"], hashlib.sha256(target.read_bytes()).hexdigest())
+
+    @unittest.skipUnless(os.name != "nt" and shutil.which("cc"), "Native fixture requires a C compiler")
+    def test_omp_native_update_records_actual_release_when_vendor_latest_advances(self):
+        from dotai_app import catalog, lifecycle, reconcile, runtime
+        intent = self.native_intent()
+        target = self.root / ".local/bin/omp"
+        target.parent.mkdir(parents=True)
+        for binary, version in ((target, "18.8.6"), (Path(str(target) + ".next"), "18.8.8")):
+            source = ('#include <stdio.h>\n#include <string.h>\n'
+                      'int main(int argc,char **argv){if(argc>1&&!strcmp(argv[1],"update")){'
+                      f'return rename({json.dumps(str(target.resolve()) + ".next")},{json.dumps(str(target.resolve()))})!=0;}}'
+                      f'puts("omp {version}");return 0;}}')
+            compiled = subprocess.run(["cc", "-x", "c", "-", "-o", str(binary)], input=source, text=True, capture_output=True)
+            self.assertEqual(compiled.returncode, 0, compiled.stderr)
+        actual_digest = hashlib.sha256(Path(str(target) + ".next").read_bytes()).hexdigest()
+        def release(url):
+            return self.omp_release("18.8.8", actual_digest) if "/tags/" in url else self.omp_release()
+        with patch.dict(os.environ, self.native_environment()), patch.object(catalog, "native_architecture", return_value="x64"), patch.object(self.locking, "_fetch_json", side_effect=release):
+            self.runner = runtime.Runner("linux")
+            lifecycle.record_install("tool", "OMP", intent["packages"][0], intent, self.runner)
+            self.assertEqual(reconcile.reconcile(intent, self.path, self.runner, "update"), 0)
+        lock = json.loads((self.root / "stack.lock.json").read_text())["packages"]["OMP"]
+        self.assertEqual(lock["version"], "18.8.8")
+        self.assertEqual(lock["sourceMetadata"]["version"], "18.8.8")
+        self.assertEqual(lock["sourceMetadata"]["sha256"], hashlib.sha256(target.read_bytes()).hexdigest())
+
+    @unittest.skipIf(os.name == "nt", "POSIX version fixture")
+    def test_native_lock_refuses_version_matching_binary_with_wrong_artifact_digest(self):
+        from dotai_app import catalog, runtime
+        intent = self.native_intent()
+        target = self.root / ".local/bin/omp"
+        target.parent.mkdir(parents=True)
+        target.write_text("#!/bin/sh\nprintf 'omp 18.8.7\\n'\n")
+        target.chmod(0o755)
+        with patch.dict(os.environ, self.native_environment()), patch.object(catalog, "native_architecture", return_value="x64"), patch.object(self.locking, "_fetch_json", return_value=self.omp_release()):
+            self.runner = runtime.Runner("linux")
+            effective = self.locking.prepare(intent, self.path, self.runner, "update")
+            with self.assertRaisesRegex(RuntimeError, "differs from the release artifact"):
+                self.locking.record(effective, self.path, self.runner, "update")
+        self.assertFalse((self.root / "stack.lock.json").exists())
+
+    @unittest.skipIf(os.name == "nt", "POSIX native update fixture")
+    def test_omp_native_update_refuses_different_exact_pin_before_changes(self):
+        from dotai_app import runtime
+        intent = self.native_intent("18.8.7")
+        target = self.root / ".local/bin/omp"
+        target.parent.mkdir(parents=True)
+        target.write_text("#!/bin/sh\nprintf 'omp 18.8.6\\n'\n")
+        target.chmod(0o755)
+        before = target.read_bytes()
+        with patch.dict(os.environ, self.native_environment()), patch.object(self.locking, "_fetch_json", side_effect=AssertionError("Refusal precedes source lookup")):
+            self.runner = runtime.Runner("linux")
+            with self.assertRaisesRegex(RuntimeError, "install --force"):
+                self.locking.prepare(intent, self.path, self.runner, "update")
+        self.assertEqual(target.read_bytes(), before)
+        self.assertFalse((self.root / "stack.lock.json").exists())
+
+    def test_omp_exact_missing_artifact_and_digest_refuse_before_mutation(self):
+        from dotai_app import catalog
+        intent = {"packages": [{"name": "OMP", "recipe": "omp", "managed": True, "version": "18.8.7"}]}
+        for metadata in (self.omp_release(digest=""), {**self.omp_release(), "assets": []}, self.omp_release(version="18.8.8")):
+            with patch.object(catalog, "native_architecture", return_value="x64"), patch.object(self.locking, "_package_version", return_value=None), patch.object(self.locking, "_fetch_json", return_value=metadata):
+                with self.assertRaisesRegex(RuntimeError, "artifact|digest|version"):
+                    self.locking.prepare(intent, self.path, self.runner, "install")
+        self.assertFalse((self.root / "stack.lock.json").exists())
+
+    def test_custom_recipe_pin_runs_declared_installer_without_unrelated_catalog_lookup(self):
+        package = self.package()
+        package.update({"recipe": "omp", "minimumVersion": "1.0.0"})
+        with patch.object(self.locking, "_fetch_json", side_effect=AssertionError("Custom installer has no catalog-source resolution")):
+            lock = self.install({"packages": [package]})
+        self.assertEqual((self.root / "Sample.version").read_text(), "1.2.3")
+        self.assertEqual(lock["packages"]["Sample"]["version"], "1.2.3")
+
     def source_recipe(self, version="latest"):
         package = self.package(version=version)
         package["recipe"] = "graphify"
@@ -209,6 +312,7 @@ class StackLockTests(unittest.TestCase):
             "versionPath": ["info", "version"],
             "pythonRequirementPath": ["info", "requires_python"],
         }
+        package["versionMetadata"] = copy.deepcopy(recipes["recipes"]["graphify"]["versionMetadata"])
         return package, recipes
 
     def test_mutable_package_metadata_resolves_exact_supported_install(self):

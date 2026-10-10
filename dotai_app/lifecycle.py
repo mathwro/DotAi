@@ -7,15 +7,14 @@ import hashlib
 import json
 import os
 from pathlib import Path
-import shlex
 import shutil
 import re
 import tempfile
-from typing import Any
+from typing import Any, Callable
 from urllib.parse import urlsplit, urlunsplit
 
 from . import manifest as manifests
-from . import mcp, omp, packages, prerequisites, runtime, skills, terminal
+from . import catalog, locking, mcp, omp, packages, prerequisites, runtime, skills, terminal
 
 COLLECTIONS = {"tool": ("packages", "name"), "skill": ("skills", "source"),
                "plugin": ("plugins", "id"), "marketplace": ("marketplaces", "name")}
@@ -109,7 +108,7 @@ def component_key(kind: str, identity: str, value: dict[str, Any], manifest: dic
         target = omp.extension_identity(identity)
     elif kind == "tool":
         target = str(runtime.home_dir())
-    source = value.get("source", value.get("recipe", ""))
+    source = value["recipe"] if kind == "tool" and value.get("recipe") else value.get("source", "")
     return hashlib.sha256(json.dumps([kind, identity, scope, source, target]).encode()).hexdigest()
 
 
@@ -129,7 +128,14 @@ def read_receipts() -> dict[str, Any]:
     return data.get("components", {})
 
 
-def write_receipts(receipts: dict[str, Any]) -> None:
+def write_receipts(receipts: dict[str, Any], runner: runtime.Runner | None = None) -> None:
+    if runner is not None:
+        if runner.dry_run:
+            runner.record_outcome("Component ownership receipts", "planned")
+            return
+        if receipts == read_receipts():
+            runner.record_outcome("Component ownership receipts", "unchanged")
+            return
     target = receipt_path()
     target.parent.mkdir(parents=True, exist_ok=True)
     temporary = None
@@ -139,6 +145,8 @@ def write_receipts(receipts: dict[str, Any]) -> None:
             json.dump({"version": 1, "components": receipts}, handle, indent=2)
             handle.write("\n")
         os.replace(temporary, target)
+        if runner is not None:
+            runner.record_outcome("Component ownership receipts", "changed")
     finally:
         if temporary is not None:
             temporary.unlink(missing_ok=True)
@@ -170,6 +178,43 @@ def fingerprint(path: Path) -> str:
     return digest.hexdigest()
 
 
+def tool_backend_fingerprint(root: Path) -> str:
+    """Hash a manager-owned tree without following its dependency symlinks."""
+    root = canonical_home_path(root)
+    if not root.is_absolute() or root.resolve() != root or root.is_symlink() or not root.is_dir():
+        raise runtime.DotAiError("Tool backend root is missing or redirected; refusing ownership")
+    digest = hashlib.sha256()
+    digest.update(str(root.stat().st_mode).encode())
+
+    def unreadable(error: OSError) -> None:
+        raise error
+
+    for directory, folders, files in os.walk(root, followlinks=False, onerror=unreadable):
+        folders.sort()
+        files.sort()
+        for name in (*folders, *files):
+            path = Path(directory) / name
+            relative = path.relative_to(root)
+            if path.suffix == ".pyc" and "__pycache__" in relative.parts[:-1] and not path.is_symlink():
+                continue
+            if path.name == "__pycache__" and path.is_dir() and not path.is_symlink():
+                continue
+            mode = path.lstat().st_mode
+            if path.is_symlink() or (path.is_dir() and path.resolve() != path):
+                entry = ["link", relative.as_posix(), mode, os.readlink(path)]
+                if name in folders:
+                    folders.remove(name)
+            elif path.is_dir():
+                entry = ["directory", relative.as_posix(), mode]
+            elif path.is_file():
+                entry = ["file", relative.as_posix(), mode, fingerprint(path)]
+            else:
+                raise runtime.DotAiError("Unsupported content in tool backend root; refusing ownership")
+            digest.update(json.dumps(entry, separators=(",", ":")).encode())
+            digest.update(b"\n")
+    return digest.hexdigest()
+
+
 def skill_receipt(skill: dict[str, Any]) -> dict[str, Any] | None:
     return read_receipts().get(component_key("skill", skill["source"], skill, {}))
 
@@ -188,19 +233,14 @@ def skill_receipt_owned(skill: dict[str, Any]) -> bool:
         return False
 
 
-def tool_value(value: dict[str, Any]) -> dict[str, Any]:
-    if value.get("recipe"):
-        from . import catalog
-        return catalog.resolve_package(value)
-    return value
+def tool_value(value: dict[str, Any], platform: str | None = None) -> dict[str, Any]:
+    """Resolve operation metadata without imposing the desired install pin."""
+    return value if "check" in value else catalog.resolve_uninstall(value, platform)
+
 
 def checked_tool_path(value: dict[str, Any], runner: runtime.Runner) -> Path | None:
-    check = runtime.selected(tool_value(value).get("check", []), runner.platform)
-    words = shlex.split(check, posix=runner.platform != "windows") if isinstance(check, str) else check
-    if not words or any(token in {";", "&&", "||", "|"} for token in words):
-        raise runtime.DotAiError("Tool ownership requires a direct executable check command")
-    executable = shutil.which(runner._format(words[0]), path=runner.env.get("PATH"))
-    return canonical_home_path(Path(executable).absolute()) if executable else None
+    path = packages.checked_package_path(tool_value(value, runner.platform), runner)
+    return canonical_home_path(path.parent.resolve() / path.name) if path is not None else None
 
 
 
@@ -300,27 +340,48 @@ def observation(kind: str, identity: str, value: dict[str, Any], manifest: dict[
             paths[str(catalog_path)] = fingerprint(catalog_path)
         return {"present": True, "active": True, "paths": paths,
                 "registryDigest": hashlib.sha256(json.dumps(entry, sort_keys=True).encode()).hexdigest()}
-    effective = tool_value(value)
+    effective = tool_value(value, runner.platform)
     check = runtime.selected(effective.get("check", []), runner.platform)
-    if not check or not packages.package_check(effective, runner):
+    if not check or not runner.succeeds(check):
         return {"present": False, "active": False}
     path = checked_tool_path(value, runner)
     if path is None:
-        raise runtime.DotAiError("Cannot resolve the checked tool executable for ownership")
+        raise runtime.DotAiError("Tool ownership is UNVERIFIED: the check does not identify an independent tool executable; use a direct matching binary and optional ownershipPath")
     if effective.get("ownershipPath") and canonical_home_path(runtime.expand_path(effective["ownershipPath"]).absolute()) != path:
         raise runtime.DotAiError("Tool ownershipPath does not match its checked executable")
     if path.parent.resolve() != path.parent:
         raise runtime.DotAiError("Tool launcher directory is redirected; refusing ownership")
-    target = path.resolve(strict=True)
+    expected_target = None
+    backend_root = None
+    if value.get("recipe") and "install" not in value and "pinInstall" not in value:
+        for operation in ("install", "uninstall", "update"):
+            expected = catalog.tool_recipe_targets(value, runner, operation)
+            if expected is not None and expected.get("launcher") == str(path):
+                expected_target = expected.get("target")
+                backend_root = expected.get("root")
+                break
+    target = catalog.tool_launcher_target(path, runner, expected_target=expected_target)
     snapshot = {"present": True, "active": True, "paths": {str(target): fingerprint(target)}}
+    guard = path.with_suffix(".shim")
+    if runner.platform == "windows" and guard.is_file():
+        snapshot["paths"][str(guard)] = fingerprint(guard)
+    if path != target and not path.is_symlink():
+        snapshot["paths"][str(path)] = fingerprint(path)
     if path.is_symlink():
         snapshot["launcher"] = {"path": str(path), "target": os.readlink(path)}
+    if backend_root is not None:
+        root = canonical_home_path(Path(backend_root))
+        snapshot["backendRoot"] = {"path": str(root), "digest": tool_backend_fingerprint(root)}
     return snapshot
 
 
 def record_install(kind: str, identity: str, value: dict[str, Any], manifest: dict[str, Any], runner: runtime.Runner) -> None:
     """Called only after a successful permitted installation/configuration or adoption."""
     if runner.dry_run:
+        return
+    if kind == "tool" and checked_tool_path(value, runner) is None:
+        print(f"{terminal.badge('UNVERIFIED')} Tool {safe_label(identity)}: installation succeeded, but the custom check cannot prove an independent binary; no ownership receipt was granted.")
+        runner.record_outcome(f"Tool {identity} ownership receipt", "skipped", "Custom check does not identify an independent tool executable")
         return
     snapshot = observation(kind, identity, value, manifest, runner)
     if not snapshot.get("present") and not (kind == "extension" and snapshot.get("paths")):
@@ -333,7 +394,7 @@ def record_install(kind: str, identity: str, value: dict[str, Any], manifest: di
     receipts[key] = {"kind": kind, "id": identity, "scope": value.get("agent", value.get("scope", "user")),
                      "source": value.get("source"), "snapshot": snapshot,
                      "revision": value.get("revision"), "installerVersion": value.get("installerVersion")}
-    write_receipts(receipts)
+    write_receipts(receipts, runner)
 
 
 def prove_owned(kind: str, identity: str, value: dict[str, Any], manifest: dict[str, Any], snapshot: dict[str, Any]) -> dict[str, Any]:
@@ -345,13 +406,85 @@ def prove_owned(kind: str, identity: str, value: dict[str, Any], manifest: dict[
     raise runtime.DotAiError(f"Cannot modify {kind} {safe_label(identity)}: ownership is unproven or content has changed; adopt matching content explicitly or resolve it manually")
 
 
-def check_update_ownership(kind: str, identity: str, value: dict[str, Any], manifest: dict[str, Any], runner: runtime.Runner) -> None:
+def check_tool_recipe_target(value: dict[str, Any], runner: runtime.Runner, operation: str) -> None:
+    """Bind generated mutations to the executable footprint they actually manage."""
+    expected = catalog.tool_recipe_targets(value, runner, operation)
+    if expected is None:
+        return
+    launcher = checked_tool_path(value, runner)
+    if launcher is None or str(launcher) != expected["launcher"]:
+        raise runtime.DotAiError("Reviewed tool recipe does not manage the checked launcher; supply an explicit custom operation or use the recipe's matching executable")
+    target = catalog.tool_launcher_target(launcher, runner, expected_target=expected.get("target"))
+    if "target" in expected and str(target) != expected["target"]:
+        raise runtime.DotAiError("Reviewed tool recipe does not manage the checked backend; refusing mutation")
+    if expected.get("root"):
+        observed = observation("tool", value["name"], value, {"packages": [value]}, runner)
+        if observed.get("backendRoot", {}).get("path") != expected["root"]:
+            raise runtime.DotAiError("Generated manager operation requires complete backend ownership; custom installers need an explicit reviewed operation or adoption of the unmodified catalog recipe")
+    if expected.get("guard"):
+        guard = Path(expected["guard"])
+        if hashlib.sha256(guard.read_bytes()).hexdigest() != expected.get("guardDigest"):
+            raise runtime.DotAiError("Tool forwarding metadata changed; refusing mutation")
+
+
+def check_update_ownership(kind: str, identity: str, value: dict[str, Any], manifest: dict[str, Any], runner: runtime.Runner, *, operation: str = "update") -> None:
     """Preflight an existing component before an explicit domain update."""
-    snapshot = observation(kind, identity, value, manifest, runner)
+    if kind == "tool":
+        if value.get("managed") is not True:
+            raise runtime.DotAiError("Tool mutation requires managed:true and proven ownership")
+        expected = catalog.tool_recipe_targets(value, runner, operation)
+        if operation == "install" and expected is not None:
+            definition = catalog.load_catalog()["recipes"][value["recipe"]]
+            direct_check = runtime.selected(value.get("check", definition.get("check", [])), runner.platform)
+            reviewed_check = runtime.selected(definition.get("check", []), runner.platform)
+            targets = list(dict.fromkeys(expected[field] for field in ("launcher", "target", "root", "guard") if field in expected))
+            if direct_check == reviewed_check and not any(Path(path).exists() or Path(path).is_symlink() for path in targets):
+                print("  New managed installation scope: " + ", ".join(safe_label(path) for path in targets))
+                return
+        observed = observation(kind, identity, value, manifest, runner)
+        if not observed.get("present"):
+            candidate = checked_tool_path(value, runner)
+            expected = catalog.tool_recipe_targets(value, runner, operation)
+            receipt = read_receipts().get(component_key(kind, identity, value, manifest))
+            paths = list(receipt.get("snapshot", {}).get("paths", {})) if receipt else []
+            if receipt and receipt.get("snapshot", {}).get("launcher", {}).get("path"):
+                paths.append(receipt["snapshot"]["launcher"]["path"])
+            if receipt and receipt.get("snapshot", {}).get("backendRoot", {}).get("path"):
+                paths.append(receipt["snapshot"]["backendRoot"]["path"])
+            if candidate is not None:
+                paths.append(str(candidate))
+            if expected is not None:
+                paths.extend(expected[key] for key in ("launcher", "target", "guard", "root") if key in expected)
+            if any(Path(path).exists() or Path(path).is_symlink() for path in paths):
+                raise runtime.DotAiError("Tool check failed but existing executable or backend remains; ownership cannot authorize replacement")
+            return
+        check_tool_recipe_target(value, runner, operation)
+    if kind == "mcp":
+        receipt = read_receipts().get(component_key(kind, identity, value, manifest))
+        original = receipt.get("snapshot", {}) if receipt else {}
+        target = mcp.safe_mcp_target(mcp.desired_mcp(manifest)[0])
+        matching = [
+            (found, path, section, enabled)
+            for alias, found, path, section, enabled in mcp.discover_mcp_servers(target)
+            if alias == original.get("alias") and section == "mcpServers"
+            and str(canonical_home_path(path.absolute())) == str(target)
+        ]
+        if len(matching) != 1:
+            raise runtime.DotAiError("MCP alias ownership is unavailable; adopt matching configuration explicitly")
+        found, path, section, enabled = matching[0]
+        snapshot = {
+            "present": True, "active": enabled, "path": str(target), "section": section,
+            "alias": original["alias"],
+            "digest": hashlib.sha256(json.dumps(found, sort_keys=True).encode()).hexdigest(),
+        }
+    else:
+        snapshot = observed if kind == "tool" else observation(kind, identity, value, manifest, runner)
     prove_owned(kind, identity, value, manifest, snapshot)
     # Refreshing a catalog does not remove installed plugin dependents.
     if kind != "marketplace":
         ensure_unshared(kind, identity, value, manifest, snapshot, runner)
+    if kind == "tool":
+        print("  Verified managed mutation scope: " + ", ".join(safe_label(path) for path in _tool_scope_paths(snapshot)))
 
 
 def ensure_unshared(kind: str, identity: str, value: dict[str, Any], manifest: dict[str, Any], snapshot: dict[str, Any], runner: runtime.Runner) -> None:
@@ -395,10 +528,22 @@ def ensure_unshared(kind: str, identity: str, value: dict[str, Any], manifest: d
                             raise runtime.DotAiError("Plugin cache is shared with another installation; refusing destructive lifecycle operation")
     elif kind == "tool":
         owned_paths = set(snapshot.get("paths", {}))
+        backend_root = snapshot.get("backendRoot", {}).get("path")
         for other in manifest.get("packages", []):
             if other["name"] == identity or not other.get("enabled", True):
                 continue
             executable = checked_tool_path(other, runner)
+            if executable is not None and backend_root is not None:
+                expected_target = None
+                if other.get("recipe"):
+                    for operation in ("install", "uninstall", "update"):
+                        expected = catalog.tool_recipe_targets(other, runner, operation)
+                        if expected is not None and expected.get("launcher") == str(executable):
+                            expected_target = expected.get("target")
+                            break
+                target = catalog.tool_launcher_target(executable, runner, expected_target=expected_target)
+                if executable.is_relative_to(Path(backend_root)) or target.is_relative_to(Path(backend_root)):
+                    raise runtime.DotAiError("Tool backend environment contains another declared tool; refusing shared mutation")
             if executable is not None and str(executable.resolve()) in owned_paths:
                 raise runtime.DotAiError("Tool binary is shared by another enabled declaration; refusing uninstall")
 
@@ -413,6 +558,10 @@ def run_command(command: str | list[str], label: str, runner: runtime.Runner) ->
 def write_mcp_config(target: Path, config: dict[str, Any], runner: runtime.Runner) -> None:
     target = mcp.safe_mcp_target(target)
     if runner.dry_run:
+        runner.record_outcome("MCP runtime configuration", "planned")
+        return
+    if mcp.load_mcp_config(target) == config:
+        runner.record_outcome("MCP runtime configuration", "unchanged")
         return
     if target.exists():
         manifests.backup_manifest(target)
@@ -424,12 +573,13 @@ def write_mcp_config(target: Path, config: dict[str, Any], runner: runtime.Runne
             json.dump(config, handle, indent=2)
             handle.write("\n")
         os.replace(temporary, target)
+        runner.record_outcome("MCP runtime configuration", "changed")
     finally:
         if temporary is not None:
             temporary.unlink(missing_ok=True)
 
 
-def mutate_runtime(kind: str, identity: str, value: dict[str, Any], manifest: dict[str, Any], runner: runtime.Runner, action: str) -> None:
+def mutate_runtime(kind: str, identity: str, value: dict[str, Any], manifest: dict[str, Any], runner: runtime.Runner, action: str, *, activate: Callable[[dict[str, Any]], int] | None = None) -> None:
     if kind == "tool" and value.get("managed") is not True:
         raise runtime.DotAiError("Tool lifecycle mutation requires managed:true; explicitly adopt the matching executable first")
     snapshot = observation(kind, identity, value, manifest, runner)
@@ -457,13 +607,28 @@ def mutate_runtime(kind: str, identity: str, value: dict[str, Any], manifest: di
                     shutil.move(str(stored), str(active))
                 else:
                     shutil.rmtree(stored)
+                runner.record_outcome(f"{action.capitalize()} stored skill {active.name}", "changed")
             if enabling:
                 record_install(kind, identity, value, manifest, runner)
             else:
                 receipts.pop(key)
-                write_receipts(receipts)
+                write_receipts(receipts, runner)
+        else:
+            runner.record_outcome(f"{action.capitalize()} stored skill selection", "planned")
         return
     if not snapshot.get("present"):
+        if kind == "tool" and not enabling:
+            owned = receipt.get("snapshot", {}) if receipt else {}
+            paths = list(owned.get("paths", {}))
+            candidate = checked_tool_path(value, runner)
+            if candidate is not None:
+                paths.append(str(candidate))
+            if owned.get("launcher", {}).get("path"):
+                paths.append(owned["launcher"]["path"])
+            if owned.get("backendRoot", {}).get("path"):
+                paths.append(owned["backendRoot"]["path"])
+            if any(Path(path).exists() or Path(path).is_symlink() for path in paths):
+                raise runtime.DotAiError("Tool check failed but executable or backend remains; refusing to retire its declaration or receipt")
         if enabling:
             if kind == "mcp":
                 mcp.safe_mcp_target(mcp.desired_mcp(manifest)[0])
@@ -473,38 +638,26 @@ def mutate_runtime(kind: str, identity: str, value: dict[str, Any], manifest: di
             replace_declaration(selected, kind, identity, original, {**original, "enabled": True})
             if kind == "extension" and receipt:
                 prove_owned(kind, identity, value, manifest, snapshot)
-            if not prerequisites.preflight(selected, runner, "install"):
-                raise runtime.DotAiError("Component prerequisites are unavailable; install them externally and retry")
-            if kind == "skill":
-                run_command(skills.skill_command(value), f"Enable skill source {safe_label(identity)}", runner)
-            elif kind == "plugin":
-                omp.reconcile_plugins(selected, runner, "install")
-            elif kind == "marketplace":
-                omp.reconcile_plugins(selected, runner, "install")
-            elif kind == "mcp":
-                mcp.sync_mcp(selected, runner)
-            elif kind == "extension":
-                omp.reconcile_omp_extensions(selected, runner)
-            else:
-                effective = tool_value(value)
-                commands = runtime.selected(effective.get("install", []), runner.platform)
-                if not commands:
-                    raise runtime.DotAiError("Tool enable is unsupported without install commands")
-                for command in commands:
-                    run_command(command, f"Enable tool {safe_label(identity)}", runner)
-            if runner.failures:
+            if activate is None:
+                raise runtime.DotAiError("Missing component activation requires the resolved installation coordinator")
+            if activate(selected) != 0:
                 raise runtime.DotAiError("Component activation failed; declaration remains unchanged")
-            if not runner.dry_run:
-                record_install(kind, identity, value, manifest, runner)
         elif action == "uninstall" and receipt and not runner.dry_run:
             receipts.pop(key)
-            write_receipts(receipts)
+            write_receipts(receipts, runner)
+        if not enabling and not receipt:
+            runner.record_outcome(f"{kind.capitalize()} {identity}", "unchanged", "Not installed or registered")
         return
     if action != "uninstall" and snapshot.get("active") == enabling:
+        runner.record_outcome(f"{kind.capitalize()} {identity}", "unchanged", "Activation already matches")
         return
     receipt = prove_owned(kind, identity, value, manifest, snapshot)
+    if kind == "tool":
+        check_tool_recipe_target(value, runner, "uninstall")
     ensure_unshared(kind, identity, value, manifest, snapshot, runner)
     print(f"{terminal.badge('RUN')} {action.capitalize()} {kind} {safe_label(identity)}: verified ownership and unchanged content")
+    if kind == "tool":
+        print("  Managed removal scope: " + ", ".join(safe_label(path) for path in _tool_scope_paths(snapshot)))
     if kind == "skill":
         storage = {}
         for path, digest in snapshot["paths"].items():
@@ -512,6 +665,7 @@ def mutate_runtime(kind: str, identity: str, value: dict[str, Any], manifest: di
             if action == "uninstall":
                 if not runner.dry_run:
                     shutil.rmtree(folder)
+                runner.record_outcome(f"Uninstall skill {folder.name}", "planned" if runner.dry_run else "changed")
             else:
                 target = runtime.state_dir() / "disabled-skills" / key / folder.name
                 if target.exists() or target.is_symlink() or target.parent.resolve() != target.parent:
@@ -522,9 +676,12 @@ def mutate_runtime(kind: str, identity: str, value: dict[str, Any], manifest: di
                 target = Path(saved["path"])
                 target.parent.mkdir(parents=True, exist_ok=True)
                 shutil.move(active, str(target))
+                runner.record_outcome(f"Disable skill {Path(active).name}", "changed")
             receipt["storage"] = storage
             receipts[key] = receipt
-            write_receipts(receipts)
+            write_receipts(receipts, runner)
+        elif action != "uninstall":
+            runner.record_outcome(f"Disable skill selection {identity}", "planned")
     elif kind == "mcp":
         target, _ = mcp.desired_mcp(manifest)
         config = mcp.load_mcp_config(target)
@@ -554,28 +711,42 @@ def mutate_runtime(kind: str, identity: str, value: dict[str, Any], manifest: di
         else:
             run_command(["omp", "plugin", "marketplace", "remove", identity], f"Unregister marketplace {safe_label(identity)}", runner)
     else:
-        effective = tool_value(value)
+        effective = catalog.resolve_uninstall(value, runner.platform)
         commands = runtime.selected(effective.get("uninstall", []), runner.platform)
         if not commands:
             raise runtime.DotAiError("Tool uninstall/disable is unsupported; supply a reviewed catalog or custom uninstall command")
         for command in commands:
             run_command(command, f"{action.capitalize()} tool {safe_label(identity)}", runner)
+        if not runner.dry_run:
+            root = snapshot.get("backendRoot", {}).get("path")
+            if root and (Path(root).exists() or Path(root).is_symlink()):
+                raise runtime.DotAiError("Tool removal left its owned backend environment; declaration and ownership receipt remain unchanged")
+            if any(Path(path).exists() or Path(path).is_symlink() for path in snapshot.get("paths", {})):
+                raise runtime.DotAiError("Tool removal did not remove its owned target; runtime may be partially changed, declaration and ownership receipt remain unchanged")
+            launcher = snapshot.get("launcher", {}).get("path")
+            if launcher and (Path(launcher).exists() or Path(launcher).is_symlink()):
+                raise runtime.DotAiError("Tool removal left its owned launcher; declaration and ownership receipt remain unchanged")
+            if observation(kind, identity, value, manifest, runner).get("present"):
+                print(f"{terminal.badge('INACTIVE')} Owned copy removed; another installation remains available and was not changed")
     if not runner.dry_run:
         if action == "uninstall":
             receipts.pop(key, None)
-            write_receipts(receipts)
+            write_receipts(receipts, runner)
         elif kind not in {"skill", "marketplace", "tool"}:
             record_install(kind, identity, value, manifest, runner)
 
 
 def ensure_disabled(kind: str, identity: str, value: dict[str, Any], manifest: dict[str, Any], runner: runtime.Runner) -> bool:
+    before = len(runner.outcomes)
     try:
         mutate_runtime(kind, identity, value, manifest, runner, "disable")
         print(f"{terminal.badge('INACTIVE')} {kind.capitalize()} {safe_label(identity)}: inactive; enabled is false")
+        if len(runner.outcomes) == before:
+            runner.record_outcome(f"{kind.capitalize()} {identity}", "unchanged", "Already inactive")
         return True
     except (OSError, ValueError, runtime.DotAiError) as exc:
-        runner.failures.append(str(exc))
-        print(f"{terminal.badge('DRIFT')} {kind.capitalize()} {safe_label(identity)}: {safe_label(exc)}")
+        if not runner.failures:
+            runner.fail(f"{kind.capitalize()} {safe_label(identity)}", str(exc))
         return False
 
 
@@ -621,13 +792,22 @@ def register_commands(subparsers: Any) -> None:
             parser.add_argument("--uninstall", action="store_true", help="Also remove only proven, unchanged, independent runtime content")
 
 
-def inventory(kind: str, identity: str, value: dict[str, Any], manifest: dict[str, Any], runner: runtime.Runner) -> None:
+def _tool_scope_paths(observed: dict[str, Any]) -> list[str]:
+    root = observed.get("backendRoot", {}).get("path")
+    paths = list(observed.get("paths", {}))
+    launcher = observed.get("launcher", {}).get("path")
+    if launcher and launcher not in paths:
+        paths.append(launcher)
+    return ([root] + [path for path in paths if not Path(path).is_relative_to(Path(root))]) if root else paths
+
+
+def inventory(kind: str, identity: str, value: dict[str, Any], manifest: dict[str, Any], runner: runtime.Runner, manifest_path: Path | None = None) -> None:
     try:
         observed = observation(kind, identity, value, manifest, runner)
         receipt = read_receipts().get(component_key(kind, identity, value, manifest))
         owned = (skill_receipt_owned(value) or skills.skill_source_owned(value, skills.skill_owners())) if kind == "skill" else bool(receipt and receipt.get("snapshot") == observed)
         state = "active" if observed.get("active") else "inactive" if observed.get("present") else "not installed/registered"
-        paths = list(observed.get("paths", {})) or ([observed["path"]] if "path" in observed else [])
+        paths = _tool_scope_paths(observed) if kind == "tool" else list(observed.get("paths", {})) or ([observed["path"]] if "path" in observed else [])
     except (OSError, ValueError, runtime.DotAiError) as exc:
         observed, owned, paths = {}, False, []
         state = "unverified: " + safe_label(exc)
@@ -636,14 +816,43 @@ def inventory(kind: str, identity: str, value: dict[str, Any], manifest: dict[st
     print(f"  Desired: {'enabled' if value.get('enabled', True) else 'disabled'}; management: {'declared' if managed else 'unmanaged'}")
     print(f"  Observed: {state}; ownership: {'proven, unchanged' if owned else 'unproven or modified; explicit adoption required'}")
     print(f"  Scope: {value.get('agent', value.get('scope', 'user'))}; source: {safe_label(value.get('source', value.get('recipe', value.get('url', value.get('path', identity)))))}")
-    print(f"  Version/revision: desired {safe_label(value.get('revision', value.get('version', 'unspecified')))}; observed {safe_label(observed.get('version', 'not recorded'))}")
+    observed_version = observed.get("version", "not recorded")
+    if kind == "tool" and observed.get("present"):
+        check = runtime.selected(tool_value(value, runner.platform).get("check", []), runner.platform)
+        valid, output = packages.package_version_check({}, runner, check)
+        match = packages.PACKAGE_VERSION_PATTERN.search(output) if valid else None
+        if match:
+            observed_version = ".".join(part or "0" for part in match.groups())
+    print(f"  Version/revision: desired {safe_label(value.get('revision', value.get('version', 'unspecified')))}; observed {safe_label(observed_version)}")
     if value.get("installerVersion"):
         print(f"  Installer version: {safe_label(value['installerVersion'])}")
     if paths:
         print("  Paths: " + ", ".join(safe_label(path) for path in paths))
+    if manifest_path is not None:
+        try:
+            facts = locking.load(manifest_path)
+            section = {"tool": "packages", "skill": "skills", "plugin": "plugins"}.get(kind)
+            key = identity + "|" + value.get("agent", "universal") if kind == "skill" else identity + "|" + value.get("scope", "user") if kind == "plugin" else identity
+            record = facts.get(section, {}).get(key, {}) if section else {}
+            resolved = record.get("revision", record.get("version"))
+            if resolved and resolved != "latest":
+                print(f"  Reviewed lock target: {terminal.redact(safe_label(resolved))}; recorded for {terminal.redact(record.get('platform', 'unknown platform'))}.")
+            else:
+                print("  Reviewed lock target: not recorded; desired latest is not an observed version.")
+            if record.get("installerVersion"):
+                print(f"  Reviewed installer: skills@{terminal.redact(record['installerVersion'])} from the npm skills registry; source revision {terminal.redact(record.get('revision', 'not recorded'))}.")
+            elif kind == "tool":
+                origin = ("explicit custom manifest commands" if "install" in value or "pinInstall" in value or not value.get("recipe")
+                          else "reviewed catalog recipe " + value["recipe"])
+                print(f"  Installer origin: {terminal.redact(origin)}; no installer or source lookup performed.")
+            metadata = record.get("sourceMetadata", {})
+            if isinstance(metadata, dict) and isinstance(metadata.get("url"), str):
+                print(f"  Recorded installer source: {terminal.redact(safe_label(metadata['url']))}.")
+        except (OSError, ValueError, runtime.DotAiError) as exc:
+            print(f"  Reviewed lock target: UNVERIFIED; {terminal.redact(exc)}")
 
 
-def dispatch(args: argparse.Namespace, manifest: dict[str, Any], path: Path, runner: runtime.Runner) -> int:
+def dispatch(args: argparse.Namespace, manifest: dict[str, Any], path: Path, runner: runtime.Runner, *, activate: Callable[[dict[str, Any], dict[str, Any]], int] | None = None) -> int:
     command = args.command
     if command == "list":
         view = filter_manifest(manifest, getattr(args, "selectors", []))
@@ -651,11 +860,11 @@ def dispatch(args: argparse.Namespace, manifest: dict[str, Any], path: Path, run
         if not entries:
             print(f"{terminal.badge('INACTIVE')} No components declared in this selection")
         for kind, identity, value in entries:
-            inventory(kind, identity, value, manifest, runner)
+            inventory(kind, identity, value, manifest, runner, path)
         return 0
     kind, identity, value = resolve_selector(manifest, args.selector)
     if command == "show":
-        inventory(kind, identity, value, manifest, runner)
+        inventory(kind, identity, value, manifest, runner, path)
         return 0
     candidate = deepcopy(manifest)
     selected = resolve_selector(candidate, args.selector)[2]
@@ -692,16 +901,24 @@ def dispatch(args: argparse.Namespace, manifest: dict[str, Any], path: Path, run
             raise runtime.DotAiError("Extension source is unavailable; cannot adopt it")
         if not runner.dry_run:
             record_install(kind, identity, value, manifest, runner)
+        else:
+            runner.record_outcome(f"{kind.capitalize()} {identity} ownership receipt", "planned")
     elif command == "remove" and getattr(args, "uninstall", False):
         mutate_runtime(kind, identity, value, manifest, runner, "uninstall")
     elif command in {"enable", "disable"}:
-        mutate_runtime(kind, identity, {**value, "enabled": command == "enable"}, manifest, runner, command)
+        mutate_runtime(kind, identity, {**value, "enabled": command == "enable"}, manifest, runner, command,
+                       activate=(lambda selected: activate(selected, candidate)) if activate is not None else None)
     changed = candidate != manifest
     if not runner.dry_run:
         if changed:
             manifests.write_manifest(path, candidate, backup=path.exists())
+            runner.record_outcome(f"{kind.capitalize()} {identity} declaration", "changed")
         manifest.clear()
         manifest.update(candidate)
+    if not changed:
+        runner.record_outcome(f"{kind.capitalize()} {identity} declaration", "unchanged")
+    elif runner.dry_run:
+        runner.record_outcome(f"{kind.capitalize()} {identity} declaration", "planned")
     outcome = "Preview only; no declarations, receipts, or runtime content changed" if runner.dry_run else "Declaration updated" if changed else "Component operation applied"
     if command == "remove" and not getattr(args, "uninstall", False):
         outcome = "Would forget declaration; installed content remains untouched" if runner.dry_run else "Forgot declaration; installed content remains untouched"

@@ -67,8 +67,8 @@ DotAi updates configuration conservatively:
 - Required header and environment references participate in MCP health. Writable target aliases can be corrected while preserving extra references; drifting external-only entries require manual resolution.
 - Managed `ompExtensions` are appended to OMP's global extension list; unrelated user extensions are retained.
 - Skill health is agent-scoped. A skill found only in a Codex plugin cache is reported as `INACTIVE` until installed for the configured OMP skill target.
-- Avoiding skill fetches requires matching source metadata and a matching GitHub folder tree hash for the configured agent's installed files; the name-only global lock cannot establish ownership of another agent's independent copy. Missing or uncertain provenance triggers a refresh, not a silent skip.
-- The skills.sh lock is read from `$XDG_STATE_HOME/skills/.skill-lock.json` when set, otherwise from `~/.agents/.skill-lock.json`. Installed universal skills remain in `~/.agents/skills/`; DotAi adds no separate ownership database. See [skill refresh behavior and limits](extending.md#add-a-skill-source).
+- Normal sync retains proven existing skill sources. Unknown provenance, local changes, or incomplete proof produce actionable `DRIFT`, never automatic replacement.
+- The skills.sh lock is read from `$XDG_STATE_HOME/skills/.skill-lock.json` when set, otherwise from `~/.agents/.skill-lock.json`. Universal skills remain in `~/.agents/skills/`. Immutable resolutions belong in the adjacent private stack lock; machine-local scoped ownership belongs in `component-receipts.json`. Neither is interchangeable with the upstream installer lock.
 - Recommended skill synchronization preserves user-added and locally modified sources by default, backs up `stack.json`, and removes installed files only for accepted retirements. With `--enforce`, an initial cleanup prompt can explicitly remove user-owned sources outside the recommendations; declining preserves them and skips their installation for that run before recommendation review continues.
 - Release checks run for `install`, `sync`, `status`, and `version`; an available newer release is shown as a warning, while network failures are ignored.
 - Dry runs never initialize a manifest or modify existing files or managed machine state.
@@ -93,6 +93,8 @@ Declare external requirements in `prerequisites` as `{name, check, minimumVersio
 
 `status` and `doctor` check only relevant prerequisites. An unused definition or an unselected platform manager does not make a stack unhealthy. Packages and integration entries can use `enabled: false` to exclude them from reconciliation and health checks.
 
+Repeated `--only kind:id` selections (including `tool`) filter the plan before recipe resolution and prerequisite preflight. Unrelated components and their requirements do not block the selected operation. Inspection with `status`, `list`, or `show` uses existing observations and never resolves mutable upstream source versions or revisions.
+
 Operation-specific `updateRequires` checks apply only when the selected package will actually use its updater. A healthy normal installation does not run updater checks; `install --force` deliberately selects the installer instead, permitting a reviewed standalone cutover without modifying an old package-manager-owned copy. A missing unsafe-updater requirement blocks the complete selected run before any dependent changes.
 
 `configureWhen` is a declarative field map: expected selections must be a subset of enabled actual selections before a package's configure commands run. RTK's extension condition is one catalog example, not special-case Python logic. Disabled extension objects do not satisfy it.
@@ -116,7 +118,7 @@ Routing is never enabled automatically by `install`, `update`, or `sync`. A sele
 1. Explicitly select OMP with `./dotai.py add component omp`, then run `./dotai.py install` (use `python dotai.py` on Windows).
 2. Run `omp` to open OMP for the first time.
 3. Inside OMP, use `/login` to authenticate GitHub Copilot, OpenAI Codex, Anthropic, or any combination of them, then return to your shell. See [OMP's provider authentication guide](https://github.com/can1357/oh-my-pi/blob/main/packages/ai/README.md#oauth-providers) for supported login flows. Authentication belongs to OMP, not to `stack.json`.
-4. Only after those prerequisites, preview the detected providers, resolved roles, manifest diff, and pending OMP commands:
+4. Only after those prerequisites, preview the detected providers, resolved roles, proposed intent changes, and pending actions in prose:
 
    ```sh
    ./dotai.py configure omp-routing --dry-run
@@ -161,36 +163,54 @@ reviewed components with, for example,
 Recipes `omp`, `rtk`, and `graphify` live in `component-recipes.json`; materialization
 only changes an in-memory copy. Explicit command fields override recipe fields,
 and a custom package without `recipe` is the escape hatch for a reviewed installer.
+Custom install/pin commands do not inherit a catalog installer's source-resolution
+metadata or supported-version restrictions. Declare `versionMetadata` explicitly
+when that resolver also applies to the custom installer. An overridden installer
+needs its own reviewed `pinInstall` to support exact replay; DotAi does not replace
+it silently with the catalog installer.
 Neither recipe selection nor installed presence grants management permission:
-package operations require explicit `managed:true`. Disabled or unmanaged recipe
-intent remains inert, so its unknown recipe or unsupported desired pin cannot
-block unrelated selected components. Explicit uninstall resolves the removal
-recipe independently of a desired installation pin.
+package operations require explicit `managed:true`; version 2 rejects `managed:false`
+or missing permission. Disabled or unselected recipe intent remains inert, so its
+unknown recipe or unsupported desired pin cannot block unrelated selected
+components. Explicit uninstall resolves the removal recipe independently of a
+desired installation pin.
 
-The default personal manifest is `%APPDATA%/DotAi/stack.json` on Windows, or
-`$XDG_CONFIG_HOME/dotai/stack.json` (normally `~/.config/dotai/stack.json`) on Unix.
-`DOTAI_CONFIG_DIR` overrides the directory. Resolving or inspecting these paths
-does not create them. An explicit manifest path keeps its own adjacent lock:
-`my-stack.json` uses `my-stack.lock.json`. The repository-local `stack.json` is
-not moved or overwritten.
+The default personal manifest is `%APPDATA%/DotAi/stack.json` on Windows
+(falling back to `~/AppData/Roaming/DotAi/stack.json` when `APPDATA` is unset),
+or `$XDG_CONFIG_HOME/dotai/stack.json` (normally `~/.config/dotai/stack.json`)
+on Unix. `DOTAI_CONFIG_DIR` overrides the directory; `DOTAI_HOME` overrides
+the home used by DotAi. Resolving or inspecting paths does not create them.
+An explicit manifest keeps its adjacent lock: `my-stack.json` uses
+`my-stack.lock.json`. `DOTAI_STATE_DIR` overrides machine-local state storage.
+The repository-local `stack.json` is not moved or overwritten.
 
 Prerequisites are checks only: Node/npm/npx, uv, Python, Git, curl, Homebrew,
 Scoop, and archive/checksum utilities must be installed by the user. Recipes
 select only the checks needed on the current platform; they never repair or
 update an external runtime or package manager.
 
-On Linux and macOS, OMP uses its [official installer](https://github.com/can1357/oh-my-pi/blob/main/scripts/install.sh)
-with `--binary`, never the Bun/source fallback. It stages and verifies the
-download before replacing `~/.local/bin/omp`. Redirected installation directories
-are refused. An explicit `install --force` may replace a launcher symlink with a
-separate standalone copy without modifying its old package-manager target.
-All platforms use `omp update` for native updates. Its [upstream updater](https://github.com/can1357/oh-my-pi/blob/main/packages/coding-agent/src/cli/update-cli.ts)
-can route Homebrew installations through an explicit `brew update`, so the
-checks-only `updateRequires` guard rejects manager-routed launchers before an
-update; use the explicit standalone cutover instead.
+On Linux and macOS, fresh or missing OMP installations and reviewed owned
+`install --force` replacements use an exact GitHub release artifact and SHA-256
+digest frozen during preparation. DotAi's `packages.install_native_release`
+downloads to a sibling staging directory, verifies the digest and staged
+`--version`, then atomically replaces `~/.local/bin/omp`. Redirected destinations
+are refused. DotAi does not bootstrap OMP's official installer or use a Bun/source
+fallback.
 
-Windows installs OMP as Scoop app `dotai-omp` using reviewed release 18.8.7
-native executables and SHA-256 digests. RTK uses reviewed release 0.50.0;
+Existing latest-policy OMP installations use guarded `omp update --stable` on all
+platforms. The explicit stable channel matches the reviewed release policy; plugin
+updates are not requested. This vendor updater selects latest at execution, not a
+frozen exact target, so the preflight available release can differ. DotAi records
+the actual numeric version and its release metadata after success, verifying that
+the installed binary matches that release's artifact digest.
+An already matching exact requested or locked target is unchanged; a differing
+target refuses native update and directs you to review an owned
+`install --force` replacement, never an installer fallback. This includes a
+resolved lock retained for latest-policy intent. The checks-only `updateRequires` guard rejects
+manager-routed launchers before the updater can mutate an external manager.
+
+Windows installs OMP as Scoop app `dotai-omp` using the resolved exact release's
+native executable and SHA-256 digest. RTK uses reviewed release 0.50.0;
 its Windows artifact is x64 only. No foreign bucket, hooks, or install scripts
 are supplied. [`scoop download`](https://github.com/ScoopInstaller/Scoop/blob/master/libexec/scoop-download.ps1)
 verifies the transient local manifest before a scoped RTK replacement.
@@ -206,7 +226,8 @@ RTK's [reviewed 0.50.0 checksums](https://github.com/rtk-ai/rtk/releases/downloa
 cover x64/arm64 Linux and macOS archives. These recipes install only
 `~/.local/bin/rtk`, with no Homebrew update, dependencies, or cleanup.
 Exact RTK pins support only this reviewed release on supported architectures.
-Arbitrary RTK and OMP pins are rejected rather than silently installing latest.
+OMP pins require an available exact release and verified artifact for the selected
+platform/architecture; unsupported or unavailable pins fail before installation.
 
 Exact Graphify pins use the supported [uv tool requirement syntax](https://docs.astral.sh/uv/concepts/tools/):
 `uv tool install --python CURRENT_CLI_PYTHON --no-python-downloads graphifyy==VERSION`.
@@ -241,9 +262,11 @@ Before a needed installation/update, DotAi resolves the actual source version
 and verifies its declared Python requirement against the interpreter running
 DotAi. Numeric comparison constraints (`>=`, `>`, `<=`, `<`, `==`, `!=`, including
 comma-separated combinations) are supported; other requirement grammars fail
-visibly, not as assumed compatibility. The execution copy uses the resolved
-exact installer path. Cached, previously resolved requirements can be reused
-for locked reinstalls without looking up latest.
+visibly, not as assumed compatibility. Exact installation paths use the resolved
+target; cached requirements can be reused for locked reinstalls without looking
+up latest. Existing latest-policy OMP native updates are the exception: the vendor
+updater chooses latest at execution and successful recording resolves metadata
+for the actual observed release, not necessarily the preflight available release.
 
 Skills resolve public GitHub repository roots to immutable 40-character commits
 and complete selected-folder tree hashes through the GitHub API. Retrieval errors,

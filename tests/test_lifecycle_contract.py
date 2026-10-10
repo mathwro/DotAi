@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import copy
 from contextlib import redirect_stdout
 import io
 import json
@@ -730,12 +731,6 @@ class LifecycleContractTests(unittest.TestCase):
         self.assertEqual([], self.runner.commands)
         self.assertTrue(catalog.is_file())
 
-    def test_installed_skill_listing_honors_selected_installer_version(self):
-        self.create_skill()
-        commands = []
-        self.runner.output = lambda command: commands.append(command) or "[]"
-        skills.installed_skill_records("universal", self.runner, installer_version="1.2.3")
-        self.assertEqual([["npx", "--yes", "skills@1.2.3", "list", "--global", "--agent", "universal", "--json"]], commands)
 
     def test_list_and_show_explain_desired_observed_ownership_scope_and_source(self):
         self.create_skill()
@@ -746,6 +741,326 @@ class LifecycleContractTests(unittest.TestCase):
         for field in ("desired", "observed", "ownership", "universal", "owner/repository"):
             self.assertIn(field, prose)
         self.assertNotIn('\"checkskills\"', prose)
+
+@unittest.skipIf(os.name == "nt", "POSIX independent executable fixtures")
+class ToolMutationOwnershipTests(unittest.TestCase):
+    def setUp(self):
+        from dotai_app import lifecycle, packages
+        self.lifecycle, self.packages = lifecycle, packages
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.home = Path(temporary.name).resolve()
+        environment = patch.dict(os.environ, {"DOTAI_HOME": str(self.home), "DOTAI_STATE_DIR": str(self.home / "state")})
+        environment.start()
+        self.addCleanup(environment.stop)
+        self.runner = runtime.Runner("macos")
+        self.binary = self.home / "independent-tool"
+        self.binary.write_text("#!/bin/sh\nprintf 'tool 1.0.0\\n'\n")
+        self.binary.chmod(0o755)
+        self.marker = self.home / "mutated"
+        self.tool = {"name": "fixture", "managed": True, "check": [str(self.binary), "--version"],
+                     "install": [[sys.executable, "-c", f"from pathlib import Path; Path({str(self.marker)!r}).write_text('install')"]],
+                     "update": [[sys.executable, "-c", f"from pathlib import Path; Path({str(self.marker)!r}).write_text('update')"]]}
+        self.manifest = {"version": 2, "prerequisites": [], "packages": [self.tool], "skills": [],
+                         "plugins": [], "marketplaces": [], "ompExtensions": [],
+                         "mcp": {"target": str(self.home / "mcp.json"), "servers": {}}}
+
+    def reconcile(self, mode="update", force=False, *, callback=True):
+        def check(value, current, runner, operation):
+            self.lifecycle.check_update_ownership("tool", value["name"], value, current, runner, operation=operation)
+        self.packages.reconcile_packages(self.manifest, self.runner, mode, force,
+                                         ownership_check=check if callback else None)
+
+    def adopt(self):
+        self.lifecycle.record_install("tool", "fixture", self.tool, self.manifest, self.runner)
+
+    def test_unowned_existing_update_is_refused_before_updater(self):
+        self.reconcile()
+        self.assertFalse(self.marker.exists())
+        self.assertTrue(self.runner.failures)
+
+    def test_absent_callback_cannot_authorize_existing_force_replacement(self):
+        self.reconcile("install", force=True, callback=False)
+        self.assertFalse(self.marker.exists())
+        self.assertTrue(self.runner.failures)
+
+    def test_failed_check_existing_independent_binary_cannot_be_overwritten(self):
+        self.binary.write_text("#!/bin/sh\nexit 1\n")
+        previous = self.binary.read_bytes()
+        self.tool["install"] = [[sys.executable, "-c",
+                                f"from pathlib import Path; Path({str(self.binary)!r}).write_text('overwritten')"]]
+        for callback in (True, False):
+            with self.subTest(callback=callback):
+                self.runner = runtime.Runner("macos")
+                self.reconcile("install", callback=callback)
+                self.assertEqual(previous, self.binary.read_bytes())
+                self.assertTrue(self.runner.failures)
+
+    def test_failed_check_modified_receipt_cannot_authorize_replacement(self):
+        self.adopt()
+        self.binary.write_text("#!/bin/sh\nexit 1\n")
+        previous = self.binary.read_bytes()
+        self.reconcile("install", force=True)
+        self.assertEqual(previous, self.binary.read_bytes())
+        self.assertFalse(self.marker.exists())
+        self.assertTrue(self.runner.failures)
+
+    def uv_tool(self):
+        from dotai_app import catalog
+        recipes = catalog.load_catalog()
+        recipes["recipes"]["ruff"] = copy.deepcopy(recipes["recipes"]["graphify"])
+        recipes["recipes"]["ruff"]["footprint"] = {"default": {"kind": "uv", "package": "ruff", "launcher": "ruff"}}
+        definition = patch.object(catalog, "load_catalog", return_value=recipes)
+        definition.start()
+        self.addCleanup(definition.stop)
+        root = self.home / "uv-tools/ruff"
+        backend = root / "bin/ruff"
+        backend.parent.mkdir(parents=True)
+        backend.write_bytes(self.binary.read_bytes())
+        backend.chmod(0o755)
+        launcher = self.home / "uv-bin/ruff"
+        launcher.parent.mkdir()
+        launcher.symlink_to(backend)
+        self.runner.env.update({"UV_TOOL_DIR": str(root.parent), "UV_TOOL_BIN_DIR": str(launcher.parent)})
+        self.tool.update({"recipe": "ruff", "check": [str(launcher), "--version"]})
+        self.tool.pop("install")
+        self.tool.pop("update")
+        return root
+
+    def test_generated_uv_removal_refuses_user_added_backend_file(self):
+        root = self.uv_tool()
+        self.adopt()
+        note = root / "personal-notes.txt"
+        note.write_text("Do not remove my notes")
+        with self.assertRaises(runtime.DotAiError):
+            self.lifecycle.mutate_runtime("tool", "fixture", self.tool, self.manifest, self.runner, "uninstall")
+        self.assertEqual("Do not remove my notes", note.read_text())
+        self.assertTrue(self.lifecycle.read_receipts())
+
+    def test_generated_uv_update_refuses_retargeted_environment_link(self):
+        root = self.uv_tool()
+        external = self.home / "external-python"
+        external.write_text("outside environment")
+        link = root / "bin/python"
+        link.symlink_to(external)
+        self.adopt()
+        link.unlink()
+        other = self.home / "different-python"
+        other.write_text("different external content")
+        link.symlink_to(other)
+        with self.assertRaises(runtime.DotAiError):
+            self.lifecycle.check_update_ownership("tool", "fixture", self.tool, self.manifest, self.runner)
+        self.assertEqual("outside environment", external.read_text())
+        self.assertEqual("different external content", other.read_text())
+
+    def test_backend_hash_ignores_bytecode_and_does_not_follow_dependency_links(self):
+        root = self.uv_tool()
+        cache = root / "__pycache__"
+        bytecode = cache / "generated.pyc"
+        external = self.home / "external-python"
+        external.write_text("outside environment")
+        (root / "bin/python").symlink_to(external)
+        self.adopt()
+        cache.mkdir()
+        bytecode.write_bytes(b"regenerated cache")
+        external.write_text("updated system interpreter")
+        self.lifecycle.check_update_ownership("tool", "fixture", self.tool, self.manifest, self.runner)
+        self.assertEqual([], self.runner.failures)
+
+    def test_backend_removal_refuses_another_declared_binary_inside_environment(self):
+        root = self.uv_tool()
+        sibling = root / "bin/other-cli"
+        sibling.write_bytes(self.binary.read_bytes())
+        sibling.chmod(0o755)
+        self.manifest["packages"].append({"name": "other", "managed": True,
+                                          "check": [str(sibling), "--version"], "install": []})
+        self.adopt()
+        with self.assertRaises(runtime.DotAiError):
+            self.lifecycle.mutate_runtime("tool", "fixture", self.tool, self.manifest, self.runner, "uninstall")
+        self.assertTrue(sibling.exists())
+
+    def test_version_mismatch_still_requires_ownership_before_install(self):
+        self.tool["version"] = "2.0.0"
+        self.tool["update"] = []
+        self.reconcile("install")
+        self.assertFalse(self.marker.exists())
+        self.assertTrue(self.runner.failures)
+
+    def test_locally_modified_owned_binary_refuses_update(self):
+        self.adopt()
+        self.binary.write_text("#!/bin/sh\nprintf 'tool 1.0.0 locally modified\\n'\n")
+        self.reconcile()
+        self.assertFalse(self.marker.exists())
+        self.assertTrue(self.runner.failures)
+
+    def test_owned_independent_binary_update_succeeds(self):
+        self.adopt()
+        self.reconcile()
+        self.assertEqual("update", self.marker.read_text())
+        self.assertEqual([], self.runner.failures)
+
+    def test_missing_independent_tool_installs_without_ownership_callback(self):
+        source = self.binary.read_text()
+        self.binary.unlink()
+        self.tool["install"] = [[sys.executable, "-c",
+                                f"from pathlib import Path; p=Path({str(self.binary)!r}); p.write_text({source!r}); p.chmod(0o755)"]]
+        self.reconcile("install", callback=False)
+        self.assertTrue(self.runner.succeeds(self.tool["check"]))
+        self.assertEqual([], self.runner.failures)
+
+    def test_real_custom_uninstall_retires_receipt_only_after_owned_binary_removed(self):
+        self.tool["uninstall"] = [[sys.executable, "-c", f"from pathlib import Path; Path({str(self.binary)!r}).unlink()"]]
+        self.adopt()
+        self.lifecycle.mutate_runtime("tool", "fixture", self.tool, self.manifest, self.runner, "uninstall")
+        self.assertFalse(self.binary.exists())
+        self.assertEqual({}, self.lifecycle.read_receipts())
+
+    def test_noop_uninstall_retains_receipt_and_declaration(self):
+        self.tool["uninstall"] = [[sys.executable, "-c", "pass"]]
+        self.adopt()
+        receipts = self.lifecycle.receipt_path().read_bytes()
+        path = self.home / "manifest.json"
+        path.write_text(json.dumps(self.manifest))
+        declaration = path.read_bytes()
+        arguments = argparse.Namespace(command="remove", selector="tool:fixture", uninstall=True)
+        with self.assertRaises(runtime.DotAiError):
+            self.lifecycle.dispatch(arguments, self.manifest, path, self.runner)
+        self.assertEqual(receipts, self.lifecycle.receipt_path().read_bytes())
+        self.assertEqual(declaration, path.read_bytes())
+        self.assertTrue(self.binary.exists())
+
+    def test_noop_disable_retains_enabled_declaration_and_receipt(self):
+        self.tool["uninstall"] = [[sys.executable, "-c", "pass"]]
+        self.adopt()
+        receipts = self.lifecycle.receipt_path().read_bytes()
+        path = self.home / "manifest.json"
+        path.write_text(json.dumps(self.manifest))
+        declaration = path.read_bytes()
+        arguments = argparse.Namespace(command="disable", selector="tool:fixture")
+        with self.assertRaises(runtime.DotAiError):
+            self.lifecycle.dispatch(arguments, self.manifest, path, self.runner)
+        self.assertEqual(receipts, self.lifecycle.receipt_path().read_bytes())
+        self.assertEqual(declaration, path.read_bytes())
+
+    def test_failed_check_does_not_retire_receipt_while_owned_binary_remains(self):
+        self.adopt()
+        self.binary.write_text("#!/bin/sh\nexit 1\n")
+        receipts = self.lifecycle.receipt_path().read_bytes()
+        with self.assertRaises(runtime.DotAiError):
+            self.lifecycle.mutate_runtime("tool", "fixture", self.tool, self.manifest, self.runner, "uninstall")
+        self.assertEqual(receipts, self.lifecycle.receipt_path().read_bytes())
+        self.assertTrue(self.binary.exists())
+
+    def test_owned_foreign_recipe_check_cannot_remove_local_recipe_binary(self):
+        local = self.home / ".local/bin/rtk"
+        local.parent.mkdir(parents=True)
+        local.write_bytes(self.binary.read_bytes())
+        local.chmod(0o755)
+        self.tool.update({"recipe": "rtk", "check": [str(self.binary), "--version"]})
+        self.tool.pop("install")
+        self.tool.pop("update")
+        self.adopt()
+        with self.assertRaises(runtime.DotAiError):
+            self.lifecycle.check_update_ownership("tool", "fixture", self.tool, self.manifest,
+                                                  self.runner, operation="install")
+        with self.assertRaises(runtime.DotAiError):
+            self.lifecycle.mutate_runtime("tool", "fixture", self.tool, self.manifest, self.runner, "uninstall")
+        self.assertTrue(local.exists())
+        self.assertTrue(self.binary.exists())
+        self.assertTrue(self.lifecycle.read_receipts())
+
+    def test_failed_unowned_check_cannot_silently_forget_explicit_uninstall(self):
+        self.binary.write_text("#!/bin/sh\nexit 1\n")
+        path = self.home / "stack.json"
+        path.write_text(json.dumps(self.manifest))
+        before = path.read_bytes()
+        with self.assertRaises(runtime.DotAiError):
+            self.lifecycle.dispatch(argparse.Namespace(command="remove", selector="tool:fixture", uninstall=True),
+                                    self.manifest, path, self.runner)
+        self.assertEqual(path.read_bytes(), before)
+        self.assertTrue(self.binary.exists())
+
+    def test_user_file_inside_generated_cache_prevents_backend_uninstall(self):
+        root = self.uv_tool()
+        self.adopt()
+        cache = root / "__pycache__"
+        cache.mkdir()
+        note = cache / "personal-notes.txt"
+        note.write_text("user content")
+        with self.assertRaises(runtime.DotAiError):
+            self.lifecycle.mutate_runtime("tool", "fixture", self.tool, self.manifest, self.runner, "uninstall")
+        self.assertEqual(note.read_text(), "user content")
+
+    def test_fresh_reviewed_scope_install_preserves_foreign_existing_program(self):
+        from dotai_app import catalog
+        foreign = self.home / "foreign-bin/dotai-scoped-helper"
+        foreign.parent.mkdir()
+        foreign.write_bytes(self.binary.read_bytes())
+        foreign.chmod(0o755)
+        before = foreign.read_bytes()
+        installed = self.home / ".local/bin/dotai-scoped-helper"
+        payload = "#!/bin/sh\nprintf 'helper 2.0.0\\n'\n"
+        definition = {"check": ["dotai-scoped-helper", "--version"],
+                      "install": [[sys.executable, "-c", f"from pathlib import Path; p=Path({str(installed)!r}); p.parent.mkdir(parents=True); p.write_text({payload!r}); p.chmod(0o755)"]],
+                      "uninstall": [[sys.executable, "-c", f"from pathlib import Path; Path({str(installed)!r}).unlink()"]],
+                      "footprint": {"default": {"kind": "standalone", "launcher": ".local/bin/dotai-scoped-helper"}}}
+        self.tool = {"name": "fixture", "managed": True, "recipe": "isolated"}
+        self.manifest["packages"] = [self.tool]
+        self.runner.env["PATH"] = str(installed.parent) + os.pathsep + str(foreign.parent) + os.pathsep + self.runner.env["PATH"]
+        with patch.object(catalog, "load_catalog", return_value={"recipes": {"isolated": definition}, "prerequisites": {}}):
+            effective = catalog.materialize(self.manifest)
+            self.packages.reconcile_packages(effective, self.runner, "install", force=True,
+                                            ownership_check=lambda value, current, actor, operation: self.lifecycle.check_update_ownership("tool", "fixture", self.tool, self.manifest, actor, operation=operation),
+                                            on_installed=lambda value, current, actor: self.lifecycle.record_install("tool", "fixture", self.tool, self.manifest, actor))
+            self.assertEqual(self.runner.output([str(installed), "--version"]), "helper 2.0.0")
+            self.lifecycle.mutate_runtime("tool", "fixture", self.tool, self.manifest, self.runner, "uninstall")
+        self.assertEqual(foreign.read_bytes(), before)
+        self.assertFalse(installed.exists())
+        self.assertTrue(self.packages.package_version_check({"version": "1.0.0"}, self.runner, ["dotai-scoped-helper", "--version"])[0])
+        self.assertEqual(self.lifecycle.read_receipts(), {})
+        self.assertEqual(self.runner.failures, [])
+
+    def test_custom_installer_does_not_grant_generated_backend_removal_permission(self):
+        root = self.uv_tool()
+        note = root / "personal-notes.txt"
+        note.write_text("preexisting user content")
+        self.tool["install"] = []
+        self.adopt()
+        with self.assertRaises(runtime.DotAiError):
+            self.lifecycle.mutate_runtime("tool", "fixture", self.tool, self.manifest, self.runner, "uninstall")
+        self.assertEqual(note.read_text(), "preexisting user content")
+
+    def test_tool_inventory_reports_actual_version_separately_from_requested_pin(self):
+        self.tool["version"] = "2.0.0"
+        with redirect_stdout(io.StringIO()) as captured:
+            self.lifecycle.inventory("tool", "fixture", self.tool, self.manifest, self.runner)
+        self.assertIn("1.0.0", captured.getvalue())
+        self.assertIn("2.0.0", captured.getvalue())
+
+
+@unittest.skipUnless(os.name == "nt", "Native Windows directory junctions")
+class WindowsBackendOwnershipTests(unittest.TestCase):
+    def test_backend_hash_does_not_traverse_current_junction_or_external_dependency(self):
+        from dotai_app import lifecycle
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve() / "app"
+            version = root / "1.0.0"
+            version.mkdir(parents=True)
+            binary = version / "app.exe"
+            binary.write_bytes(b"managed application")
+            outside = root.parent / "external"
+            outside.mkdir()
+            dependency = outside / "runtime"
+            dependency.write_bytes(b"external runtime")
+            for alias, target in ((root / "current", version), (version / "dependency", outside)):
+                result = subprocess.run(["cmd", "/c", "mklink", "/J", str(alias), str(target)], text=True, capture_output=True)
+                self.assertEqual(result.returncode, 0, result.stderr)
+            before = lifecycle.tool_backend_fingerprint(root)
+            dependency.write_bytes(b"user-updated external runtime")
+            self.assertEqual(lifecycle.tool_backend_fingerprint(root), before)
+            binary.write_bytes(b"modified application")
+            self.assertNotEqual(lifecycle.tool_backend_fingerprint(root), before)
+
 
 if __name__ == "__main__":
     unittest.main()

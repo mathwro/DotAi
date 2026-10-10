@@ -71,7 +71,7 @@ def _active(entry: dict[str, Any], *, package: bool = False) -> bool:
 
 def _provenance(intent: dict[str, Any]) -> str:
     recipe = catalog.load_catalog()["recipes"].get(intent.get("recipe"), {})
-    return _digest({"intent": intent, "recipe": recipe})
+    return _digest({"intent": {**intent, "enabled": intent.get("enabled", True)}, "recipe": recipe})
 
 
 def _valid(record: Any, intent: str, label: str, mode: str) -> dict[str, Any] | None:
@@ -86,7 +86,8 @@ def _valid(record: Any, intent: str, label: str, mode: str) -> dict[str, Any] | 
 
 def _package_version(package: dict[str, Any], runner: runtime.Runner) -> str | None:
     check = runtime.selected(package.get("check", []), runner.platform)
-    return _version(runner.output(check)) if check else None
+    healthy, output = packages.package_version_check({}, runner, check)
+    return _version(output) if healthy else None
 
 
 def _repository(source: str) -> str:
@@ -322,8 +323,34 @@ def _check_python_requirement(requirement: Any, label: str) -> None:
             raise runtime.DotAiError(f"{label}: source requires Python {requirement}; current CLI Python is {'.'.join(map(str, actual))}. Supply a compatible external interpreter; DotAi will not download one.")
 
 
-def _resolve_package_metadata(package: dict[str, Any], target: str, cached: Any = None) -> tuple[str, dict[str, Any]]:
+def _resolve_package_metadata(package: dict[str, Any], target: str, cached: Any = None, runner: runtime.Runner | None = None) -> tuple[str, dict[str, Any]]:
     descriptor = package["versionMetadata"]
+    if isinstance(descriptor, dict) and descriptor.get("kind") == "github-release":
+        if runner is None:
+            raise runtime.DotAiError("Native artifact resolution requires a selected platform")
+        if isinstance(cached, dict) and cached.get("version") == target and target != "latest":
+            return target, catalog.validate_native_metadata(descriptor, cached, target, runner)
+        template = descriptor.get("latest" if target == "latest" else "exact")
+        if not isinstance(template, str) or not template.startswith("https://"):
+            raise runtime.DotAiError(f"{package['name']}: unsupported native release metadata URL")
+        release = _fetch_json(template.replace("{version}", target))
+        tag = release.get("tag_name")
+        version = tag[1:] if isinstance(tag, str) and tag.startswith("v") else ""
+        if not catalog.EXACT_VERSION.fullmatch(version) or (target != "latest" and version != target):
+            raise runtime.DotAiError(f"{package['name']}: requested version pin does not match available native release")
+        if release.get("draft") is not False or release.get("prerelease") is not False:
+            raise runtime.DotAiError(f"{package['name']}: native version pin requires a published stable release")
+        artifact = catalog.native_artifact_name(descriptor, runner)
+        assets = release.get("assets")
+        matches = [asset for asset in assets if isinstance(asset, dict) and asset.get("name") == artifact] if isinstance(assets, list) else []
+        if len(matches) != 1 or matches[0].get("state") != "uploaded":
+            raise runtime.DotAiError(f"{package['name']}: exact release artifact {artifact} is unavailable")
+        asset = matches[0]
+        digest = asset.get("digest")
+        if not isinstance(digest, str) or not re.fullmatch(r"sha256:[0-9a-fA-F]{64}", digest):
+            raise runtime.DotAiError(f"{package['name']}: exact release artifact has no verified SHA-256 digest")
+        facts = {"version": version, "release": tag, "artifact": artifact, "url": asset.get("browser_download_url"), "sha256": digest[7:].lower()}
+        return version, catalog.validate_native_metadata(descriptor, facts, version, runner)
     if isinstance(cached, dict) and cached.get("version") == target and target != "latest":
         _check_python_requirement(cached.get("pythonRequirement"), package["name"])
         return target, copy.deepcopy(cached)
@@ -346,7 +373,8 @@ def _plugin_provenance(plugin: dict[str, Any], manifest: dict[str, Any]) -> str:
     matching = [marketplace for marketplace in manifest.get("marketplaces", []) if marketplace.get("name") == marketplace_name]
     if len(matching) > 1:
         raise runtime.DotAiError(f"Plugin {plugin['id']}: ambiguous declared marketplace provenance")
-    return _digest({"plugin": plugin, "marketplace": matching[0] if matching else None})
+    marketplace = {**matching[0], "enabled": matching[0].get("enabled", True)} if matching else None
+    return _digest({"plugin": {**plugin, "enabled": plugin.get("enabled", True)}, "marketplace": marketplace})
 
 
 def prepare(manifest: dict[str, Any], manifest_path: str | Path, runner: runtime.Runner, mode: str, *, force: bool = False, update_skills: bool = False, refresh_sources: set[str] | None = None, skill_receipt_owned: Callable[[dict[str, Any]], bool] | None = None, provenance_manifest: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -374,7 +402,7 @@ def prepare(manifest: dict[str, Any], manifest_path: str | Path, runner: runtime
             raise runtime.DotAiError(f"{name}: no resolved lock for missing latest component; run explicit install/update first")
         if not force and healthy and package.get("version", "latest") == "latest" and (
             mode == "install" or (mode == "sync" and target == "latest")
-        ):
+        ) and (not reuse or observed == target or package.get("updatePolicy") != "pinned"):
             target = observed
             if isinstance(metadata, dict) and metadata.get("version") != target:
                 metadata = None
@@ -382,22 +410,46 @@ def prepare(manifest: dict[str, Any], manifest_path: str | Path, runner: runtime
             force or not healthy or observed != target
             or (mode == "update" and package.get("updatePolicy") != "pinned")
         )
-        if package.get("versionMetadata") and mutation_needed:
-            target, metadata = _resolve_package_metadata(package, target, metadata)
+        native_update = bool(
+            package.get("nativeUpdate") and "update" not in intent
+            and isinstance(package.get("versionMetadata"), dict)
+            and package["versionMetadata"].get("kind") == "github-release"
+            and packages.package_operation({**package, "version": target}, runner, mode, force) == "update"
+        )
+        if native_update and target != "latest":
+            if observed != target or not healthy:
+                raise runtime.DotAiError(f"{name}: native update cannot target an exact version; review 'install --force' to deploy the requested pin")
+            package["version"] = target
+            package["updatePolicy"] = "pinned"
+            native_update = mutation_needed = False
+        if native_update:
+            _, metadata = _resolve_package_metadata(package, "latest", None, runner)
+            minimum = package.get("minimumVersion")
+            if minimum:
+                available = tuple(int(part) for part in metadata["version"].split("."))
+                required = tuple(int(part) for part in minimum.split("."))
+                if available + (0,) * (3 - len(available)) < required + (0,) * (3 - len(required)):
+                    raise runtime.DotAiError(f"{name}: available native release cannot satisfy minimumVersion {minimum}; no changes made")
+            package["nativeAvailableVersion"] = metadata["version"]
+            target = "latest"
+        if package.get("versionMetadata") and mutation_needed and not native_update:
+            target, metadata = _resolve_package_metadata(package, target, metadata, runner)
         if target != "latest":
             if mutation_needed:
                 package = catalog.resolve_package({**intent, "version": target}, runner.platform)
             else:
                 package["version"] = target
+        if mutation_needed and not native_update and isinstance(package.get("versionMetadata"), dict) and package["versionMetadata"].get("kind") == "github-release":
+            catalog.bind_native_release(package, metadata, runner, intent)
         effective["packages"][index] = package
-        plan["packages"][name] = {"intent": provenance, "platform": runner.platform, "source": package.get("source"), "target": target, "package": copy.deepcopy(package), "sourceMetadata": metadata}
+        plan["packages"][name] = {"intent": provenance, "platform": runner.platform, "source": package.get("source"), "target": target, "package": copy.deepcopy(package), "sourceMetadata": metadata, "nativeUpdate": native_update}
     for intent, skill in zip(manifest.get("skills", []), effective.get("skills", [])):
         if not _active(skill):
             continue
         key = skill["source"] + "|" + skill.get("agent", "universal")
-        provenance = _digest(intent)
-        refresh = mode == "update" or (mode == "sync" and (update_skills or (refresh_sources is not None and skill["source"] in refresh_sources)))
-        skill_mode = "update" if refresh else mode
+        provenance = _digest({**intent, "enabled": intent.get("enabled", True)})
+        refresh = force or mode == "update" or (mode == "sync" and (update_skills or (refresh_sources is not None and skill["source"] in refresh_sources)))
+        skill_mode = "update" if refresh and mode != "install" else mode
         if refresh or force:
             _require_current_skill_ownership(skill, skill_receipt_owned)
         locked = _valid(before["skills"].get(key), provenance, skill["source"], skill_mode)
@@ -423,7 +475,8 @@ def prepare(manifest: dict[str, Any], manifest_path: str | Path, runner: runtime
             else:
                 raise runtime.DotAiError(f"Skills from {skill['source']}: DRIFT, installed content is changed or modified relative to the resolved target; preserve it and review explicit update")
         if skill_mode == "sync" and not reuse and actual:
-            _upstream_skill_proof(skill, record, skill_receipt_owned)
+            present_skill = {**skill, "checkSkills": list(actual)}
+            _upstream_skill_proof(present_skill, {**record, "trees": actual}, skill_receipt_owned)
         skill["revision"] = record["revision"]
         skill["installerVersion"] = record["installerVersion"]
         plan["skills"][key] = {"record": record, "skill": copy.deepcopy(skill), "reuse": reuse, "actual": actual, "refresh": refresh}
@@ -562,6 +615,18 @@ def record(manifest: dict[str, Any], manifest_path: str | Path, runner: runtime.
         observed = _package_version(item["package"], runner)
         if observed is None or (item["target"] != "latest" and observed != item["target"]):
             raise runtime.DotAiError(f"{name}: observed version does not match resolved target; lock unchanged")
+        if item.get("nativeUpdate"):
+            _, item["sourceMetadata"] = _resolve_package_metadata(item["package"], observed, item["sourceMetadata"], runner)
+            executable = packages.checked_package_path(item["package"], runner)
+            if executable is None:
+                raise runtime.DotAiError(f"{name}: native release executable is unverified; lock unchanged")
+            executable = catalog.tool_launcher_target(executable, runner)
+            digest = hashlib.sha256()
+            with executable.open("rb") as stream:
+                while chunk := stream.read(1024 * 1024):
+                    digest.update(chunk)
+            if digest.hexdigest() != item["sourceMetadata"]["sha256"]:
+                raise runtime.DotAiError(f"{name}: observed native binary differs from the release artifact; lock unchanged")
         value["packages"][name] = {key: item[key] for key in ("intent", "platform", "source")}
         value["packages"][name]["version"] = observed
         if item["sourceMetadata"] is not None:
