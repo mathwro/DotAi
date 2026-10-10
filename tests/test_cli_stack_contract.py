@@ -192,12 +192,13 @@ class CliStackContractTests(unittest.TestCase):
             self.assert_no_machine_state()
 
     def test_direct_owned_tool_install_records_matching_binary_not_interpreter(self):
-        binary = self.root / "fixture-tool"
-        source = "#!" + sys.executable + "\nprint('1.2.3')\n"
+        binary = self.root / ("fixture-tool.cmd" if os.name == "nt" else "fixture-tool")
+        source = (b"@echo off\r\necho 1.2.3\r\n" if os.name == "nt"
+                  else ("#!" + sys.executable + "\nprint('1.2.3')\n").encode("utf-8"))
         self.manifest["packages"] = [{
             "name": "fixture-tool", "managed": True, "ownershipPath": str(binary),
             "check": [str(binary), "--version"],
-            "install": [[sys.executable, "-c", f"from pathlib import Path; p=Path({str(binary)!r}); p.write_text({source!r}); p.chmod(0o755)"]],
+            "install": [[sys.executable, "-c", f"from pathlib import Path; p=Path({str(binary)!r}); p.write_bytes({source!r}); p.chmod(0o755)"]],
         }]
         result = self.cli("install", "--only", "tool:fixture-tool")
         self.assertEqual(0, result.returncode, result.stdout + result.stderr)
