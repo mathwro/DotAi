@@ -1,6 +1,6 @@
 # Personal-stack roadmap
 
-The personal-stack workstreams below are implemented and integrated on `feature/personal-stack-integration`. The complete isolated behavior suite passes on macOS: 444 tests, with 11 platform/capability skips. Current public command contracts live in [Configuration](configuration.md) and [Extending the stack](extending.md). This is not a claim of native Windows/Linux installer verification.
+The personal-stack workstreams below are implemented and integrated on `feature/personal-stack-integration`. The complete isolated behavior suite passes on macOS: 442 tests, with 9 platform/capability skips. Current public command contracts live in [Configuration](configuration.md) and [Extending the stack](extending.md). This is not a claim of native Windows/Linux installer verification.
 
 ## Scope
 
@@ -25,13 +25,14 @@ The original workstream branches below describe the agreed decomposition; their 
 
 ## Delivery and verification
 
-- Retain coherent behavioral checkpoints and associated tests/documentation on the authorized integration branch; do not push, open a PR, or merge to main as part of this work.
+- Publish workstream branches and review PRs only with explicit user authorization. The integrated PR is the complete merge target; draft workstream checkpoints preserve review history and must not be merged independently. Merging to main requires separate authorization.
 - Keep workstream changes on their individual feature branches with incremental commits and associated behavior tests/documentation. Preserve those checkpoints when integrating shared contracts; do not collapse the work into one final bulk commit.
-- Integrated behavior verification: `rtk python3 -m unittest discover -s tests -v` in isolated home/config/state directories; 444 tests, 11 skips, no failures. Both initialized temporary manifests and the tracked baseline validate.
+- Integrated behavior verification: `rtk python3 -m unittest discover -s tests -v` in isolated home/config/state directories; 442 tests, 9 skips, no failures. Both initialized temporary manifests and the tracked baseline validate.
 - Real macOS arm64 OMP 18.8.7 proof: exact SHA-256-verified installation, observed release/ownership inventory, guarded `omp update --stable`, unchanged matching pinned update, exact force-install replay, and owned uninstall. A separate manager-linked fallback survives unchanged after successful removal of the owned copy. Dry-run sync preserves DotAi-managed file bytes and mtimes.
 - Deterministic native-updater regression proves a vendor-selected release advancing beyond preflight is recorded from the actual binary and matching release digest. Differing exact targets refuse native update before changes; corrupt release artifacts preserve the previous binary.
 - Isolated direct CLI scenarios cover initialization, read-only inventory, MCP adoption/enable/disable/forget with provider extras preserved, incremental skill selections, and controlled success/failure diagnostics. Real uv installs and updates an offline local fixture using the existing Python; this does not claim a live Graphify package install.
 - Native Windows and Linux installation/update behavior remains unexercised on this host. Platform selection, isolated Scoop cutover fixtures, and corrupt Linux RTK archive handling are covered locally; skipped native-platform checks are not platform proof.
+- Native CI failure follow-up closes creation descriptors before guard-file cleanup, decodes package-version bytes in the caller without reader-thread tracebacks, and uses exact Git source bytes and platform-native executable fixtures. Linux installer tests use the reviewed owned destination and real staging utilities; superseded direct-installer protocol tests were removed.
 - Apply the command-output contract in `AGENTS.md` to every new or changed command, not only `update`.
 - Verify external-tool output with isolated CLI scenarios covering successful, unchanged, failed, and partially completed operations; include noisy stdout/stderr, verbose diagnostics, credential redaction, and dry runs. Exercise actual subprocess execution without installing or updating personal tools as a test side effect.
 - Verify platform-specific recipes and semantics on their supported platforms. A local skip does not prove Windows or Linux behavior.
