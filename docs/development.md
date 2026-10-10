@@ -42,6 +42,8 @@ Keep dependencies directed: CLI dispatch and orchestration call the domain modul
 
 The current user-facing contracts live in [Configuration](configuration.md) and [Extending the stack](extending.md). Dated files under `docs/superpowers/specs/` are historical design records, not current defaults or active instructions. Completed implementation plans have been removed; their history remains in Git.
 
+The [personal-stack roadmap](roadmap.md) records planned workstreams, acceptance criteria, and branch/commit boundaries. It is a planning record, not an implemented command contract.
+
 ## Verification
 
 Run the behavioral suite:
