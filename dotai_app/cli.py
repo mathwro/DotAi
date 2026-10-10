@@ -9,6 +9,7 @@ import sys
 from . import health
 from . import integrations
 from . import manifest as manifests
+from . import prerequisites
 from . import recommendations as skill_recommendations
 from . import reconcile as reconciliation
 from . import releases
@@ -33,13 +34,8 @@ def build_parser() -> argparse.ArgumentParser:
     install = sub.add_parser("install", help="Install missing components and synchronize configuration")
     install.add_argument("--force", action="store_true", help="Reinstall components already present")
     install.add_argument("--dry-run", action="store_true", help="Print actions without changing the machine")
-    update = sub.add_parser("update", help="Update core components and synchronize configuration")
+    update = sub.add_parser("update", help="Update managed components and synchronize configuration")
     update.add_argument("--dry-run", action="store_true")
-    update.add_argument(
-        "--include-dependencies",
-        action="store_true",
-        help="Also update installed packages marked as dependencies",
-    )
     sync = sub.add_parser("sync", help="Synchronize skills, plugins, and MCP configuration")
     sync.add_argument("--dry-run", action="store_true")
     sync.add_argument("--update-skills", action="store_true", help="Refresh already installed skills")
@@ -74,18 +70,16 @@ def build_parser() -> argparse.ArgumentParser:
     add_tool.add_argument("--check", dest="check_command", required=True, help="Command that exits zero when installed")
     add_tool.add_argument("--install", dest="install_commands", action="append", required=True, metavar="PLATFORM=COMMAND")
     add_tool.add_argument("--update", dest="update_commands", action="append", metavar="PLATFORM=COMMAND")
-    add_tool.add_argument(
-        "--update-group",
-        choices=["core", "dependency"],
-        default="core",
-        help="Whether normal updates include this tool (default: core)",
-    )
+    add_tool.add_argument("--requires", action="append", help="Name of an external checks-only prerequisite; repeatable")
 
     add_skill = add_sub.add_parser("skill", help="Add or replace a skills.sh source")
     add_skill.add_argument("source")
     add_skill.add_argument("--agent", default="universal")
     add_skill.add_argument("--skill", dest="skills", action="append")
     add_skill.add_argument("--check-skill", dest="check_skills", action="append")
+    add_skill.add_argument("--replace", action="store_true", help="Replace rather than merge this source and agent's selections")
+    add_skill.add_argument("--revision", help="Desired upstream source revision")
+    add_skill.add_argument("--installer-version", help="Exact skills installer version")
 
     add_marketplace = add_sub.add_parser("marketplace", help="Add or replace an OMP marketplace")
     add_marketplace.add_argument("name")
@@ -153,7 +147,6 @@ def main(argv: list[str] | None = None) -> int:
         args.command == "configure" and args.configure_target == "omp-routing"
     )
     try:
-        manifests.initialize_default_manifest(args.manifest)
         manifest = manifests.load_manifest(
             args.manifest, allow_legacy_routing=allow_legacy_routing
         )
@@ -170,6 +163,8 @@ def main(argv: list[str] | None = None) -> int:
             print(f"{terminal.styled('dotai:', 'red', 'bold')} {exc}", file=sys.stderr)
             return 2
     runner = runtime.Runner(platform_name, getattr(args, "dry_run", False), args.verbose)
+    if args.command in {"install", "update", "sync", "fix"} and not prerequisites.preflight(manifest, runner, args.command):
+        return 1
     if args.command == "configure":
         try:
             return model_routing.configure_omp_routing(
@@ -226,5 +221,4 @@ def main(argv: list[str] | None = None) -> int:
         runner,
         args.command,
         getattr(args, "force", False),
-        getattr(args, "include_dependencies", False),
     )
