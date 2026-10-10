@@ -5,6 +5,7 @@ import io
 import json
 import os
 from pathlib import Path
+import shlex
 import sys
 import tempfile
 import unittest
@@ -127,12 +128,16 @@ class ReconcileContractTests(unittest.TestCase):
             root = Path(directory)
             marker = root / "installed.version"
             path = root / "stack.json"
-            check = [sys.executable, "-c",
-                     f"from pathlib import Path; p=Path({str(marker)!r}); "
-                     "print(p.read_text() if p.exists() else 'missing'); "
-                     "raise SystemExit(0 if p.exists() else 1)"]
+            binary = root / ("personal-tool.cmd" if os.name == "nt" else "personal-tool")
+            if os.name == "nt":
+                launcher = f'@echo off\r\nif not exist "{marker}" exit /b 1\r\ntype "{marker}"\r\n'.encode()
+            else:
+                quoted = shlex.quote(str(marker))
+                launcher = f"#!/bin/sh\n[ -f {quoted} ] || exit 1\ncat {quoted}\n".encode()
+            check = [str(binary), "--version"]
             install = [sys.executable, "-c",
-                       f"from pathlib import Path; Path({str(marker)!r}).write_text('{{version}}')"]
+                       f"from pathlib import Path; Path({str(marker)!r}).write_text('{{version}}'); "
+                       f"p=Path({str(binary)!r}); p.write_bytes({launcher!r}); p.chmod(0o755)"]
             data = {
                 "version": 2, "prerequisites": [], "skills": [], "plugins": [], "marketplaces": [],
                 "packages": [{"name": "Personal tool", "managed": True, "check": check,
@@ -146,7 +151,7 @@ class ReconcileContractTests(unittest.TestCase):
                 "DOTAI_HOME": str(root), "HOME": str(root),
                 "DOTAI_STATE_DIR": str(root / "state"), "XDG_STATE_HOME": str(root / "xdg"),
             }), contextlib.redirect_stdout(io.StringIO()):
-                result = reconcile.reconcile(data, path, runtime.Runner("linux"), "install")
+                result = reconcile.reconcile(data, path, runtime.Runner("windows" if os.name == "nt" else "linux"), "install")
             self.assertEqual(result, 0)
             self.assertEqual(marker.read_text(), "1.2.3")
             lock_path = root / "stack.lock.json"
