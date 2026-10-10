@@ -1,0 +1,400 @@
+{
+  "version": 1,
+  "integrationRequires": {
+    "skills": [
+      "node",
+      "npx",
+      "git"
+    ],
+    "marketplaces": [
+      "omp"
+    ],
+    "plugins": [
+      "omp"
+    ],
+    "ompExtensions": [
+      "omp"
+    ],
+    "ompRouting": [
+      "omp"
+    ],
+    "mcp": [
+      "omp"
+    ]
+  },
+  "prerequisites": {
+    "node": {
+      "name": "node",
+      "check": [
+        "node",
+        "--version"
+      ],
+      "hint": "Install a supported Node.js runtime yourself."
+    },
+    "npx": {
+      "name": "npx",
+      "check": [
+        "npx",
+        "--version"
+      ],
+      "hint": "Install npm/npx with Node.js yourself."
+    },
+    "uv": {
+      "name": "uv",
+      "check": [
+        "uv",
+        "--version"
+      ],
+      "hint": "Install uv yourself: https://docs.astral.sh/uv/getting-started/installation/"
+    },
+    "curl": {
+      "name": "curl",
+      "check": [
+        "curl",
+        "--version"
+      ],
+      "hint": "Install curl using your operating system package manager."
+    },
+    "git": {
+      "name": "git",
+      "check": [
+        "git",
+        "--version"
+      ],
+      "hint": "Install Git yourself."
+    },
+    "brew": {
+      "name": "brew",
+      "check": [
+        "brew",
+        "--version"
+      ],
+      "hint": "Install Homebrew yourself: https://brew.sh/"
+    },
+    "omp": {
+      "name": "omp",
+      "check": [
+        "omp",
+        "--version"
+      ],
+      "hint": "Install the optional OMP harness yourself or explicitly manage its recipe."
+    },
+    "scoop": {
+      "name": "scoop",
+      "check": [
+        "scoop",
+        "--version"
+      ],
+      "hint": "Install Scoop yourself; DotAi uses reviewed local manifests and never adds a bucket."
+    },
+    "tar": {
+      "name": "tar",
+      "check": [
+        "tar",
+        "--version"
+      ],
+      "hint": "Install tar yourself."
+    },
+    "sha256sum": {
+      "name": "sha256sum",
+      "check": [
+        "sha256sum",
+        "--version"
+      ],
+      "hint": "Install coreutils yourself."
+    },
+    "npm": {
+      "name": "npm",
+      "check": [
+        "npm",
+        "--version"
+      ],
+      "hint": "Install npm with a supported Node.js runtime yourself."
+    },
+    "python": {
+      "name": "python",
+      "check": [
+        "{python}",
+        "--version"
+      ],
+      "hint": "Run DotAi with a compatible externally installed Python interpreter."
+    },
+    "shasum": {
+      "name": "shasum",
+      "check": [
+        "shasum",
+        "--version"
+      ],
+      "hint": "Supply the external SHA-256 utility required for macOS RTK artifacts."
+    },
+    "omp-native-update": {
+      "name": "omp-native-update",
+      "check": [
+        "{python}",
+        "-c",
+        "import sys; sys.path.insert(0, sys.argv[1]); from dotai_app.portable import require_native_omp_update; require_native_omp_update()",
+        "{repo}"
+      ],
+      "hint": "Native OMP update requires an active standalone binary, not a manager-routed install. Use explicit install --force to install a separate standalone copy; keep the old managed copy untouched."
+    }
+  },
+  "recipes": {
+    "omp": {
+      "check": [
+        "omp",
+        "--version"
+      ],
+      "provides": [
+        "omp"
+      ],
+      "requires": {
+        "windows": [
+          "scoop"
+        ],
+        "default": [
+          "python"
+        ]
+      },
+      "updateRequires": [
+        "omp-native-update"
+      ],
+      "source": "https://github.com/can1357/oh-my-pi",
+      "nativeUpdate": true,
+      "footprint": {
+        "windows": {"kind": "scoop", "app": "dotai-omp", "launcher": "omp.exe"},
+        "default": {"kind": "standalone", "launcher": ".local/bin/omp"}
+      },
+      "versionMetadata": {
+        "kind": "github-release",
+        "latest": "https://api.github.com/repos/can1357/oh-my-pi/releases/latest",
+        "exact": "https://api.github.com/repos/can1357/oh-my-pi/releases/tags/v{version}",
+        "download": "https://github.com/can1357/oh-my-pi/releases/download/v{version}/{artifact}",
+        "artifacts": {
+          "windows": "omp-windows-{arch}.exe",
+          "macos": "omp-darwin-{arch}",
+          "linux": "omp-linux-{arch}"
+        }
+      },
+      "install": {
+        "default": [
+          ["{python}", "-c", "import json,sys; sys.path.insert(0,sys.argv[1]); from dotai_app.packages import install_native_release; install_native_release(json.loads(sys.argv[2]),sys.argv[3],sys.argv[4])", "{repo}", "{artifact}", ".local/bin/omp", "omp"]
+        ]
+      },
+      "pinInstall": {
+        "default": [
+          ["{python}", "-c", "import json,sys; sys.path.insert(0,sys.argv[1]); from dotai_app.packages import install_native_release; install_native_release(json.loads(sys.argv[2]),sys.argv[3],sys.argv[4])", "{repo}", "{artifact}", ".local/bin/omp", "omp"]
+        ]
+      },
+      "scoopApp": "dotai-omp",
+      "scoopManifest": {
+        "version": "18.8.7",
+        "architecture": {
+          "64bit": {
+            "url": "https://github.com/can1357/oh-my-pi/releases/download/v18.8.7/omp-windows-x64.exe#/omp.exe",
+            "hash": "3fee68733791b3d0b2816e8c7b5987813afd103762f8cfd7239d57ed213286dc"
+          },
+          "arm64": {
+            "url": "https://github.com/can1357/oh-my-pi/releases/download/v18.8.7/omp-windows-arm64.exe#/omp.exe",
+            "hash": "00fac24510e7c737a42c4614f9c95c5e5426653ef4f22843c7d1d83faf709f4a"
+          }
+        },
+        "bin": "omp.exe"
+      },
+      "update": {
+        "default": [
+          [
+            "omp",
+            "update",
+            "--stable"
+          ]
+        ]
+      },
+      "uninstall": {
+        "macos": [
+          "set -eu; install_dir=\"$HOME/.local/bin\"; if [ -L \"$HOME/.local\" ] || [ -L \"$install_dir\" ] || [ -d \"$install_dir/omp\" ]; then printf \"Refusing redirected standalone omp destination\\n\" >&2; exit 1; fi; rm -f \"$install_dir/omp\""
+        ],
+        "linux": [
+          "set -eu; install_dir=\"$HOME/.local/bin\"; if [ -L \"$HOME/.local\" ] || [ -L \"$install_dir\" ] || [ -d \"$install_dir/omp\" ]; then printf \"Refusing redirected standalone omp destination\\n\" >&2; exit 1; fi; rm -f \"$install_dir/omp\""
+        ]
+      },
+      "configure": {
+        "default": [
+          [
+            "omp",
+            "config",
+            "set",
+            "secrets.enabled",
+            "true"
+          ]
+        ]
+      }
+    },
+    "rtk": {
+      "check": [
+        "rtk",
+        "--version"
+      ],
+      "minimumVersion": "0.43",
+      "requires": {
+        "windows": [
+          "scoop"
+        ],
+        "macos": [
+          "curl",
+          "tar",
+          "shasum"
+        ],
+        "linux": [
+          "curl",
+          "tar",
+          "sha256sum"
+        ]
+      },
+      "source": "https://github.com/rtk-ai/rtk",
+      "footprint": {
+        "windows": {"kind": "scoop", "app": "rtk", "launcher": "rtk.exe"},
+        "default": {"kind": "standalone", "launcher": ".local/bin/rtk"}
+      },
+      "supportedVersions": [
+        "0.50.0"
+      ],
+      "scoopApp": "rtk",
+      "scoopUpdate": true,
+      "scoopManifest": {
+        "version": "0.50.0",
+        "architecture": {
+          "64bit": {
+            "url": "https://github.com/rtk-ai/rtk/releases/download/v0.50.0/rtk-x86_64-pc-windows-msvc.zip",
+            "hash": "cb03399305135dd59ee23eb59a3260ccdeea5a8e08fbc7a271b115b85583a6c9"
+          }
+        },
+        "bin": "rtk.exe"
+      },
+      "install": {
+        "linux": [
+          "set -eu; case \"$(uname -m)\" in x86_64|amd64) target=x86_64-unknown-linux-musl; digest=bc2b8902b0d9c796c82ef45f16ae2307e17757afeca5ee156235a3dc7bda5f89;; arm64|aarch64) target=aarch64-unknown-linux-gnu; digest=d1cc49dfa2cd443fc32625444b59fe616b6c80478cca210985118347174dd758;; *) printf \"Unsupported RTK architecture\\n\" >&2; exit 1;; esac; install_dir=\"$HOME/.local/bin\"; if [ -L \"$HOME/.local\" ] || [ -L \"$install_dir\" ] || [ -d \"$install_dir/rtk\" ]; then printf \"Refusing redirected standalone RTK destination\\n\" >&2; exit 1; fi; mkdir -p \"$install_dir\"; tmp=$(mktemp -d \"$install_dir/.dotai-rtk.XXXXXX\"); trap 'rm -rf \"$tmp\"' EXIT; curl -fsSL \"https://github.com/rtk-ai/rtk/releases/download/v0.50.0/rtk-${target}.tar.gz\" -o \"$tmp/rtk.tar.gz\"; printf '%s  %s\\n' \"$digest\" \"$tmp/rtk.tar.gz\" | sha256sum -c -; tar -xzf \"$tmp/rtk.tar.gz\" -C \"$tmp\" rtk; test -f \"$tmp/rtk\"; test ! -L \"$tmp/rtk\"; chmod 755 \"$tmp/rtk\"; mv -f \"$tmp/rtk\" \"$install_dir/rtk\""
+        ],
+        "macos": [
+          "set -eu; case \"$(uname -m)\" in x86_64|amd64) target=x86_64-apple-darwin; digest=ac23e20024ab3c71e7f50069f8b34190aec1b2d8f0c2cc19834039b3dac73373;; arm64|aarch64) target=aarch64-apple-darwin; digest=fe54761a9950266e3a78ddb66a8af5e067251169da306a288e0751de63d836fe;; *) printf \"Unsupported RTK architecture\\n\" >&2; exit 1;; esac; install_dir=\"$HOME/.local/bin\"; if [ -L \"$HOME/.local\" ] || [ -L \"$install_dir\" ] || [ -d \"$install_dir/rtk\" ]; then printf \"Refusing redirected standalone RTK destination\\n\" >&2; exit 1; fi; mkdir -p \"$install_dir\"; tmp=$(mktemp -d \"$install_dir/.dotai-rtk.XXXXXX\"); trap 'rm -rf \"$tmp\"' EXIT; curl -fsSL \"https://github.com/rtk-ai/rtk/releases/download/v0.50.0/rtk-${target}.tar.gz\" -o \"$tmp/rtk.tar.gz\"; printf '%s  %s\\n' \"$digest\" \"$tmp/rtk.tar.gz\" | shasum -a 256 -c -; tar -xzf \"$tmp/rtk.tar.gz\" -C \"$tmp\" rtk; test -f \"$tmp/rtk\"; test ! -L \"$tmp/rtk\"; chmod 755 \"$tmp/rtk\"; mv -f \"$tmp/rtk\" \"$install_dir/rtk\""
+        ]
+      },
+      "pinInstall": {
+        "linux": [
+          "set -eu; case \"$(uname -m)\" in x86_64|amd64) target=x86_64-unknown-linux-musl; digest=bc2b8902b0d9c796c82ef45f16ae2307e17757afeca5ee156235a3dc7bda5f89;; arm64|aarch64) target=aarch64-unknown-linux-gnu; digest=d1cc49dfa2cd443fc32625444b59fe616b6c80478cca210985118347174dd758;; *) printf \"Unsupported RTK architecture\\n\" >&2; exit 1;; esac; install_dir=\"$HOME/.local/bin\"; if [ -L \"$HOME/.local\" ] || [ -L \"$install_dir\" ] || [ -d \"$install_dir/rtk\" ]; then printf \"Refusing redirected standalone RTK destination\\n\" >&2; exit 1; fi; mkdir -p \"$install_dir\"; tmp=$(mktemp -d \"$install_dir/.dotai-rtk.XXXXXX\"); trap 'rm -rf \"$tmp\"' EXIT; curl -fsSL \"https://github.com/rtk-ai/rtk/releases/download/v{version}/rtk-${target}.tar.gz\" -o \"$tmp/rtk.tar.gz\"; printf '%s  %s\\n' \"$digest\" \"$tmp/rtk.tar.gz\" | sha256sum -c -; tar -xzf \"$tmp/rtk.tar.gz\" -C \"$tmp\" rtk; test -f \"$tmp/rtk\"; test ! -L \"$tmp/rtk\"; chmod 755 \"$tmp/rtk\"; mv -f \"$tmp/rtk\" \"$install_dir/rtk\""
+        ],
+        "macos": [
+          "set -eu; case \"$(uname -m)\" in x86_64|amd64) target=x86_64-apple-darwin; digest=ac23e20024ab3c71e7f50069f8b34190aec1b2d8f0c2cc19834039b3dac73373;; arm64|aarch64) target=aarch64-apple-darwin; digest=fe54761a9950266e3a78ddb66a8af5e067251169da306a288e0751de63d836fe;; *) printf \"Unsupported RTK architecture\\n\" >&2; exit 1;; esac; install_dir=\"$HOME/.local/bin\"; if [ -L \"$HOME/.local\" ] || [ -L \"$install_dir\" ] || [ -d \"$install_dir/rtk\" ]; then printf \"Refusing redirected standalone RTK destination\\n\" >&2; exit 1; fi; mkdir -p \"$install_dir\"; tmp=$(mktemp -d \"$install_dir/.dotai-rtk.XXXXXX\"); trap 'rm -rf \"$tmp\"' EXIT; curl -fsSL \"https://github.com/rtk-ai/rtk/releases/download/v{version}/rtk-${target}.tar.gz\" -o \"$tmp/rtk.tar.gz\"; printf '%s  %s\\n' \"$digest\" \"$tmp/rtk.tar.gz\" | shasum -a 256 -c -; tar -xzf \"$tmp/rtk.tar.gz\" -C \"$tmp\" rtk; test -f \"$tmp/rtk\"; test ! -L \"$tmp/rtk\"; chmod 755 \"$tmp/rtk\"; mv -f \"$tmp/rtk\" \"$install_dir/rtk\""
+        ]
+      },
+      "update": {
+        "linux": [
+          "set -eu; case \"$(uname -m)\" in x86_64|amd64) target=x86_64-unknown-linux-musl; digest=bc2b8902b0d9c796c82ef45f16ae2307e17757afeca5ee156235a3dc7bda5f89;; arm64|aarch64) target=aarch64-unknown-linux-gnu; digest=d1cc49dfa2cd443fc32625444b59fe616b6c80478cca210985118347174dd758;; *) printf \"Unsupported RTK architecture\\n\" >&2; exit 1;; esac; install_dir=\"$HOME/.local/bin\"; if [ -L \"$HOME/.local\" ] || [ -L \"$install_dir\" ] || [ -d \"$install_dir/rtk\" ]; then printf \"Refusing redirected standalone RTK destination\\n\" >&2; exit 1; fi; mkdir -p \"$install_dir\"; tmp=$(mktemp -d \"$install_dir/.dotai-rtk.XXXXXX\"); trap 'rm -rf \"$tmp\"' EXIT; curl -fsSL \"https://github.com/rtk-ai/rtk/releases/download/v0.50.0/rtk-${target}.tar.gz\" -o \"$tmp/rtk.tar.gz\"; printf '%s  %s\\n' \"$digest\" \"$tmp/rtk.tar.gz\" | sha256sum -c -; tar -xzf \"$tmp/rtk.tar.gz\" -C \"$tmp\" rtk; test -f \"$tmp/rtk\"; test ! -L \"$tmp/rtk\"; chmod 755 \"$tmp/rtk\"; mv -f \"$tmp/rtk\" \"$install_dir/rtk\""
+        ],
+        "macos": [
+          "set -eu; case \"$(uname -m)\" in x86_64|amd64) target=x86_64-apple-darwin; digest=ac23e20024ab3c71e7f50069f8b34190aec1b2d8f0c2cc19834039b3dac73373;; arm64|aarch64) target=aarch64-apple-darwin; digest=fe54761a9950266e3a78ddb66a8af5e067251169da306a288e0751de63d836fe;; *) printf \"Unsupported RTK architecture\\n\" >&2; exit 1;; esac; install_dir=\"$HOME/.local/bin\"; if [ -L \"$HOME/.local\" ] || [ -L \"$install_dir\" ] || [ -d \"$install_dir/rtk\" ]; then printf \"Refusing redirected standalone RTK destination\\n\" >&2; exit 1; fi; mkdir -p \"$install_dir\"; tmp=$(mktemp -d \"$install_dir/.dotai-rtk.XXXXXX\"); trap 'rm -rf \"$tmp\"' EXIT; curl -fsSL \"https://github.com/rtk-ai/rtk/releases/download/v0.50.0/rtk-${target}.tar.gz\" -o \"$tmp/rtk.tar.gz\"; printf '%s  %s\\n' \"$digest\" \"$tmp/rtk.tar.gz\" | shasum -a 256 -c -; tar -xzf \"$tmp/rtk.tar.gz\" -C \"$tmp\" rtk; test -f \"$tmp/rtk\"; test ! -L \"$tmp/rtk\"; chmod 755 \"$tmp/rtk\"; mv -f \"$tmp/rtk\" \"$install_dir/rtk\""
+        ]
+      },
+      "uninstall": {
+        "macos": [
+          "set -eu; install_dir=\"$HOME/.local/bin\"; if [ -L \"$HOME/.local\" ] || [ -L \"$install_dir\" ] || [ -d \"$install_dir/rtk\" ]; then printf \"Refusing redirected standalone rtk destination\\n\" >&2; exit 1; fi; rm -f \"$install_dir/rtk\""
+        ],
+        "linux": [
+          "set -eu; install_dir=\"$HOME/.local/bin\"; if [ -L \"$HOME/.local\" ] || [ -L \"$install_dir\" ] || [ -d \"$install_dir/rtk\" ]; then printf \"Refusing redirected standalone rtk destination\\n\" >&2; exit 1; fi; rm -f \"$install_dir/rtk\""
+        ]
+      },
+      "configure": {
+        "default": [
+          [
+            "rtk",
+            "init",
+            "-g",
+            "--agent",
+            "pi"
+          ]
+        ]
+      },
+      "configureWhen": {
+        "ompExtensions": [
+          "~/.pi/agent/extensions/rtk.ts"
+        ]
+      }
+    },
+    "graphify": {
+      "check": [
+        "graphify",
+        "--version"
+      ],
+      "requires": [
+        "uv",
+        "python"
+      ],
+      "source": "https://pypi.org/project/graphifyy/",
+      "footprint": {
+        "default": {"kind": "uv", "package": "graphifyy", "launcher": "graphify"}
+      },
+      "install": {
+        "default": [
+          [
+            "uv",
+            "tool",
+            "install",
+            "--upgrade",
+            "--python",
+            "{python}",
+            "--no-python-downloads",
+            "graphifyy"
+          ]
+        ]
+      },
+      "update": {
+        "default": [
+          [
+            "uv",
+            "tool",
+            "install",
+            "--upgrade",
+            "--python",
+            "{python}",
+            "--no-python-downloads",
+            "graphifyy"
+          ]
+        ]
+      },
+      "pinInstall": {
+        "default": [
+          [
+            "uv",
+            "tool",
+            "install",
+            "--python",
+            "{python}",
+            "--no-python-downloads",
+            "graphifyy=={version}"
+          ]
+        ]
+      },
+      "uninstall": {
+        "default": [
+          [
+            "uv",
+            "tool",
+            "uninstall",
+            "graphifyy"
+          ]
+        ]
+      },
+      "versionMetadata": {
+        "latest": "https://pypi.org/pypi/graphifyy/json",
+        "exact": "https://pypi.org/pypi/graphifyy/{version}/json",
+        "versionPath": [
+          "info",
+          "version"
+        ],
+        "pythonRequirementPath": [
+          "info",
+          "requires_python"
+        ]
+      }
+    }
+  }
+}

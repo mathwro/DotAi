@@ -3,12 +3,18 @@
 from __future__ import annotations
 
 from pathlib import Path
+import copy
 import argparse
 import os
 import sys
+from . import conversion
 from . import health
 from . import integrations
 from . import manifest as manifests
+from . import lifecycle
+from . import catalog
+from . import portable
+from . import prerequisites
 from . import recommendations as skill_recommendations
 from . import reconcile as reconciliation
 from . import releases
@@ -20,7 +26,7 @@ from . import terminal
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="dotai", description="Install and reconcile a portable AI development stack.")
-    parser.add_argument("--manifest", type=Path, default=manifests.DEFAULT_MANIFEST, help="Stack manifest (default: stack.json)")
+    parser.add_argument("--manifest", type=Path, help="Personal stack manifest (default: user configuration directory); convert requires an explicit source")
     parser.add_argument("--platform", choices=["windows", "wsl", "ubuntu", "arch", "macos", "linux"], help=argparse.SUPPRESS)
     parser.add_argument("--verbose", action="store_true")
     parser.add_argument(
@@ -30,19 +36,18 @@ def build_parser() -> argparse.ArgumentParser:
         help="Color output: auto for terminals, always, or never (default: auto)",
     )
     sub = parser.add_subparsers(dest="command", required=True)
+    lifecycle.register_commands(sub)
     install = sub.add_parser("install", help="Install missing components and synchronize configuration")
     install.add_argument("--force", action="store_true", help="Reinstall components already present")
     install.add_argument("--dry-run", action="store_true", help="Print actions without changing the machine")
-    update = sub.add_parser("update", help="Update core components and synchronize configuration")
+    update = sub.add_parser("update", help="Update managed components and synchronize configuration")
     update.add_argument("--dry-run", action="store_true")
-    update.add_argument(
-        "--include-dependencies",
-        action="store_true",
-        help="Also update installed packages marked as dependencies",
-    )
+    for mutation in (install, update):
+        mutation.add_argument("--only", action="append", metavar="TYPE:ID", help="Select a declared component; repeatable")
     sync = sub.add_parser("sync", help="Synchronize skills, plugins, and MCP configuration")
     sync.add_argument("--dry-run", action="store_true")
     sync.add_argument("--update-skills", action="store_true", help="Refresh already installed skills")
+    sync.add_argument("--only", action="append", metavar="TYPE:ID", help="Select a declared component; repeatable")
     sync.add_argument(
         "--recommended-skills",
         action="store_true",
@@ -63,29 +68,38 @@ def build_parser() -> argparse.ArgumentParser:
         help="Interactive primary when both Anthropic and Codex are authenticated",
     )
     sub.add_parser("version", help="Print the current DotAi version")
-    sub.add_parser("init", help="Generate a new manifest from stack.example.json")
+    init = sub.add_parser("init", help="Create a new, initially empty personal stack manifest")
+    init.add_argument("--component", action="append", metavar="RECIPE", help="Explicitly select an optional reviewed recipe; repeatable")
+    convert = sub.add_parser("convert", help="Preview and explicitly convert a version-1 manifest; no environment operations")
+    convert.add_argument("--dry-run", action="store_true", help="Review changes without creating files or backups")
+    convert.add_argument("--destination", type=Path, help="New destination; defaults to the explicit source path")
+    convert.add_argument("--manage", action="append", metavar="NAME", help="Authorize a reviewed legacy package's management; repeatable")
+    convert.add_argument("--yes", action="store_true", help="Confirm the file write after explicit package ownership review")
     fix = sub.add_parser("fix", help="Review and migrate legacy Pi-targeted skills to OMP")
     fix.add_argument("--dry-run", action="store_true", help="Show the migration without changing files or machine state")
     add = sub.add_parser("add", help="Add a tool, skill, marketplace, plugin, or MCP server to the manifest")
     add_sub = add.add_subparsers(dest="kind", required=True)
+
+    add_component = add_sub.add_parser("component", help="Select a reviewed optional component recipe")
+    add_component.add_argument("recipe")
+    add_component.add_argument("--version", dest="component_version", help="Requested exact version or latest")
+    add_component.add_argument("--update-policy", choices=["latest", "pinned"])
 
     add_tool = add_sub.add_parser("tool", help="Add or replace a command-line tool")
     add_tool.add_argument("name")
     add_tool.add_argument("--check", dest="check_command", required=True, help="Command that exits zero when installed")
     add_tool.add_argument("--install", dest="install_commands", action="append", required=True, metavar="PLATFORM=COMMAND")
     add_tool.add_argument("--update", dest="update_commands", action="append", metavar="PLATFORM=COMMAND")
-    add_tool.add_argument(
-        "--update-group",
-        choices=["core", "dependency"],
-        default="core",
-        help="Whether normal updates include this tool (default: core)",
-    )
+    add_tool.add_argument("--requires", action="append", help="Name of an external checks-only prerequisite; repeatable")
 
     add_skill = add_sub.add_parser("skill", help="Add or replace a skills.sh source")
     add_skill.add_argument("source")
     add_skill.add_argument("--agent", default="universal")
     add_skill.add_argument("--skill", dest="skills", action="append")
     add_skill.add_argument("--check-skill", dest="check_skills", action="append")
+    add_skill.add_argument("--replace", action="store_true", help="Replace rather than merge this source and agent's selections")
+    add_skill.add_argument("--revision", help="Desired upstream source revision")
+    add_skill.add_argument("--installer-version", help="Exact skills installer version")
 
     add_marketplace = add_sub.add_parser("marketplace", help="Add or replace an OMP marketplace")
     add_marketplace.add_argument("name")
@@ -126,8 +140,14 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
+    if args.command == "convert" and args.manifest is None:
+        parser.error("convert requires an explicit --manifest PATH source")
+    if args.manifest is None:
+        args.manifest = portable.default_manifest_path(args.platform)
     if args.command == "sync" and args.enforce and not args.recommended_skills:
         parser.error("--enforce requires --recommended-skills")
+    if args.command == "sync" and args.only and args.recommended_skills:
+        parser.error("--only cannot be combined with --recommended-skills; recommendation consent must cover the full manifest")
     terminal.configure_color(args.color)
     if args.platform:
         os.environ["DOTAI_PLATFORM"] = args.platform
@@ -135,6 +155,15 @@ def main(argv: list[str] | None = None) -> int:
         print(releases.VERSION)
         releases.print_release_notice()
         return 0
+    if args.command == "convert":
+        try:
+            return conversion.convert_manifest(
+                args.manifest, destination=args.destination, dry_run=args.dry_run,
+                manage=args.manage, yes=args.yes,
+            )
+        except (OSError, runtime.DotAiError) as exc:
+            print(f"{terminal.styled('dotai:', 'red', 'bold')} {terminal.redact(exc)}", file=sys.stderr)
+            return 2
     platform_name = runtime.detect_platform()
     if args.command == "platform":
         print(platform_name)
@@ -143,51 +172,87 @@ def main(argv: list[str] | None = None) -> int:
         releases.print_release_notice()
     if args.command == "init":
         try:
-            if not manifests.initialize_manifest(args.manifest, allow_custom=True):
+            if not manifests.initialize_manifest(args.manifest, allow_custom=True, components=args.component):
                 raise runtime.DotAiError(f"Manifest already exists: {args.manifest}")
         except (OSError, runtime.DotAiError) as exc:
-            print(f"{terminal.styled('dotai:', 'red', 'bold')} {exc}", file=sys.stderr)
+            print(f"{terminal.styled('dotai:', 'red', 'bold')} {terminal.redact(exc)}", file=sys.stderr)
             return 2
         return 0
     allow_legacy_routing = (
         args.command == "configure" and args.configure_target == "omp-routing"
     )
     try:
-        manifests.initialize_default_manifest(args.manifest)
         manifest = manifests.load_manifest(
             args.manifest, allow_legacy_routing=allow_legacy_routing
         )
+        if args.command == "validate":
+            catalog.materialize(manifest, platform_name)
     except (OSError, runtime.DotAiError) as exc:
-        print(f"{terminal.styled('dotai:', 'red', 'bold')} {exc}", file=sys.stderr)
+        print(f"{terminal.styled('dotai:', 'red', 'bold')} {terminal.redact(exc)}", file=sys.stderr)
         return 2
     if args.command == "validate":
-        print(f"{terminal.badge('OK')} Valid manifest: {args.manifest}")
+        print(f"{terminal.badge('OK')} Valid manifest: {terminal.redact(args.manifest)}")
         return 0
     if args.command == "add":
         try:
+            if args.kind == "component":
+                candidate = copy.deepcopy(manifest)
+                intent = manifests.component_intent(args.recipe, version=args.component_version, update_policy=args.update_policy)
+                integrations.upsert(candidate["packages"], "name", intent)
+                manifests.write_manifest(args.manifest, candidate, backup=True)
+                print(f"{terminal.badge('OK')} Selected {terminal.redact(args.recipe)}; preview 'dotai install --dry-run' before applying it.")
+                return 0
             return integrations.add_integration(args, manifest, args.manifest)
         except (OSError, runtime.DotAiError) as exc:
-            print(f"{terminal.styled('dotai:', 'red', 'bold')} {exc}", file=sys.stderr)
+            print(f"{terminal.styled('dotai:', 'red', 'bold')} {terminal.redact(exc)}", file=sys.stderr)
             return 2
     runner = runtime.Runner(platform_name, getattr(args, "dry_run", False), args.verbose)
+    if args.command in {"list", "show", "adopt", "remove", "enable", "disable"}:
+        try:
+            return lifecycle.dispatch(
+                args, manifest, args.manifest, runner,
+                activate=lambda selected, candidate: reconciliation.reconcile(
+                    selected, args.manifest, runner, "install", provenance_manifest=candidate, summarize=False,
+                ),
+            )
+        except (OSError, ValueError, runtime.DotAiError) as exc:
+            if not runner.failures:
+                runner.fail("Component operation", str(exc))
+            return 1
+        finally:
+            if args.command not in {"list", "show"}:
+                runner.summary()
+    provenance = manifest
+    if args.command in {"install", "update", "sync"}:
+        try:
+            manifest = lifecycle.filter_manifest(manifest, args.only)
+        except runtime.DotAiError as exc:
+            print(f"{terminal.styled('dotai:', 'red', 'bold')} {terminal.redact(exc)}", file=sys.stderr)
+            return 2
+    if args.command in {"status", "doctor", "configure", "fix"}:
+        try:
+            effective = catalog.materialize(manifest, runner.platform, inspect_only=True)
+        except (OSError, runtime.DotAiError) as exc:
+            print(f"{terminal.styled('dotai:', 'red', 'bold')} {terminal.redact(exc)}", file=sys.stderr)
+            return 2
     if args.command == "configure":
         try:
             return model_routing.configure_omp_routing(
                 manifest, args.manifest, runner, args.primary
             )
         except (OSError, runtime.DotAiError) as exc:
-            print(f"{terminal.styled('dotai:', 'red', 'bold')} {exc}", file=sys.stderr)
+            print(f"{terminal.styled('dotai:', 'red', 'bold')} {terminal.redact(exc)}", file=sys.stderr)
             return 2
     if args.command == "fix":
         try:
-            return skill_manager.fix_legacy_skills(manifest, args.manifest, runner)
+            return reconciliation.fix_legacy_skills(manifest, args.manifest, runner)
         except (OSError, runtime.DotAiError) as exc:
-            print(f"{terminal.styled('dotai:', 'red', 'bold')} {exc}", file=sys.stderr)
+            print(f"{terminal.styled('dotai:', 'red', 'bold')} {terminal.redact(exc)}", file=sys.stderr)
             return 2
     if args.command == "status":
-        return 0 if health.print_status(manifest, runner) else 1
+        return 0 if health.print_status(effective, runner) else 1
     if args.command == "doctor":
-        return 0 if health.doctor(manifest, runner) else 1
+        return 0 if health.doctor(effective, runner) else 1
     if args.command == "sync":
         managed_skills = None
         refresh_sources: set[str] = set()
@@ -195,15 +260,17 @@ def main(argv: list[str] | None = None) -> int:
             try:
                 skill_recommendations.print_recommended_skill_notice(manifest, args.manifest)
             except (OSError, runtime.DotAiError) as exc:
-                print(f"{terminal.styled('dotai:', 'red', 'bold')} {exc}", file=sys.stderr)
+                print(f"{terminal.styled('dotai:', 'red', 'bold')} {terminal.redact(exc)}", file=sys.stderr)
                 return 2
         if args.recommended_skills:
             try:
                 old_skills = manifest["skills"]
                 manifest, managed_skills = skill_recommendations.review_recommended_skills(
-                    manifest, args.manifest, runner, args.enforce
+                    manifest, args.manifest, runner, args.enforce,
+                    update_skills=args.update_skills,
                 )
                 if runner.failures:
+                    runner.summary()
                     return 1
                 previous = {skill["source"]: skill for skill in old_skills}
                 refresh_sources = {
@@ -211,12 +278,12 @@ def main(argv: list[str] | None = None) -> int:
                     if previous.get(skill["source"]) != skill
                 }
             except (OSError, runtime.DotAiError) as exc:
-                print(f"{terminal.styled('dotai:', 'red', 'bold')} {exc}", file=sys.stderr)
+                print(f"{terminal.styled('dotai:', 'red', 'bold')} {terminal.redact(exc)}", file=sys.stderr)
                 return 2
         return reconciliation.reconcile(
             manifest, args.manifest, runner, "sync", managed_skills=managed_skills,
             update_skills=args.update_skills, refresh_sources=refresh_sources,
-            recommended_only=args.enforce,
+            recommended_only=args.enforce, provenance_manifest=manifest if args.recommended_skills else provenance,
         )
     if args.command == "update":
         skill_manager.print_legacy_skill_notice(manifest)
@@ -226,5 +293,5 @@ def main(argv: list[str] | None = None) -> int:
         runner,
         args.command,
         getattr(args, "force", False),
-        getattr(args, "include_dependencies", False),
+        provenance_manifest=provenance,
     )

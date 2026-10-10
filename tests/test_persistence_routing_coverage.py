@@ -20,11 +20,9 @@ from dotai_app import cli, manifest as manifests, routing, runtime, state, termi
 
 
 def minimal_manifest() -> dict:
-    return {
-        "version": 1, "packages": [], "skills": [], "marketplaces": [],
-        "plugins": [], "ompExtensions": [], "mcp": {"target": "mcp.json", "servers": {}},
-        "ompRouting": None,
-    }
+    return {"version": 2, "prerequisites": [], "packages": [], "skills": [], "marketplaces": [],
+    "plugins": [], "ompExtensions": [], "mcp": {"target": "mcp.json", "servers": {}},
+    "ompRouting": None,}
 
 
 @contextlib.contextmanager
@@ -49,7 +47,9 @@ OMP_BOUNDARY = '''import json, os, pathlib, sys
 root = pathlib.Path(os.environ["DOTAI_HOME"])
 target = root / "omp-values.json"
 args = sys.argv[1:]
-if args == ["models", "--json"]:
+if args == ["--version"]:
+    print("omp 1.2.3")
+elif args == ["models", "--json"]:
     print((root / "omp-models.json").read_text())
 elif args[:2] == ["config", "get"] and len(args) == 4 and args[3] == "--json":
     values = json.loads(target.read_text())
@@ -92,6 +92,8 @@ class PersistenceRoutingCoverageTests(unittest.TestCase):
         self.state_dir = self.root / "state"
         environment = mock.patch.dict(os.environ, {
             "HOME": str(self.root), "DOTAI_HOME": str(self.root),
+            "USERPROFILE": str(self.root), "DOTAI_CONFIG_DIR": str(self.root / "config"),
+            "XDG_CONFIG_HOME": str(self.root / "xdg-config"),
             "DOTAI_STATE_DIR": str(self.state_dir), "XDG_STATE_HOME": str(self.root / "xdg"),
             "GH_HOST": "github.com", "NO_COLOR": "1", "DOTAI_PLATFORM": "linux",
         })
@@ -291,7 +293,7 @@ class PersistenceRoutingCoverageTests(unittest.TestCase):
         example_path = self.root / "example.json"
         example_path.write_text(json.dumps(example), encoding="utf-8")
         self.state_file("recommended-skills.json", json.dumps({os.path.normcase(str(self.path.resolve())): [managed, retired]}).encode())
-        with mock.patch.object(manifests, "EXAMPLE_MANIFEST", example_path):
+        with mock.patch.object(manifests, "SKILL_RECOMMENDATIONS", example_path):
             self.assertEqual(state.managed_recommendations(self.path), [managed])
 
     def test_dry_run_and_failed_reconcile_do_not_advance_success_or_ownership(self) -> None:

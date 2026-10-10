@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 import hashlib
 import json
 import os
@@ -16,12 +16,19 @@ from . import terminal
 
 
 def skill_command(skill: dict[str, Any]) -> list[str]:
+    source = skill["source"]
+    revision = skill.get("revision")
+    if revision:
+        repository = github_repository_source(source)
+        if repository is None or not re.fullmatch(r"[A-Za-z0-9._-]+", revision):
+            raise runtime.DotAiError(f"Cannot pin skill source {source}: use a GitHub repository root and an unambiguous revision")
+        source = f"https://github.com/{repository}/tree/{revision}"
     command = [
         "npx",
         "--yes",
-        "skills@latest",
+        f"skills@{skill.get('installerVersion', 'latest')}",
         "add",
-        skill["source"],
+        source,
         "--global",
         "--agent",
         skill.get("agent", "universal"),
@@ -85,13 +92,17 @@ def skill_source_owned(skill: dict[str, Any], owners: dict[str, Any]) -> bool:
     if not skill["source"].startswith("https://github.com/") and os.environ.get("GH_HOST", "").strip().lower() not in {"", "github.com"}:
         return False
     root = skill_root(skill)
+    if root.resolve() != root:
+        return False
     for name in checks:
+        folder = root / name
+        if Path(name).name != name or name in {".", ".."} or folder.resolve() != folder:
+            return False
         entry = owners.get(name)
         if not isinstance(entry, dict) or (
             entry.get("sourceType") != "github"
             or github_repository_source(entry.get("source")) != source
             or github_repository_source(entry.get("sourceUrl")) != source
-            or entry.get("ref") is not None
         ):
             return False
         folder_hash = entry.get("skillFolderHash")
@@ -105,30 +116,89 @@ def skill_source_owned(skill: dict[str, Any], owners: dict[str, Any]) -> bool:
     return True
 
 
-def reconcile_skills(
-    manifest: dict[str, Any], runner: runtime.Runner, *, update_skills: bool = False,
-    refresh_sources: set[str] | None = None, recommended_only: bool = False,
-) -> None:
-    recommended_sources = {
-        skill["source"] for skill in manifests.load_manifest(manifests.EXAMPLE_MANIFEST)["skills"]
-    } if recommended_only else None
+def skill_owners() -> dict[str, Any]:
     xdg_state = os.environ.get("XDG_STATE_HOME")
     lock_path = Path(xdg_state) / "skills" / ".skill-lock.json" if xdg_state else runtime.home_dir() / ".agents" / ".skill-lock.json"
     try:
         lock = manifests.load_json_object(lock_path)
-    except (OSError, runtime.DotAiError):
-        lock = {}
+    except (OSError, UnicodeError, runtime.DotAiError):
+        return {}
     owned = lock.get("skills") if lock.get("version") == 3 else None
-    owners = owned if isinstance(owned, dict) else {}
+    return owned if isinstance(owned, dict) else {}
+
+
+def reconcile_skills(
+    manifest: dict[str, Any], runner: runtime.Runner, *, mode: str = "sync", update_skills: bool = False,
+    refresh_sources: set[str] | None = None, recommended_only: bool = False,
+    receipt_owned: Callable[[dict[str, Any]], bool] | None = None,
+    deactivate: Callable[..., bool] | None = None,
+    record_installed: Callable[..., None] | None = None,
+) -> None:
+    recommended_sources = {
+        skill["source"] for skill in manifests.recommended_skills()
+    } if recommended_only else None
+    owners = skill_owners()
     for skill in manifest["skills"]:
         if recommended_sources is not None and skill["source"] not in recommended_sources:
             print(f"{terminal.badge('INACTIVE')} Skills from {skill['source']}: preserved; skipped during enforced sync")
             continue
-        refresh = update_skills or (refresh_sources is not None and skill["source"] in refresh_sources)
-        if not refresh and skill_status(skill)[0] and skill_source_owned(skill, owners):
-            print(f"{terminal.badge('OK')} Skills from {skill['source']}: already installed")
+        if skill.get("enabled") is False:
+            if deactivate is not None:
+                deactivate("skill", skill["source"], skill, manifest, runner)
+            else:
+                detail = f"Skills from {skill['source']}: disabling requires ownership verification; use 'dotai disable skill:{skill['source']}'"
+                runner.failures.append(detail)
+                print(f"{terminal.badge('DRIFT')} {detail}")
             continue
-        runner.run(skill_command(skill), f"Reconcile skills from {skill['source']}")
+        refresh = mode == "update" or update_skills or (refresh_sources is not None and skill["source"] in refresh_sources)
+        root = skill_root(skill)
+        if root.resolve() != root:
+            detail = f"Skills from {skill['source']}: agent root is redirected; resolve {root} before installation"
+            runner.failures.append(detail)
+            print(f"{terminal.badge('DRIFT')} {detail}")
+            continue
+        checks = skill.get("checkSkills", [])
+        existing = [name for name in checks if (skill_root(skill) / name).exists() or (skill_root(skill) / name).is_symlink()]
+        current = {**skill, "checkSkills": existing}
+        owned = skill_source_owned(current, owners) or (receipt_owned is not None and receipt_owned(current))
+        if existing and not owned:
+            detail = f"Skills from {skill['source']}: existing content has unknown provenance or local modifications; adopt matching content or resolve it manually before updating"
+            runner.failures.append(detail)
+            print(f"{terminal.badge('DRIFT')} {detail}")
+            continue
+        if not checks:
+            detail = f"Skills from {skill['source']}: selections are unverified; declare --check-skill names before installation"
+            runner.failures.append(detail)
+            print(f"{terminal.badge('DRIFT')} {detail}")
+            continue
+        if not refresh and skill_status(skill)[0] and owned:
+            print(f"{terminal.badge('OK')} Skills from {skill['source']}: already installed; retained current revision")
+            continue
+        selections = skill.get("skills", ["*"])
+        if not selections or "*" in selections:
+            detail = f"Skills from {skill['source']}: wildcard mutation cannot prove every installer destination; declare individual --skill selections before installation or refresh"
+            runner.failures.append(detail)
+            print(f"{terminal.badge('DRIFT')} {detail}")
+            continue
+        hidden = {installed_skill_name(name) for name in selections} - set(checks)
+        if any((root / name).exists() or (root / name).is_symlink() for name in hidden):
+            detail = f"Skills from {skill['source']}: existing installer-normalized destinations differ from authoritative checks; resolve directory mappings before installing"
+            runner.failures.append(detail)
+            print(f"{terminal.badge('DRIFT')} {detail}")
+            continue
+        install = skill
+        missing = [name for name in checks if name not in existing]
+        if not refresh and existing and missing:
+            mapped = {installed_skill_name(name): name for name in selections}
+            if "*" in selections or len(mapped) != len(selections) or set(mapped) != set(checks):
+                detail = f"Skills from {skill['source']}: cannot map missing check directories to installer selections safely; use unambiguous named selections or update explicitly"
+                runner.failures.append(detail)
+                print(f"{terminal.badge('DRIFT')} {detail}")
+                continue
+            install = {**skill, "skills": [mapped[name] for name in missing], "checkSkills": missing}
+        result = runner.run(skill_command(install), f"{'Update' if refresh else 'Install missing'} skills from {skill['source']}")
+        if not runner.dry_run and result is not None and result.returncode == 0 and record_installed is not None:
+            record_installed("skill", skill["source"], install, manifest, runner)
 
 
 def agent_display_matches(agent: str, display: Any) -> bool:
@@ -141,9 +211,9 @@ def agent_display_matches(agent: str, display: Any) -> bool:
     )
 
 
-def installed_skill_records(agent: str, runner: runtime.Runner, source: str | None = None) -> list[dict[str, Any]] | None:
+def installed_skill_records(agent: str, runner: runtime.Runner, source: str | None = None, *, installer_version: str = "latest") -> list[dict[str, Any]] | None:
     raw = runner.output(
-        ["npx", "--yes", "skills@latest", "list", "--global", "--agent", agent, "--json"]
+        ["npx", "--yes", f"skills@{installer_version}", "list", "--global", "--agent", agent, "--json"]
     )
     try:
         installed = json.loads(raw)
@@ -223,13 +293,13 @@ def remove_retired_skills(changes: list[dict[str, Any]], runner: runtime.Runner)
             continue
         if runner.dry_run:
             if "*" in wanted_before:
-                print(f"{terminal.badge('RUN')} Remove retired skills from {before['source']}: installed directories resolved when applied")
+                print(f"{terminal.badge('RUN')} Would remove retired skills from {before['source']} only after confirmation and ownership verification: installed directories resolved when applied")
                 continue
             for name in sorted(names_before - names_after if same_agent else names_before):
-                print(f"{terminal.badge('RUN')} Remove retired {agent} skill directory: {skill_root(before) / name}")
+                print(f"{terminal.badge('RUN')} Would remove retired {agent} skill directory only after confirmation and ownership verification: {skill_root(before) / name}")
             continue
 
-        installed = installed_skill_records(agent, runner, before["source"])
+        installed = installed_skill_records(agent, runner, before["source"], installer_version=before.get("installerVersion", "latest"))
         if installed is None:
             runner.failures.append(f"Unable to list installed skills from {before['source']}")
             print(f"{terminal.badge('FAIL')} Unable to identify installed skills from {before['source']}")
@@ -253,7 +323,7 @@ def remove_retired_skills(changes: list[dict[str, Any]], runner: runtime.Runner)
             runner.failures.append(str(exc))
             print(f"{terminal.badge('FAIL')} {exc}")
             continue
-        remaining = installed_skill_records(agent, runner)
+        remaining = installed_skill_records(agent, runner, installer_version=before.get("installerVersion", "latest"))
         if remaining is None:
             runner.failures.append(f"Unable to verify retired skills from {before['source']}")
             print(f"{terminal.badge('FAIL')} Unable to verify retired skills from {before['source']}")
@@ -311,37 +381,6 @@ def legacy_skill_migration(manifest: dict[str, Any]) -> tuple[dict[str, Any], li
     return updated, migrated
 
 
-def fix_legacy_skills(manifest: dict[str, Any], path: Path, runner: runtime.Runner) -> int:
-    updated, migrated = legacy_skill_migration(manifest)
-    if not migrated:
-        print(f"{terminal.badge('OK')} No legacy Pi-targeted skills found in {path}.")
-        return 0
-
-    print(f"{terminal.heading('Proposed skill migration:')}")
-    print(manifests.manifest_diff(manifest, updated, path))
-    print(f"\nMigrates {len(migrated)} skill source(s) from Pi to the OMP universal target.")
-    if runner.dry_run:
-        print(f"{terminal.badge('RUN')} Dry run: no manifest changes applied.")
-        reconcile_skills(updated, runner)
-        return 1 if runner.failures else 0
-    try:
-        answer = input("Apply these changes and install the migrated skills? [y/N] ")
-    except (EOFError, KeyboardInterrupt):
-        answer = ""
-    if answer.strip().lower() not in {"y", "yes"}:
-        print(f"{terminal.badge('OK')} No changes applied.")
-        return 0
-
-    backup = manifests.write_manifest(path, updated, backup=True)
-    print(f"{terminal.badge('OK')} Manifest backup written to {backup}")
-    reconcile_skills(updated, runner)
-    if runner.failures:
-        print(f"{terminal.styled('Skill migration failed:', 'red', 'bold')}")
-        for failure in runner.failures:
-            print(f"  - {failure}")
-        return 1
-    print(f"{terminal.styled('Skill migration complete.', 'green', 'bold')}")
-    return 0
 
 
 def installed_skill_name(name: str) -> str:

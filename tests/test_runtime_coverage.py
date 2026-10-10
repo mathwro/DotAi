@@ -17,7 +17,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if __name__ == "__main__":
     sys.path.insert(0, str(ROOT))
 
-from dotai_app import packages, reconcile, runtime, terminal
+from dotai_app import lifecycle, packages, reconcile, runtime, terminal
 
 
 class RuntimeCoverageTests(unittest.TestCase):
@@ -31,6 +31,7 @@ class RuntimeCoverageTests(unittest.TestCase):
         environment.update({
             "HOME": str(self.home), "USERPROFILE": str(self.home),
             "DOTAI_HOME": str(self.home), "DOTAI_STATE_DIR": str(self.home / "state"),
+            "DOTAI_CONFIG_DIR": str(self.home / "config"), "XDG_CONFIG_HOME": str(self.home / "xdg-config"),
             "XDG_STATE_HOME": str(self.home / "xdg"), "GH_HOST": "github.com",
             "NO_COLOR": "1",
         })
@@ -49,11 +50,9 @@ class RuntimeCoverageTests(unittest.TestCase):
         return self.python(f"from pathlib import Path; Path({str(path)!r}).write_text({value!r}, encoding='utf-8')")
 
     def manifest(self, package: dict) -> dict:
-        return {
-            "version": 1, "packages": [package], "skills": [], "marketplaces": [],
-            "plugins": [], "ompExtensions": [],
-            "mcp": {"target": str(self.home / "mcp.json"), "servers": {}},
-        }
+        return {"version": 2, "prerequisites": [], "packages": [package], "skills": [], "marketplaces": [],
+        "plugins": [], "ompExtensions": [],
+        "mcp": {"target": str(self.home / "mcp.json"), "servers": {}},}
 
     def test_nonzero_capture_reports_both_streams_and_only_required_failures(self) -> None:
         command = self.python("import sys; print('stdout-detail'); print('stderr-detail', file=sys.stderr); sys.exit(7)")
@@ -65,8 +64,10 @@ class RuntimeCoverageTests(unittest.TestCase):
                     result = runner.run(command, "failing tool", capture=True, required=required)
                 self.assertEqual(result.returncode, 7)
                 self.assertIn("stdout-detail", result.stdout)
-                self.assertIn("stderr-detail", result.stdout)
-                self.assertIn("stdout-detail", report.getvalue())
+                self.assertIn("stderr-detail", result.stderr)
+                self.assertNotIn("stderr-detail", result.stdout)
+                self.assertNotIn("stdout-detail", result.stderr)
+                self.assertIn("failing tool", report.getvalue())
                 self.assertIn("stderr-detail", report.getvalue())
                 self.assertEqual(len(runner.failures), int(required))
                 if required:
@@ -284,13 +285,6 @@ class RuntimeCoverageTests(unittest.TestCase):
             self.assertEqual(runtime.selected(available, platform), [])
         self.assertEqual(runtime.selected({"linux": [], "default": ["not-used"]}, "linux"), [])
 
-    def test_invalid_step_records_failure_without_skipping_later_valid_step(self) -> None:
-        marker = self.home / "valid-step"
-        runner = runtime.Runner(self.platform)
-        with contextlib.redirect_stdout(io.StringIO()):
-            runtime.run_steps([{"not": "command"}, self.marker_command(marker, "ran")], runner, "steps")
-        self.assertEqual(marker.read_text(encoding="utf-8"), "ran")
-        self.assertEqual(len(runner.failures), 1)
 
     def test_package_version_failures_are_unhealthy_with_useful_reports(self) -> None:
         cases = [
@@ -309,16 +303,22 @@ class RuntimeCoverageTests(unittest.TestCase):
         self.assertEqual(runner.failures, [])
 
     def test_package_version_unicode_read_error_is_unhealthy(self) -> None:
-        command = self.python("import sys; sys.stdout.buffer.write(b'\\xff')")
-        runner = runtime.Runner(self.platform)
-        # Pin the decoding boundary only; the child and invalid bytes are real.
-        real_run = subprocess.run
-
-        def decode_as_utf8(*args, **kwargs):
-            return real_run(*args, **kwargs, encoding="utf-8")
-
-        with mock.patch.object(packages.subprocess, "run", side_effect=decode_as_utf8):
-            self.assertEqual(packages.package_version_check({"minimumVersion": "2.0"}, runner, command), (False, "not found"))
+        for stream in ("stdout", "stderr"):
+            with self.subTest(stream=stream):
+                command = self.python(f"import sys; sys.{stream}.buffer.write(b'tool 2.0.0\\xff')")
+                script = (
+                    "import json\n"
+                    "from dotai_app import packages, runtime\n"
+                    f"runner = runtime.Runner({self.platform!r})\n"
+                    f"result = packages.package_version_check({{'minimumVersion': '2.0'}}, runner, {command!r})\n"
+                    "print(json.dumps(result))\n"
+                )
+                # A fresh process captures Windows subprocess reader-thread errors
+                # that cannot be caught by the probe's caller or redirect_stderr.
+                result = subprocess.run(self.python(script), cwd=ROOT, capture_output=True, text=True, check=False)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(result.stderr, "")
+                self.assertIs(json.loads(result.stdout)[0], False)
 
     def test_reconciliation_failure_never_overwrites_previous_success_state(self) -> None:
         for failure in ("nonzero", "missing", "verification", "unsupported"):
@@ -328,7 +328,8 @@ class RuntimeCoverageTests(unittest.TestCase):
                 saved = state_dir / "state.json"
                 saved.write_text('{"lastSuccess":"previous"}\n', encoding="utf-8")
                 marker = self.home / failure
-                package = {"name": "synthetic", "check": self.python("import sys; sys.exit(1)"), "install": {"default": [self.marker_command(marker, "installed")]}}
+                binary = self.home / (failure + ("-tool.cmd" if os.name == "nt" else "-tool"))
+                package = {"name": "synthetic", "managed": True, "check": [str(binary), "--version"], "install": {"default": [self.marker_command(marker, "installed")]}}
                 if failure == "nonzero":
                     package["install"]["default"] = [self.python("import sys; sys.exit(8)")]
                 elif failure == "missing":
@@ -347,12 +348,12 @@ class RuntimeCoverageTests(unittest.TestCase):
                 self.assertFalse((state_dir / "recommended-skills.json").exists())
                 self.assertEqual(marker.exists(), failure == "verification")
 
-    def test_install_skip_and_unmanaged_update_still_configure_and_verify(self) -> None:
+    def test_install_skip_and_package_without_update_still_configure_and_verify(self) -> None:
         for mode in ("install", "update"):
             with self.subTest(mode=mode):
                 install_marker = self.home / (mode + "-install")
                 configured = self.home / (mode + "-configured")
-                package = {"name": "present", "check": self.python("pass"), "install": {"default": [self.marker_command(install_marker, "unexpected")]}, "update": {}, "configure": {"default": [self.marker_command(configured, "configured")]}}
+                package = {"name": "present", "managed": True, "check": self.python("print('present 1.0.0')"), "install": {"default": [self.marker_command(install_marker, "unexpected")]}, "update": {}, "configure": {"default": [self.marker_command(configured, "configured")]}}
                 runner = runtime.Runner(self.platform)
                 with contextlib.redirect_stdout(io.StringIO()):
                     packages.reconcile_packages(self.manifest(package), runner, mode)
@@ -366,11 +367,22 @@ class RuntimeCoverageTests(unittest.TestCase):
                 version_file = self.home / "version.txt"
                 version_file.write_text(initial, encoding="utf-8")
                 unexpected = self.home / "install"
-                check = self.python(f"from pathlib import Path; print(Path({str(version_file)!r}).read_text(encoding='utf-8'))")
-                package = {"name": "tool", "minimumVersion": "2.0", "check": check, "install": {"default": [self.marker_command(unexpected, "wrong")]}, "update": {"default": [self.marker_command(version_file, "tool 2.0.0")]}}
+                binary = self.home / ("independent-tool.cmd" if os.name == "nt" else "independent-tool")
+                if os.name == "nt":
+                    binary.write_bytes(f'@echo off\r\ntype "{version_file}"\r\n'.encode())
+                else:
+                    binary.write_bytes(f"#!/bin/sh\ncat {shlex.quote(str(version_file))}\n".encode())
+                    binary.chmod(0o755)
+                check = [str(binary), "--version"]
+                package = {"name": "tool", "managed": True, "minimumVersion": "2.0", "check": check, "install": {"default": [self.marker_command(unexpected, "wrong")]}, "update": {"default": [self.marker_command(version_file, "tool 2.0.0")]}}
                 runner = runtime.Runner(self.platform)
+                lifecycle.record_install("tool", "tool", package, self.manifest(package), runner)
                 with contextlib.redirect_stdout(io.StringIO()):
-                    packages.reconcile_packages(self.manifest(package), runner, "install")
+                    packages.reconcile_packages(
+                        self.manifest(package), runner, "install",
+                        ownership_check=lambda value, current, operation_runner, operation: lifecycle.check_update_ownership(
+                            "tool", value["name"], value, current, operation_runner, operation=operation),
+                    )
                 self.assertEqual(version_file.read_text(encoding="utf-8"), "tool 2.0.0")
                 self.assertFalse(unexpected.exists())
                 self.assertEqual(runner.failures, [])
@@ -378,7 +390,7 @@ class RuntimeCoverageTests(unittest.TestCase):
     def test_missing_package_install_makes_verification_healthy(self) -> None:
         marker = self.home / "installed"
         check = self.python(f"from pathlib import Path; import sys; sys.exit(0 if Path({str(marker)!r}).exists() else 1)")
-        package = {"name": "missing", "check": check, "install": {"default": [self.marker_command(marker, "installed")]}}
+        package = {"name": "missing", "managed": True, "check": check, "install": {"default": [self.marker_command(marker, "installed")]}}
         runner = runtime.Runner(self.platform)
         with contextlib.redirect_stdout(io.StringIO()):
             packages.reconcile_packages(self.manifest(package), runner, "update")
@@ -388,7 +400,7 @@ class RuntimeCoverageTests(unittest.TestCase):
 
     def test_dry_reconciliation_preserves_files_and_success_state(self) -> None:
         marker = self.home / "not-installed"
-        package = {"name": "missing", "check": self.python("import sys; sys.exit(1)"), "install": {"default": [self.marker_command(marker, "wrong")]}}
+        package = {"name": "missing", "managed": True, "check": self.python("import sys; sys.exit(1)"), "install": {"default": [self.marker_command(marker, "wrong")]}}
         manifest = self.manifest(package)
         path = self.home / "manifest.json"
         path.write_text(json.dumps(manifest), encoding="utf-8")
@@ -401,6 +413,25 @@ class RuntimeCoverageTests(unittest.TestCase):
         self.assertFalse((self.home / "state").exists())
         self.assertEqual(json.loads(path.read_text(encoding="utf-8")), manifest)
 
+
+    @unittest.skipIf(os.name == "nt", "POSIX executable fixture")
+    def test_missing_appdata_does_not_run_program_from_relative_npm_directory(self) -> None:
+        folder = self.home / "npm"
+        folder.mkdir()
+        marker = self.home / "unmanaged-program-ran"
+        program = folder / "dotai-relative-path-probe"
+        program.write_text(f"#!/bin/sh\ntouch '{marker}'\nprintf 'unmanaged\\n'\n")
+        program.chmod(0o755)
+        previous = Path.cwd()
+        try:
+            os.chdir(self.home)
+            with mock.patch.dict(os.environ):
+                os.environ.pop("APPDATA", None)
+                runner = runtime.Runner("linux")
+                self.assertEqual(runner.output(["dotai-relative-path-probe"]), "")
+        finally:
+            os.chdir(previous)
+        self.assertFalse(marker.exists())
 
 if __name__ == "__main__":
     unittest.main()

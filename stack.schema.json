@@ -7,42 +7,65 @@
   "additionalProperties": true,
   "properties": {
     "$schema": {"type": "string"},
-    "version": {"const": 1},
+    "version": {"const": 2},
+    "prerequisites": {"type": "array", "items": {"$ref": "#/definitions/prerequisite"}},
+    "integrationRequires": {
+      "type": "object",
+      "propertyNames": {"enum": ["packages", "skills", "marketplaces", "plugins", "ompExtensions", "ompRouting", "mcp"]},
+      "additionalProperties": {"$ref": "#/definitions/requirements"}
+    },
     "packages": {
       "type": "array",
+      "uniqueItems": true,
       "items": {"$ref": "#/definitions/package"}
     },
     "skills": {
       "type": "array",
+      "uniqueItems": true,
       "items": {"$ref": "#/definitions/skill"}
     },
     "marketplaces": {
       "type": "array",
+      "uniqueItems": true,
       "items": {
         "type": "object",
         "required": ["name", "source"],
         "additionalProperties": true,
         "properties": {
           "name": {"type": "string", "minLength": 1},
+          "enabled": {"type": "boolean"},
+          "requires": {"$ref": "#/definitions/requirements"},
           "source": {"type": "string", "minLength": 1}
         }
       }
     },
     "plugins": {
       "type": "array",
+      "uniqueItems": true,
       "items": {
         "type": "object",
         "required": ["id"],
         "additionalProperties": true,
         "properties": {
           "id": {"type": "string", "pattern": "^[a-z0-9.-]+@[a-z0-9.-]+$"},
+          "enabled": {"type": "boolean"},
+          "requires": {"$ref": "#/definitions/requirements"},
           "scope": {"enum": ["user", "project"]}
         }
       }
     },
     "ompExtensions": {
       "type": "array",
-      "items": {"type": "string", "minLength": 1},
+      "items": {
+        "oneOf": [
+          {"type": "string", "minLength": 1},
+          {"type": "object", "required": ["path"], "properties": {
+            "path": {"type": "string", "minLength": 1},
+            "enabled": {"type": "boolean"},
+            "requires": {"$ref": "#/definitions/requirements"}
+          }, "additionalProperties": true}
+        ]
+      },
       "uniqueItems": true,
       "default": []
     },
@@ -148,13 +171,52 @@
         }
       ]
     },
+    "requirements": {
+      "oneOf": [
+        {"type": "array", "items": {"type": "string", "minLength": 1}},
+        {"allOf": [
+          {"$ref": "#/definitions/platformValue"},
+          {"additionalProperties": {"type": "array", "items": {"type": "string", "minLength": 1}}}
+        ]}
+      ]
+    },
+    "prerequisite": {
+      "type": "object",
+      "required": ["name", "check"],
+      "additionalProperties": true,
+      "not": {"anyOf": [
+        {"required": ["install"]}, {"required": ["update"]}, {"required": ["configure"]},
+        {"required": ["uninstall"]}, {"required": ["pinInstall"]}, {"required": ["managed"]},
+        {"required": ["recipe"]}, {"required": ["updateGroup"]}, {"required": ["version"]},
+        {"required": ["updatePolicy"]}, {"required": ["requires"]}, {"required": ["provides"]},
+        {"required": ["enabled"]}, {"required": ["updateRequires"]}
+      ]},
+      "properties": {
+        "name": {"type": "string", "minLength": 1},
+        "check": {"$ref": "#/definitions/platformCheck"},
+        "minimumVersion": {"type": "string", "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(\\.(0|[1-9][0-9]*))?$"},
+        "hint": {"type": "string", "minLength": 1}
+      }
+    },
     "package": {
       "type": "object",
-      "required": ["name", "check", "install"],
+      "required": ["name", "managed"],
+      "anyOf": [{"required": ["recipe"]}, {"required": ["check", "install"]}],
+      "not": {"required": ["updateGroup"]},
       "additionalProperties": true,
       "properties": {
         "name": {"type": "string", "minLength": 1},
-        "updateGroup": {"enum": ["core", "dependency"], "default": "core"},
+        "managed": {"const": true},
+        "enabled": {"type": "boolean"},
+        "recipe": {"type": "string", "minLength": 1},
+        "requires": {"$ref": "#/definitions/requirements"},
+        "updateRequires": {"$ref": "#/definitions/requirements"},
+        "configureWhen": {"type": "object", "additionalProperties": true},
+        "provides": {"type": "array", "items": {"type": "string", "minLength": 1}},
+        "version": {"type": "string", "pattern": "^(latest|(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(\\.(0|[1-9][0-9]*))?)$"},
+        "updatePolicy": {"enum": ["latest", "pinned"]},
+        "uninstall": {"$ref": "#/definitions/platformCommands"},
+        "pinInstall": {"$ref": "#/definitions/platformCommands"},
         "minimumVersion": {"type": "string", "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(\\.(0|[1-9][0-9]*))?$"},
         "check": {"$ref": "#/definitions/platformCheck"},
         "install": {"$ref": "#/definitions/platformCommands"},
@@ -168,6 +230,11 @@
       "additionalProperties": true,
       "properties": {
         "source": {"type": "string", "minLength": 1},
+        "enabled": {"type": "boolean"},
+        "requires": {"$ref": "#/definitions/requirements"},
+        "revision": {"type": "string", "minLength": 1},
+        "installerVersion": {"type": "string", "minLength": 1},
+        "updatePolicy": {"enum": ["latest", "pinned"]},
         "agent": {"type": "string", "default": "universal"},
         "skills": {"type": "array", "items": {"type": "string"}, "default": ["*"]},
         "checkSkills": {"type": "array", "items": {"type": "string"}}

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 import json
 import os
 import tempfile
@@ -18,22 +18,37 @@ def desired_mcp(manifest: dict[str, Any]) -> tuple[Path, dict[str, Any]]:
     return target, mcp
 
 
+def safe_mcp_target(target: Path) -> Path:
+    """Trust the configured HOME prefix, never redirected managed descendants."""
+    target = target.absolute()
+    configured_home = Path(os.environ.get("DOTAI_HOME", Path.home())).expanduser().absolute()
+    try:
+        relative = target.relative_to(configured_home)
+    except ValueError:
+        pass
+    else:
+        target = runtime.home_dir() / relative
+    if target.is_symlink() or target.resolve() != target:
+        raise runtime.DotAiError("MCP target is linked or redirected; resolve its target and parent directories before retrying")
+    return target
+
+
 def mcp_config_paths(target: Path) -> list[Path]:
     candidates = [
         target,
         runtime.home_dir() / ".omp" / "agent" / "mcp.json",
-        runtime.ROOT / ".omp" / "mcp.json",
-        runtime.ROOT / ".omp" / ".mcp.json",
-        runtime.ROOT / "mcp.json",
-        runtime.ROOT / ".mcp.json",
+        Path.cwd() / ".omp" / "mcp.json",
+        Path.cwd() / ".omp" / ".mcp.json",
+        Path.cwd() / "mcp.json",
+        Path.cwd() / ".mcp.json",
         runtime.home_dir() / ".config" / "opencode" / "opencode.json",
-        runtime.ROOT / "opencode.json",
+        Path.cwd() / "opencode.json",
         runtime.home_dir() / ".cursor" / "mcp.json",
-        runtime.ROOT / ".cursor" / "mcp.json",
+        Path.cwd() / ".cursor" / "mcp.json",
         runtime.home_dir() / ".vscode" / "mcp.json",
-        runtime.ROOT / ".vscode" / "mcp.json",
+        Path.cwd() / ".vscode" / "mcp.json",
         runtime.home_dir() / ".claude" / "mcp.json",
-        runtime.ROOT / ".claude" / "mcp.json",
+        Path.cwd() / ".claude" / "mcp.json",
     ]
     unique: list[Path] = []
     seen: set[Path] = set()
@@ -113,15 +128,35 @@ def server_satisfies(found: dict[str, Any], required: dict[str, Any]) -> bool:
     return True
 
 
-def sync_mcp(manifest: dict[str, Any], runner: runtime.Runner) -> bool:
-    target, mcp = desired_mcp(manifest)
+def sync_mcp(
+    manifest: dict[str, Any], runner: runtime.Runner, *,
+    deactivate: Callable[..., bool] | None = None,
+    record_installed: Callable[..., None] | None = None,
+    ownership_check: Callable[..., None] | None = None,
+) -> bool:
+    target, _ = desired_mcp(manifest)
+    target = safe_mcp_target(target)
+    for name, required in manifest["mcp"]["servers"].items():
+        if required.get("enabled") is False:
+            if deactivate is not None:
+                deactivate("mcp", name, required, manifest, runner)
+            else:
+                if any(active and server_identity_matches(found, required)
+                       for _, found, _, _, active in discover_mcp_servers(target)):
+                    detail = f"MCP {name}: disabling active configuration requires verified ownership; use 'dotai disable mcp:{name}'"
+                    runner.failures.append(detail)
+                    print(f"{terminal.badge('DRIFT')} {detail}")
+    _, mcp = desired_mcp(manifest)
     existing = load_mcp_config(target)
     servers = dict(existing.get("mcpServers", {}))
     discovered = discover_mcp_servers(target)
     changes = 0
     conflicts: list[str] = []
     used: set[tuple[Path, str, str]] = set()
+    installed: list[str] = []
     for name, required in mcp["servers"].items():
+        if required.get("enabled") is False:
+            continue
         match = next(
             ((path, section, alias) for alias, found, path, section, enabled in discovered if enabled and server_satisfies(found, required)),
             None,
@@ -167,11 +202,19 @@ def sync_mcp(manifest: dict[str, Any], runner: runtime.Runner) -> bool:
             used.add((target, "mcpServers", name))
             discovered.append((name, required, target, "mcpServers", True))
             changes += 1
+            installed.append(name)
             continue
 
         used.add((target, "mcpServers", alias))
         current = servers[alias]
         same_server = isinstance(current, dict) and server_identity_matches(current, required)
+        try:
+            if ownership_check is None:
+                raise runtime.DotAiError("Existing MCP configuration requires proven ownership before modification")
+            ownership_check("mcp", name, required, manifest, runner)
+        except (OSError, ValueError, runtime.DotAiError):
+            conflicts.append(name)
+            continue
         updated = dict(current) if same_server else {}
         for key, value in required.items():
             if key == "type" and same_server and current.get("type") == "remote" and value == "http":
@@ -189,8 +232,9 @@ def sync_mcp(manifest: dict[str, Any], runner: runtime.Runner) -> bool:
             else:
                 discovered.append((alias, updated, target, "mcpServers", True))
             changes += 1
+            installed.append(name)
     if conflicts:
-        detail = f"MCP servers unavailable or disabled: {', '.join(conflicts)}; resolve the provider configuration manually"
+        detail = f"MCP servers unavailable, disabled, or unowned: {', '.join(conflicts)}; adopt matching target entries explicitly or resolve provider conflicts manually"
         runner.failures.append(detail)
         print(f"{terminal.badge('DRIFT')} {detail}")
         return False
@@ -215,6 +259,9 @@ def sync_mcp(manifest: dict[str, Any], runner: runtime.Runner) -> bool:
         temp_path = Path(handle.name)
     os.replace(temp_path, target)
     print(f"{terminal.badge('OK')} MCP: synchronized {target}")
+    if record_installed is not None:
+        for name in installed:
+            record_installed("mcp", name, mcp["servers"][name], manifest, runner)
     return True
 
 
@@ -228,11 +275,21 @@ def mcp_status(manifest: dict[str, Any]) -> tuple[bool, str]:
     missing: list[str] = []
     sources: set[Path] = set()
     for name, required in mcp["servers"].items():
-        matches = [(found, path) for _, found, path, _, enabled in discovered if enabled and server_satisfies(found, required)]
-        if not matches:
-            missing.append(name)
+        desired_active = required.get("enabled", True)
+        fields = {key: value for key, value in required.items() if key != "enabled"}
+        matches = [(found, path, enabled) for _, found, path, _, enabled in discovered
+                   if server_satisfies(found, fields)]
+        if not desired_active:
+            if any(enabled for _, _, enabled in matches):
+                missing.append(name)
+            else:
+                sources.update(path for _, path, _ in matches)
         else:
-            sources.add(matches[0][1])
+            active_matches = [(found, path) for found, path, enabled in matches if enabled]
+            if not active_matches:
+                missing.append(name)
+            else:
+                sources.add(active_matches[0][1])
     if missing:
         return False, f"unavailable: {', '.join(missing)}"
     return True, f"{len(mcp['servers'])} managed servers available across {len(sources)} discovered config(s)"

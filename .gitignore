@@ -1,4 +1,5 @@
 /stack.json
+*.lock.json
 __pycache__/
 *.py[cod]
 .venv/

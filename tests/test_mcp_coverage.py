@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import argparse
+import copy
 import contextlib
 import io
 import json
@@ -15,19 +17,22 @@ ROOT = Path(__file__).resolve().parents[1]
 if __name__ == "__main__":
     sys.path.insert(0, str(ROOT))
 
-from dotai_app import mcp, runtime
+from dotai_app import lifecycle, mcp, runtime
 
 
 class McpCoverageTests(unittest.TestCase):
     def setUp(self) -> None:
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)
-        self.home = Path(directory.name)
+        self.home = Path(directory.name).resolve()
         self.target = self.home / ".omp" / "agent" / "mcp.json"
         self.target.parent.mkdir(parents=True)
         self.environment = {
             "HOME": str(self.home),
             "DOTAI_HOME": str(self.home),
+            "USERPROFILE": str(self.home),
+            "DOTAI_CONFIG_DIR": str(self.home / "config"),
+            "XDG_CONFIG_HOME": str(self.home / "xdg-config"),
             "DOTAI_STATE_DIR": str(self.home / "state"),
             "XDG_STATE_HOME": str(self.home / "xdg-state"),
             "GH_HOST": "fixtures.invalid",
@@ -40,21 +45,24 @@ class McpCoverageTests(unittest.TestCase):
         self.addCleanup(repository.stop)
 
     def manifest(self, servers: dict) -> dict:
-        return {
-            "version": 1,
-            "packages": [],
-            "skills": [],
-            "marketplaces": [],
-            "plugins": [],
-            "ompExtensions": [],
-            "mcp": {"target": str(self.target), "servers": servers},
-        }
+        return {"version": 2, "prerequisites": [], "packages": [], "skills": [],
+        "marketplaces": [],
+        "plugins": [],
+        "ompExtensions": [],
+        "mcp": {"target": str(self.target), "servers": servers},}
 
     def sync(self, manifest: dict, dry_run: bool = False) -> tuple[bool, runtime.Runner]:
         runner = runtime.Runner("ubuntu", dry_run=dry_run)
         with contextlib.redirect_stdout(io.StringIO()):
-            changed = mcp.sync_mcp(manifest, runner)
+            changed = mcp.sync_mcp(manifest, runner, ownership_check=lifecycle.check_update_ownership)
         return changed, runner
+
+    def adopt(self, manifest: dict) -> None:
+        with contextlib.redirect_stdout(io.StringIO()):
+            lifecycle.dispatch(
+                argparse.Namespace(command="adopt", selector="mcp:managed"),
+                manifest, self.home / "stack.json", runtime.Runner("ubuntu"),
+            )
 
     def assert_preserved(self, original: bytes) -> None:
         self.assertEqual(self.target.read_bytes(), original)
@@ -65,20 +73,29 @@ class McpCoverageTests(unittest.TestCase):
         manifest = self.manifest({"managed": {"type": "http", "url": "https://managed.example.test/mcp"}})
         manifest_path = self.home / "explicit-stack.json"
         manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+        bootstrap = (
+            "import runpy, subprocess, sys; "
+            f"sys.path.insert(0, {str(ROOT)!r}); "
+            "real_run = subprocess.run; "
+            "subprocess.run = lambda command, **kwargs: real_run("
+            "[sys.executable, '-c', \"print('omp 1.2.3')\"] "
+            "if command == ['omp', '--version'] else command, **kwargs); "
+            f"runpy.run_path({str(ROOT / 'dotai.py')!r}, run_name='__main__')"
+        )
         for dry_run in (True, False):
             with self.subTest(dry_run=dry_run):
                 command = [
-                    sys.executable, str(ROOT / "dotai.py"), "--color", "never",
+                    sys.executable, "-c", bootstrap, "--color", "never",
                     "--platform", "ubuntu", "--manifest", str(manifest_path), "update",
                 ]
                 if dry_run:
                     command.append("--dry-run")
                 result = subprocess.run(
                     command, cwd=self.home, env=os.environ.copy(), text=True,
-                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT, check=False,
+                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
                 )
-                self.assertEqual(result.returncode, 1, result.stdout)
-                self.assertNotIn("Traceback", result.stdout)
+                self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+                self.assertNotIn("Traceback", result.stdout + result.stderr)
                 self.assertIn(str(self.target), result.stdout)
                 self.assert_preserved(payload)
                 self.assertFalse((self.home / "state").exists())
@@ -112,7 +129,7 @@ class McpCoverageTests(unittest.TestCase):
         original_read_text = Path.read_text
 
         def read_text(path: Path, *args, **kwargs):
-            if path == self.target:
+            if path.resolve() == self.target.resolve():
                 raise PermissionError("fixture read denied")
             return original_read_text(path, *args, **kwargs)
 
@@ -197,6 +214,11 @@ class McpCoverageTests(unittest.TestCase):
         }, "customTopLevel": {"owner": "user"}}
         self.target.write_text(json.dumps(original), encoding="utf-8")
         before = self.target.read_bytes()
+        old = self.manifest({"managed": {
+            "type": "stdio", "command": "python3", "args": ["-m", "fixture_server"],
+            "cwd": "/workspace/second", "timeout": 10, "env": {"TOKEN": "OLD_TOKEN_FROM_ENV"},
+        }})
+        self.adopt(old)
         manifest = self.manifest({"managed": {
             "type": "stdio", "command": "python3", "args": ["-m", "fixture_server"],
             "cwd": "/workspace/second", "timeout": 30, "env": {"TOKEN": "REQUIRED_TOKEN_FROM_ENV"},
@@ -221,6 +243,8 @@ class McpCoverageTests(unittest.TestCase):
         self.assertIsNone(updated["mcpServers"]["invalid"])
         self.assertEqual(updated["customTopLevel"], {"owner": "user"})
         self.assertEqual(next(self.target.parent.glob("mcp.json.bak.*")).read_bytes(), before)
+        if os.name != "nt":
+            self.assertEqual(next(self.target.parent.glob("mcp.json.bak.*")).stat().st_mode & 0o777, 0o600)
         self.assertTrue(mcp.mcp_status(manifest)[0])
         converged = self.target.read_bytes()
         self.assertFalse(self.sync(manifest)[0])
@@ -241,6 +265,12 @@ class McpCoverageTests(unittest.TestCase):
                         **identity, section: current, "providerOptions": {"owner": "user"},
                     }}}), encoding="utf-8")
                     before = self.target.read_bytes()
+                    receipt = self.home / "state" / "component-receipts.json"
+                    if receipt.exists():
+                        receipt.unlink()
+                    self.adopt(self.manifest({"managed": {
+                        **identity, "type": transport, section: copy.deepcopy(current),
+                    }}))
                     manifest = self.manifest({"managed": {
                         **identity, "type": transport, section: {"TOKEN": "REQUIRED_TOKEN_FROM_ENV"},
                     }})
@@ -259,6 +289,8 @@ class McpCoverageTests(unittest.TestCase):
                         "providerOptions": {"owner": "user"},
                     }})
                     self.assertEqual(next(self.target.parent.glob("mcp.json.bak.*")).read_bytes(), before)
+                    if os.name != "nt":
+                        self.assertEqual(next(self.target.parent.glob("mcp.json.bak.*")).stat().st_mode & 0o777, 0o600)
                     self.assertTrue(mcp.mcp_status(manifest)[0])
                     converged = self.target.read_bytes()
                     self.assertFalse(self.sync(manifest)[0])

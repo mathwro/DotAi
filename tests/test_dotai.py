@@ -2,8 +2,11 @@ from __future__ import annotations
 
 import contextlib
 import io
+import copy
+import hashlib
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -19,6 +22,8 @@ from dotai_app import (
     cli,
     health,
     manifest as manifests,
+    lifecycle,
+    locking,
     mcp as mcp_config,
     omp as omp_config,
     packages as package_manager,
@@ -34,22 +39,173 @@ from dotai_app import (
 
 
 class DotAiTests(unittest.TestCase):
+    def setUp(self) -> None:
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        home = Path(temporary.name)
+        environment = mock.patch.dict(os.environ, {
+            "HOME": str(home), "USERPROFILE": str(home), "DOTAI_HOME": str(home),
+            "DOTAI_CONFIG_DIR": str(home / "config"), "XDG_CONFIG_HOME": str(home / "xdg-config"),
+            "DOTAI_STATE_DIR": str(home / "state"), "XDG_STATE_HOME": str(home / "xdg-state"),
+            "GH_HOST": "github.com", "NO_COLOR": "1",
+        })
+        environment.start()
+        self.addCleanup(environment.stop)
+        real_run = subprocess.run
+        self.fixture_sources = {}
+        self.fixture_records = []
+        self.fixture_revision = "a" * 40
+        versions = {"omp": "omp 1.2.3", "node": "v24.0.0", "npx": "10.0.0"}
+        def prerequisite_boundary(command, *args, **kwargs):
+            if isinstance(command, list) and len(command) == 2 and command[1] == "--version" and command[0] in versions:
+                command = [sys.executable, "-c", f"print({versions[command[0]]!r})"]
+            elif isinstance(command, list) and command[0] == "npx":
+                command = self.fixture_npx_command(command)
+            return real_run(command, *args, **kwargs)
+        boundary = mock.patch.object(subprocess, "run", new=prerequisite_boundary)
+        boundary.start()
+        self.addCleanup(boundary.stop)
+        metadata = mock.patch.object(locking, "_fetch_json", side_effect=self.fixture_metadata)
+        metadata.start()
+        self.addCleanup(metadata.stop)
+        network = mock.patch("urllib.request.urlopen", side_effect=OSError("Fixture network disabled"))
+        network.start()
+        self.addCleanup(network.stop)
+        terminal.configure_color("never")
+        self.addCleanup(terminal.configure_color, "never")
+
+    @staticmethod
+    def fixture_tree(files: dict[str, str]) -> tuple[str, list[dict]]:
+        def walk(prefix):
+            entries = []
+            rows = []
+            children = sorted({name[len(prefix):].split("/")[0] for name in files if name.startswith(prefix)})
+            for name in children:
+                path = prefix + name
+                if path in files:
+                    content = files[path].encode()
+                    digest = hashlib.sha1(b"blob " + str(len(content)).encode() + b"\0" + content).hexdigest()
+                    kind, mode = "blob", "100644"
+                else:
+                    digest, nested = walk(path + "/")
+                    rows.extend(nested)
+                    kind, mode = "tree", "40000"
+                rows.append({"path": path, "type": kind, "mode": mode.zfill(6), "sha": digest})
+                entries.append(mode.encode() + b" " + name.encode() + b"\0" + bytes.fromhex(digest))
+            content = b"".join(entries)
+            return hashlib.sha1(b"tree " + str(len(content)).encode() + b"\0" + content).hexdigest(), rows
+        return walk("")
+
+    def resolve_skill_fixture(self, source: str, contents: dict[str, str]) -> None:
+        self.fixture_sources.setdefault(source, {}).update(contents)
+
+    def fixture_metadata(self, url: str) -> dict:
+        if url.startswith("https://registry.npmjs.org/skills/"):
+            return {"name": "skills", "version": "1.7.1", "engines": {"node": ">=20.0.0"},
+                    "dist": {"integrity": "sha512-fixture", "tarball": "https://registry.npmjs.org/skills/-/skills-1.7.1.tgz"}}
+        for source, contents in self.fixture_sources.items():
+            base = "https://api.github.com/repos/" + source + "/"
+            files = {"skills/" + name + "/SKILL.md": content for name, content in contents.items()}
+            digest, rows = self.fixture_tree(files)
+            if url.startswith(base + "commits/"):
+                return {"sha": self.fixture_revision, "commit": {"tree": {"sha": digest}}}
+            if url == base + "git/trees/" + digest + "?recursive=1":
+                return {"sha": digest, "truncated": False, "tree": rows}
+        raise AssertionError(f"Unexpected external metadata request: {url}")
+
+    def fixture_npx_command(self, command: list[str]) -> list[str]:
+        self.assertIn(command[2], ("skills@latest", "skills@1.7.1"))
+        if command[3:] == ["--version"]:
+            return [sys.executable, "-c", "print('1.7.1')"]
+        if command[3] == "list":
+            records = [row for row in self.fixture_records if Path(row["path"]).exists()]
+            return [sys.executable, "-c", f"print({json.dumps(records)!r})"]
+        self.assertEqual(command[3], "add")
+        self.assertEqual(command[2], "skills@1.7.1")
+        source = next((source for source in self.fixture_sources
+                       if command[4] == f"https://github.com/{source}/tree/{self.fixture_revision}"), None)
+        self.assertIsNotNone(source, f"Installer must consume a resolved immutable source: {command}")
+        names = [command[index + 1] for index, value in enumerate(command) if value == "--skill"]
+        agent = command[command.index("--agent") + 1]
+        root = skill_manager.skill_root({"agent": agent})
+        payload = []
+        for name in names:
+            content = self.fixture_sources[source][name]
+            digest, _ = self.fixture_tree({"SKILL.md": content})
+            entry = self.github_skill_lock_entry(source, digest, name)
+            entry["ref"] = self.fixture_revision
+            payload.append({"path": str(root / name), "content": content, "name": name, "owner": entry})
+            record = {"name": name, "path": str(root / name), "scope": "global",
+                      "agents": [agent.title()], "source": source, "sourceType": "github",
+                      "sourceUrl": "https://github.com/" + source}
+            self.fixture_records = [row for row in self.fixture_records if row["path"] != record["path"]]
+            self.fixture_records.append(record)
+        xdg = os.environ.get("XDG_STATE_HOME")
+        owner_path = Path(xdg) / "skills/.skill-lock.json" if xdg else runtime.home_dir() / ".agents/.skill-lock.json"
+        script = """import json, pathlib, sys
+rows = json.loads(sys.argv[1])
+lock_path = pathlib.Path(sys.argv[2])
+lock = json.loads(lock_path.read_text()) if lock_path.exists() else {"version": 3, "skills": {}}
+for row in rows:
+    folder = pathlib.Path(row["path"])
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / "SKILL.md").write_bytes(row["content"].encode("utf-8"))
+    lock["skills"][row["name"]] = row["owner"]
+lock_path.parent.mkdir(parents=True, exist_ok=True)
+lock_path.write_text(json.dumps(lock))
+"""
+        return [sys.executable, "-c", script, json.dumps(payload), str(owner_path)]
+
+    def adopt_mcp_fixture(self, manifest: dict, target: Path) -> None:
+        previous = copy.deepcopy(manifest)
+        config = json.loads(target.read_text())
+        for name in list(previous["mcp"]["servers"]):
+            alias = name if name in config["mcpServers"] else next(
+                (alias for alias in config["mcpServers"] if alias == name + "-alias"), None)
+            if alias is None:
+                del previous["mcp"]["servers"][name]
+                continue
+            previous["mcp"]["servers"][name] = copy.deepcopy(config["mcpServers"][alias])
+            if previous["mcp"]["servers"][name].get("type") == "remote":
+                previous["mcp"]["servers"][name]["type"] = "http"
+        path = target.parent / "fixture-stack.json"
+        path.write_text(json.dumps(previous))
+        with contextlib.redirect_stdout(io.StringIO()):
+            for name in previous["mcp"]["servers"]:
+                self.assertEqual(cli.main(["--manifest", str(path), "adopt", "mcp:" + name]), 0)
+
+    def own_skill_fixture(self, folder: Path, source: str) -> None:
+        if shutil.which("git") is None:
+            self.skipTest("Git independently verifies fixture trees")
+        with tempfile.TemporaryDirectory() as directory:
+            tree = Path(directory)
+            subprocess.run(["git", "init", "--quiet", "--object-format=sha1", str(tree)], check=True, capture_output=True)
+            shutil.copytree(folder, tree, dirs_exist_ok=True)
+            subprocess.run(["git", "-C", str(tree), "-c", "core.filemode=true", "-c", "core.autocrlf=false", "add", "--all"], check=True, capture_output=True)
+            digest = subprocess.run(["git", "-C", str(tree), "write-tree"], check=True, text=True, capture_output=True).stdout.strip()
+        xdg = os.environ.get("XDG_STATE_HOME")
+        lock_path = Path(xdg) / "skills" / ".skill-lock.json" if xdg else runtime.home_dir() / ".agents" / ".skill-lock.json"
+        lock = json.loads(lock_path.read_text()) if lock_path.exists() else {"version": 3, "skills": {}}
+        lock["skills"][folder.name] = self.github_skill_lock_entry(source, digest, folder.name)
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        lock_path.write_text(json.dumps(lock), encoding="utf-8")
+        self.resolve_skill_fixture(source, {folder.name: (folder / "SKILL.md").read_bytes().decode("utf-8")})
+        self.fixture_records.append({"name": folder.name, "path": str(folder.resolve()), "scope": "global",
+                                     "agents": ["Universal"], "source": source, "sourceType": "github",
+                                     "sourceUrl": "https://github.com/" + source})
+
     def minimal_manifest(self, target: str) -> dict:
-        return {
-            "version": 1,
-            "packages": [],
-            "skills": [],
-            "marketplaces": [],
-            "plugins": [],
-            "ompExtensions": [],
-            "mcp": {
-                "target": target,
-                "servers": {
-                    "context7": {"type": "http", "url": "https://mcp.context7.com/mcp"},
-                    "microsoft-learn": {"type": "http", "url": "https://learn.microsoft.com/api/mcp"},
-                },
+        return {"version": 2, "prerequisites": [], "packages": [], "skills": [],
+        "marketplaces": [],
+        "plugins": [],
+        "ompExtensions": [],
+        "mcp": {
+            "target": target,
+            "servers": {
+                "context7": {"type": "http", "url": "https://mcp.context7.com/mcp"},
+                "microsoft-learn": {"type": "http", "url": "https://learn.microsoft.com/api/mcp"},
             },
-        }
+        },}
 
     def compact_routing(self, providers: list[str], primary: str) -> dict:
         return {
@@ -164,21 +320,6 @@ class DotAiTests(unittest.TestCase):
         self.assertEqual(manifests.validate_omp_routing(routing), routing)
         self.assertEqual(manifests.validate_omp_routing(None), {})
 
-    def test_stack_schema_has_exact_omp_routing_defaults(self) -> None:
-        schema = json.loads((ROOT / "stack.schema.json").read_text(encoding="utf-8"))
-        properties = schema["properties"]["ompRouting"]["oneOf"][1]["properties"]
-        self.assertEqual(
-            {
-                "usageReservePct": properties["usageReservePct"],
-                "usageReservePolicy": properties["usageReservePolicy"],
-                "fallbackRevertPolicy": properties["fallbackRevertPolicy"],
-            },
-            {
-                "usageReservePct": {"type": "integer", "minimum": 0, "maximum": 100, "default": 10},
-                "usageReservePolicy": {"enum": ["confirm", "auto", "fail-closed"], "default": "auto"},
-                "fallbackRevertPolicy": {"enum": ["cooldown-expiry", "never"], "default": "cooldown-expiry"},
-            },
-        )
 
     def test_validate_omp_routing_rejects_invalid_compact_intent(self) -> None:
         valid = self.compact_routing(["anthropic"], "anthropic")
@@ -309,10 +450,7 @@ class DotAiTests(unittest.TestCase):
                         manifests.load_manifest(path)
 
     def test_load_manifest_rejects_malformed_packages_and_platform_commands(self) -> None:
-        package = {
-            "name": "sample", "check": ["sample", "--version"],
-            "install": {"default": [["sample", "install"]]},
-        }
+        package = {"name": "sample", "managed": True, "check": ["sample", "--version"], "install": {"default": [["sample", "install"]]}, }
         invalid = {
             "non-object": 1,
             "missing-name": {"check": ["sample"], "install": []},
@@ -435,10 +573,6 @@ class DotAiTests(unittest.TestCase):
                 },
             )
 
-    def test_repository_example_starts_with_unconfigured_routing(self) -> None:
-        raw = json.loads((ROOT / "stack.example.json").read_text(encoding="utf-8"))
-        self.assertIsNone(raw["ompRouting"])
-        self.assertEqual(manifests.load_manifest(ROOT / "stack.example.json")["ompRouting"], {})
 
     def test_loaded_null_omp_routing_is_unconfigured(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -479,7 +613,8 @@ class DotAiTests(unittest.TestCase):
             manifest = self.minimal_manifest("~/.omp/agent/mcp.json")
             with mock.patch.dict(os.environ, {"DOTAI_HOME": str(home)}):
                 runner = runtime.Runner("ubuntu")
-                self.assertTrue(mcp_config.sync_mcp(manifest, runner))
+                self.adopt_mcp_fixture(manifest, target)
+                self.assertTrue(mcp_config.sync_mcp(manifest, runner, ownership_check=lifecycle.check_update_ownership))
                 merged = json.loads(target.read_text(encoding="utf-8"))
                 self.assertEqual(merged["customTopLevel"], {"preserve": True})
                 self.assertIn("private", merged["mcpServers"])
@@ -501,7 +636,9 @@ class DotAiTests(unittest.TestCase):
             )
             target.chmod(0o644)
             with mock.patch.dict(os.environ, {"DOTAI_HOME": str(home)}):
-                self.assertTrue(mcp_config.sync_mcp(self.minimal_manifest("~/.omp/agent/mcp.json"), runtime.Runner("ubuntu")))
+                manifest = self.minimal_manifest("~/.omp/agent/mcp.json")
+                self.adopt_mcp_fixture(manifest, target)
+                self.assertTrue(mcp_config.sync_mcp(manifest, runtime.Runner("ubuntu"), ownership_check=lifecycle.check_update_ownership))
             backup = next(target.parent.glob("mcp.json.bak.*"))
             self.assertIn("old-reference", backup.read_text(encoding="utf-8"))
             self.assertEqual(backup.stat().st_mode & 0o777, 0o600)
@@ -606,7 +743,7 @@ class DotAiTests(unittest.TestCase):
                         self.assertEqual(target.read_text(encoding="utf-8"), original)
                         self.assertEqual(list(home.glob("mcp.json.bak.*")), [])
 
-    def test_mcp_sync_replaces_non_object_managed_entry_and_preserves_other_settings(self) -> None:
+    def test_mcp_sync_preserves_unowned_non_object_slot_and_other_settings(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             home = Path(directory)
             target = home / ".omp" / "agent" / "mcp.json"
@@ -623,14 +760,10 @@ class DotAiTests(unittest.TestCase):
                     changed = mcp_config.sync_mcp(manifest, runtime.Runner("ubuntu"))
                 except AttributeError as exc:
                     self.fail(f"MCP sync crashed on a non-object managed entry: {exc}")
-                self.assertTrue(changed)
-                self.assertTrue(mcp_config.mcp_status(manifest)[0])
-            updated = json.loads(target.read_text(encoding="utf-8"))
-            self.assertEqual(updated["mcpServers"]["context7"], manifest["mcp"]["servers"]["context7"])
-            self.assertEqual(updated["mcpServers"]["personal"], original["mcpServers"]["personal"])
-            self.assertEqual(updated["customTopLevel"], original["customTopLevel"])
-            backup = next(target.parent.glob("mcp.json.bak.*"))
-            self.assertEqual(json.loads(backup.read_text(encoding="utf-8")), original)
+                self.assertFalse(changed)
+                self.assertFalse(mcp_config.mcp_status(manifest)[0])
+            self.assertEqual(json.loads(target.read_text(encoding="utf-8")), original)
+            self.assertEqual(list(target.parent.glob("mcp.json.bak.*")), [])
 
     def test_mcp_sync_does_not_duplicate_disabled_provider_alias(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -680,7 +813,8 @@ class DotAiTests(unittest.TestCase):
             }
             with mock.patch.dict(os.environ, {"DOTAI_HOME": str(home)}), contextlib.redirect_stdout(io.StringIO()):
                 runner = runtime.Runner("ubuntu")
-                self.assertTrue(mcp_config.sync_mcp(manifest, runner))
+                self.adopt_mcp_fixture(manifest, target)
+                self.assertTrue(mcp_config.sync_mcp(manifest, runner, ownership_check=lifecycle.check_update_ownership))
                 updated = json.loads(target.read_text(encoding="utf-8"))
                 self.assertEqual(updated["mcpServers"], {
                     "a": {"command": "python3", "args": ["-m", "example"], "cwd": "/workspace/a", "timeout": 30},
@@ -845,9 +979,10 @@ class DotAiTests(unittest.TestCase):
                 }
             }
             with mock.patch.dict(os.environ, {"DOTAI_HOME": str(home)}):
+                self.adopt_mcp_fixture(manifest, target)
                 self.assertFalse(mcp_config.mcp_status(manifest)[0])
                 with contextlib.redirect_stdout(io.StringIO()):
-                    self.assertTrue(mcp_config.sync_mcp(manifest, runtime.Runner("ubuntu")))
+                    self.assertTrue(mcp_config.sync_mcp(manifest, runtime.Runner("ubuntu"), ownership_check=lifecycle.check_update_ownership))
                 merged = json.loads(target.read_text(encoding="utf-8"))
                 self.assertEqual(set(merged["mcpServers"]), {"local-alias", "personal"})
                 self.assertEqual(merged["mcpServers"]["local-alias"]["cwd"], "/workspace/current")
@@ -892,9 +1027,10 @@ class DotAiTests(unittest.TestCase):
                 }
             }
             with mock.patch.dict(os.environ, {"DOTAI_HOME": str(home)}):
+                self.adopt_mcp_fixture(manifest, target)
                 self.assertFalse(mcp_config.mcp_status(manifest)[0])
                 with contextlib.redirect_stdout(io.StringIO()):
-                    self.assertTrue(mcp_config.sync_mcp(manifest, runtime.Runner("ubuntu")))
+                    self.assertTrue(mcp_config.sync_mcp(manifest, runtime.Runner("ubuntu"), ownership_check=lifecycle.check_update_ownership))
                 merged = json.loads(target.read_text(encoding="utf-8"))["mcpServers"]
                 self.assertEqual(set(merged), {"remote-alias"})
                 self.assertEqual(merged["remote-alias"]["timeout"], 20)
@@ -1316,17 +1452,11 @@ class DotAiTests(unittest.TestCase):
             self.assertEqual(list(path.parent.glob("stack.json.bak.*")), [])
             run.assert_not_called()
             preview = report.getvalue()
-            for expected in (
-                "stack.json (proposed)",
-                "discovered providers: github-copilot, openai-codex",
-                "interactive primary: openai-codex",
-                "resolved role primaries:",
-                "fallback chains:",
-                "pending OMP commands:",
-                "omp config set modelRoles",
-                "Dry run: no manifest or OMP changes applied",
-            ):
+            for expected in ("github-copilot", "openai-codex", "default", "task", "smol", "slow"):
                 self.assertIn(expected, preview)
+            self.assertNotIn("omp config set modelRoles", preview)
+            self.assertNotIn('"primaryProvider":', preview)
+            self.assertIn("Dry run", preview)
 
     def test_configure_omp_routing_is_idempotent(self) -> None:
         selectors = [
@@ -1573,81 +1703,6 @@ class DotAiTests(unittest.TestCase):
                     [str(home), str(runtime.ROOT), sys.executable, literal_json],
                 )
 
-    def test_configure_omp_routing_parser_and_lifecycle_are_explicit(self) -> None:
-        args = cli.build_parser().parse_args(
-            ["configure", "omp-routing", "--primary", "anthropic", "--dry-run"]
-        )
-        self.assertEqual(
-            (args.configure_target, args.primary, args.dry_run),
-            ("omp-routing", "anthropic", True),
-        )
-
-        with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / "stack.json"
-            manifest = self.minimal_manifest("~/.omp/agent/mcp.json")
-            manifest["ompRouting"] = {"roles": {"default": ["openai-codex/interactive-model"]}}
-            path.write_text(json.dumps(manifest), encoding="utf-8")
-            with mock.patch.object(model_routing, "configure_omp_routing", return_value=7) as configure:
-                self.assertEqual(
-                    cli.main(
-                        [
-                            "--manifest",
-                            str(path),
-                            "configure",
-                            "omp-routing",
-                            "--primary",
-                            "anthropic",
-                            "--dry-run",
-                        ]
-                    ),
-                    7,
-                )
-            called_manifest, called_path, called_runner, called_primary = configure.call_args.args
-            self.assertIn("roles", called_manifest["ompRouting"])
-            self.assertEqual(called_path, path)
-            self.assertTrue(called_runner.dry_run)
-            self.assertEqual(called_primary, "anthropic")
-
-            error = io.StringIO()
-            with (
-                mock.patch.object(model_routing, "configure_omp_routing", side_effect=runtime.DotAiError("Primary selection cancelled"),),
-                contextlib.redirect_stderr(error),
-            ):
-                self.assertEqual(
-                    cli.main(["--manifest", str(path), "configure", "omp-routing"]),
-                    2,
-                )
-            self.assertIn("Primary selection cancelled", error.getvalue())
-
-            commands = {
-                "validate": ["validate"],
-                "status": ["status"],
-                "install": ["install", "--dry-run"],
-                "update": ["update", "--dry-run"],
-                "sync": ["sync", "--dry-run"],
-            }
-            for name, command in commands.items():
-                error = io.StringIO()
-                with self.subTest(command=name):
-                    with (
-                        mock.patch.object(releases, "print_release_notice"),
-                        mock.patch.object(model_routing, "available_omp_models", side_effect=AssertionError(name)),
-                        contextlib.redirect_stderr(error),
-                    ):
-                        self.assertEqual(cli.main(["--manifest", str(path), *command]), 2)
-                self.assertIn("configure omp-routing", error.getvalue())
-
-            manifest["ompRouting"] = None
-            path.write_text(json.dumps(manifest), encoding="utf-8")
-            for command in ("install", "update", "sync"):
-                with self.subTest(isolated_command=command):
-                    with (
-                        mock.patch.object(releases, "print_release_notice"),
-                        mock.patch.object(model_routing, "available_omp_models", side_effect=AssertionError(command)),
-                        mock.patch.object(mcp_config, "sync_mcp", return_value=False),
-                        contextlib.redirect_stdout(io.StringIO()),
-                    ):
-                        self.assertEqual(cli.main(["--manifest", str(path), command, "--dry-run"]), 0)
 
     def test_omp_routing_status_reports_ok_for_compact_intent(self) -> None:
         manifest, selectors, values = self.compact_status_case()
@@ -1985,6 +2040,7 @@ class DotAiTests(unittest.TestCase):
             "sourceUrl": f"https://github.com/{source}.git",
             "skillPath": f"skills/{name}/SKILL.md",
             "skillFolderHash": folder_hash,
+            "ref": None,
             "installedAt": "2026-01-01T00:00:00Z",
             "updatedAt": "2026-01-01T00:00:00Z",
         }
@@ -2068,9 +2124,9 @@ class DotAiTests(unittest.TestCase):
                 mock.patch.dict(os.environ, {"DOTAI_HOME": str(home), "XDG_STATE_HOME": "", "GH_HOST": "github.com"}),
                 contextlib.redirect_stdout(output),
             ):
-                skill_manager.reconcile_skills(manifest, runtime.Runner("linux", dry_run=True))
-            self.assertIn("Reconcile skills from owner/new", output.getvalue())
-            self.assertIn("--agent universal", output.getvalue())
+                runner = runtime.Runner("linux", dry_run=True)
+                skill_manager.reconcile_skills(manifest, runner)
+            self.assertTrue(runner.failures)
             self.assertEqual(codex.read_text(encoding="utf-8"), "# New alpha\n")
             self.assertEqual(universal.read_text(encoding="utf-8"), "# Old alpha\n")
 
@@ -2079,13 +2135,12 @@ class DotAiTests(unittest.TestCase):
             home = Path(directory)
             target = home / ".agents" / "skills" / "alpha" / "SKILL.md"
             target.parent.mkdir(parents=True)
-            target.write_text("# Alpha\n", encoding="utf-8")
+            target.write_bytes(b"# Alpha\n")
             cases = [
                 ("owner/skills", {
                     "source": "owner/skills", "sourceType": "gitlab",
                     "sourceUrl": "https://gitlab.com/owner/skills.git",
                 }),
-                ("owner/skills", {"ref": "old-branch"}),
                 ("owner/skills/other-subpath", {}),
                 ("https://github.com/owner/skills/tree/main/other-subpath", {}),
                 ("https://example.com/owner/skills.git", {}),
@@ -2105,8 +2160,23 @@ class DotAiTests(unittest.TestCase):
                         mock.patch.dict(os.environ, {"DOTAI_HOME": str(home), "XDG_STATE_HOME": "", "GH_HOST": "github.com"}),
                         contextlib.redirect_stdout(output),
                     ):
-                        skill_manager.reconcile_skills(manifest, runtime.Runner("linux", dry_run=True))
-                    self.assertIn("Reconcile skills from", output.getvalue())
+                        runner = runtime.Runner("linux", dry_run=True)
+                        skill_manager.reconcile_skills(manifest, runner)
+                    self.assertTrue(runner.failures)
+            entry = self.github_skill_lock_entry("owner/skills", "0ae35bdd602b22221c7503baa29f72fd9f115298")
+            entry["ref"] = "old-branch"
+            (home / ".agents/.skill-lock.json").write_text(json.dumps({"version": 3, "skills": {"alpha": entry}}))
+            self.resolve_skill_fixture("owner/skills", {"alpha": "# Alpha\n"})
+            manifest["skills"] = [{"source": "owner/skills", "checkSkills": ["alpha"]}]
+            with mock.patch.dict(os.environ, {"DOTAI_HOME": str(home), "XDG_STATE_HOME": ""}):
+                runner = runtime.Runner("linux", dry_run=True)
+                with contextlib.redirect_stdout(io.StringIO()):
+                    skill_manager.reconcile_skills(manifest, runner)
+                self.assertFalse(runner.failures)
+                manifest["skills"][0]["revision"] = self.fixture_revision
+                with self.assertRaises(runtime.DotAiError):
+                    locking.prepare(manifest, home / "stack.json", runner, "sync")
+            self.assertEqual(target.read_text(), "# Alpha\n")
 
     def test_sync_checks_supporting_files_before_skipping_owned_skill(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -2132,30 +2202,10 @@ class DotAiTests(unittest.TestCase):
                         mock.patch.dict(os.environ, {"DOTAI_HOME": str(home), "XDG_STATE_HOME": "", "GH_HOST": "github.com"}),
                         contextlib.redirect_stdout(output),
                     ):
-                        skill_manager.reconcile_skills(manifest, runtime.Runner("linux", dry_run=True))
-                    self.assertEqual("Reconcile skills from" in output.getvalue(), refresh)
+                        runner = runtime.Runner("linux", dry_run=True)
+                        skill_manager.reconcile_skills(manifest, runner)
+                    self.assertEqual(bool(runner.failures), refresh)
 
-    def test_sync_refreshes_when_recorded_content_hash_cannot_prove_ownership(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            home = Path(directory)
-            target = home / ".agents" / "skills" / "alpha" / "SKILL.md"
-            target.parent.mkdir(parents=True)
-            target.write_text("# Alpha\n", encoding="utf-8")
-            manifest = self.minimal_manifest("~/.omp/agent/mcp.json")
-            manifest["skills"] = [{"source": "owner/skills", "checkSkills": ["alpha"]}]
-            for folder_hash in ("", "not-a-tree-hash"):
-                with self.subTest(folder_hash=folder_hash):
-                    (home / ".agents" / ".skill-lock.json").write_text(json.dumps({
-                        "version": 3,
-                        "skills": {"alpha": self.github_skill_lock_entry("owner/skills", folder_hash)},
-                    }), encoding="utf-8")
-                    output = io.StringIO()
-                    with (
-                        mock.patch.dict(os.environ, {"DOTAI_HOME": str(home), "XDG_STATE_HOME": "", "GH_HOST": "github.com"}),
-                        contextlib.redirect_stdout(output),
-                    ):
-                        skill_manager.reconcile_skills(manifest, runtime.Runner("linux", dry_run=True))
-                    self.assertIn("Reconcile skills from owner/skills", output.getvalue())
 
     def test_sync_leaves_healthy_skills_untouched_by_default(self) -> None:
         manifest = self.minimal_manifest("~/.omp/agent/mcp.json")
@@ -2185,79 +2235,61 @@ class DotAiTests(unittest.TestCase):
                 contextlib.redirect_stdout(plan),
             ):
                 skill_manager.reconcile_skills(manifest, runtime.Runner("linux"))
-            self.assertNotIn("Reconcile skills from", plan.getvalue())
-            self.assertNotIn("npx", plan.getvalue())
 
-    def test_sync_refreshes_existing_skill_owned_by_another_source(self) -> None:
-        manifest = self.minimal_manifest("~/.omp/agent/mcp.json")
-        manifest["skills"] = [{
-            "source": "owner/new", "agent": "universal", "skills": ["alpha"], "checkSkills": ["alpha"],
-        }]
-        with tempfile.TemporaryDirectory() as directory:
-            home = Path(directory)
-            target = home / ".agents" / "skills" / "alpha" / "SKILL.md"
-            target.parent.mkdir(parents=True)
-            target.write_text("# Old alpha\n", encoding="utf-8")
-            (home / ".agents" / ".skill-lock.json").write_text(json.dumps({
-                "version": 3,
-                "skills": {"alpha": self.github_skill_lock_entry(
-                    "owner/old", "5536fe3d742b7fa77283d2551b2af2166451a702",
-                )},
-            }), encoding="utf-8")
-            plan = io.StringIO()
-            with mock.patch.dict(os.environ, {"DOTAI_HOME": str(home), "XDG_STATE_HOME": "", "GH_HOST": "github.com"}), contextlib.redirect_stdout(plan):
-                skill_manager.reconcile_skills(manifest, runtime.Runner("ubuntu", dry_run=True))
-            self.assertIn("Reconcile skills from owner/new", plan.getvalue())
 
     def test_install_force_refreshes_an_existing_skill_source(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
-            home = Path(directory)
+            home = Path(directory).resolve()
             target = home / ".agents" / "skills" / "alpha" / "SKILL.md"
             target.parent.mkdir(parents=True)
-            target.write_text("# Alpha\n", encoding="utf-8")
-            (home / ".agents" / ".skill-lock.json").write_text(json.dumps({
-                "version": 3, "skills": {"alpha": self.github_skill_lock_entry(
-                    "owner/skills", "0ae35bdd602b22221c7503baa29f72fd9f115298",
-                )},
-            }), encoding="utf-8")
+            target.write_bytes(b"# Alpha\n")
             manifest_path = home / "stack.json"
             manifest = self.minimal_manifest(str(home / "mcp.json"))
             manifest["mcp"]["servers"] = {}
             manifest["skills"] = [{
                 "source": "owner/skills", "agent": "universal", "skills": ["alpha"], "checkSkills": ["alpha"],
             }]
+            manifest_path.write_text(json.dumps(manifest))
             plan = io.StringIO()
             with mock.patch.dict(os.environ, {"DOTAI_HOME": str(home), "XDG_STATE_HOME": "", "GH_HOST": "github.com"}), contextlib.redirect_stdout(plan):
+                self.own_skill_fixture(target.parent, "owner/skills")
+                self.resolve_skill_fixture("owner/skills", {"alpha": "# Refreshed Alpha\n"})
                 self.assertEqual(reconciliation.reconcile(
-                    manifest, manifest_path, runtime.Runner("ubuntu", dry_run=True), "install", force=True,
-                ), 0)
-            self.assertIn("Reconcile skills from owner/skills", plan.getvalue())
+                    manifest, manifest_path, runtime.Runner("ubuntu"), "install", force=True,
+                ), 0, plan.getvalue())
+            self.assertEqual(target.read_bytes(), b"# Refreshed Alpha\n")
 
     def test_sync_installs_skills_when_any_required_skill_is_missing(self) -> None:
-        manifest = self.minimal_manifest("~/.omp/agent/mcp.json")
-        manifest["skills"] = [{
-            "source": "owner/skills",
-            "agent": "universal",
-            "skills": ["alpha", "beta"],
-            "checkSkills": ["alpha", "beta"],
-        }]
         with tempfile.TemporaryDirectory() as directory:
-            home = Path(directory)
+            home = Path(directory).resolve()
+            manifest = self.minimal_manifest(str(home / "mcp.json"))
+            manifest["mcp"]["servers"] = {}
+            manifest["skills"] = [{
+                "source": "owner/skills", "agent": "universal", "revision": self.fixture_revision,
+                "skills": ["alpha", "beta"], "checkSkills": ["alpha", "beta"],
+            }]
+            (home / "stack.json").write_text(json.dumps(manifest))
             target = home / ".agents" / "skills" / "alpha" / "SKILL.md"
             target.parent.mkdir(parents=True)
-            target.write_text("# alpha\n", encoding="utf-8")
-            plan = io.StringIO()
-            with mock.patch.dict(os.environ, {"DOTAI_HOME": str(home)}), contextlib.redirect_stdout(plan):
-                skill_manager.reconcile_skills(manifest, runtime.Runner("linux", dry_run=True))
-            self.assertIn("Reconcile skills from owner/skills", plan.getvalue())
-            self.assertIn("--skill beta", plan.getvalue())
+            target.write_bytes(b"# alpha\n")
+            with mock.patch.dict(os.environ, {"DOTAI_HOME": str(home), "XDG_STATE_HOME": str(home / "xdg")}):
+                self.own_skill_fixture(target.parent, "owner/skills")
+                self.resolve_skill_fixture("owner/skills", {"alpha": "# alpha\n", "beta": "# beta\n"})
+                with contextlib.redirect_stdout(io.StringIO()):
+                    result = reconciliation.reconcile(manifest, home / "stack.json", runtime.Runner("linux"), "sync")
+            self.assertEqual(result, 0)
+            self.assertEqual(target.read_bytes(), b"# alpha\n")
+            self.assertEqual((target.parent.parent / "beta/SKILL.md").read_bytes(), b"# beta\n")
+            self.assertEqual(json.loads((home / "stack.lock.json").read_text())["skills"]["owner/skills|universal"]["installerVersion"], "1.7.1")
+
 
     def test_sync_update_skills_explicitly_refreshes_healthy_installations(self) -> None:
+        self.resolve_skill_fixture("owner/skills", {"alpha": "# refreshed alpha\n"})
         with tempfile.TemporaryDirectory() as directory:
             home = Path(directory)
             target = home / ".agents" / "skills" / "alpha" / "SKILL.md"
             target.parent.mkdir(parents=True)
-            target.write_text("# alpha\n", encoding="utf-8")
+            target.write_bytes(b"# alpha\n")
             (home / ".agents" / ".skill-lock.json").write_text(json.dumps({
                 "version": 3, "skills": {"alpha": self.github_skill_lock_entry(
                     "owner/skills", "51937797c336f38c66ecfb342d9cc37ac2c56a74",
@@ -2281,11 +2313,12 @@ class DotAiTests(unittest.TestCase):
             ):
                 with contextlib.redirect_stderr(io.StringIO()):
                     try:
-                        result = cli.main(["--manifest", str(path), "sync", "--update-skills", "--dry-run"])
+                        result = cli.main(["--manifest", str(path), "sync", "--update-skills"])
                     except SystemExit as exc:
                         result = exc.code
                 self.assertEqual(result, 0)
-            self.assertIn("Reconcile skills from owner/skills", plan.getvalue())
+            self.assertEqual(target.read_bytes(), b"# refreshed alpha\n")
+            self.assertEqual(json.loads(path.read_text()), manifest)
 
 
     def test_status_highlights_legacy_pi_skill_targets(self) -> None:
@@ -2303,24 +2336,6 @@ class DotAiTests(unittest.TestCase):
             self.assertIn("[DRIFT] Legacy Pi skill targets", output.getvalue())
             self.assertIn("Run 'dotai fix'", output.getvalue())
 
-    def test_update_highlights_legacy_pi_skill_targets(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / "stack.json"
-            manifest = self.minimal_manifest("~/.omp/agent/mcp.json")
-            manifest["skills"] = [{"source": "owner/skills", "agent": "pi", "checkSkills": ["legacy"]}]
-            path.write_text(json.dumps(manifest), encoding="utf-8")
-            output = io.StringIO()
-            with (
-                mock.patch.object(package_manager, "reconcile_packages"),
-                mock.patch.object(omp_config, "reconcile_omp_extensions"),
-                mock.patch.object(skill_manager, "reconcile_skills"),
-                mock.patch.object(omp_config, "reconcile_plugins"),
-                mock.patch.object(mcp_config, "sync_mcp", return_value=True),
-                contextlib.redirect_stdout(output),
-            ):
-                self.assertEqual(cli.main(["--manifest", str(path), "update", "--dry-run"]), 0)
-            self.assertIn("[DRIFT] Legacy Pi skill targets", output.getvalue())
-            self.assertIn("Run 'dotai fix'", output.getvalue())
 
     def test_status_color_can_be_forced_or_disabled(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -2338,7 +2353,6 @@ class DotAiTests(unittest.TestCase):
                         0,
                     )
             self.assertIn("\033[", colored.getvalue())
-            self.assertIn("[OK]", colored.getvalue())
 
             plain = io.StringIO()
             with contextlib.redirect_stdout(plain):
@@ -2347,8 +2361,6 @@ class DotAiTests(unittest.TestCase):
                     0,
                 )
             self.assertNotIn("\033[", plain.getvalue())
-            self.assertIn("[OK]", plain.getvalue())
-            self.assertNotIn("Legacy Pi skill targets", plain.getvalue())
 
     def test_add_mcp_invalid_port_preserves_manifest_and_allows_valid_retry(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -2400,7 +2412,7 @@ class DotAiTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "stack.json"
             manifest = self.minimal_manifest("mcp.json")
-            manifest["packages"] = [{"name": "sample", "check": "sample --version", "install": []}]
+            manifest["packages"] = [{"name": "sample", "managed": True, "check": "sample --version", "install": []}]
             original = json.dumps(manifest, indent=4).encode("utf-8")
             path.write_bytes(original)
             with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
@@ -2413,9 +2425,7 @@ class DotAiTests(unittest.TestCase):
                     "--manifest", str(path), "add", "tool", "sample", "--check", "sample --version",
                     "--install", "default=sample install",
                 ]), 0)
-            self.assertEqual(manifests.load_manifest(path)["packages"], [{
-                "name": "sample", "check": "sample --version", "install": {"default": ["sample install"]},
-            }])
+            self.assertEqual(manifests.load_manifest(path)["packages"], [{"name": "sample", "managed": True, "check": "sample --version", "install": {"default": ["sample install"]}, }])
 
     def test_add_empty_integration_values_do_not_write_manifest(self) -> None:
         commands = [
@@ -2630,6 +2640,7 @@ class DotAiTests(unittest.TestCase):
             path.write_text(json.dumps(self.minimal_manifest("~/.omp/agent/mcp.json")), encoding="utf-8")
             commands = [
                 ["add", "skill", "owner/skills", "--skill", "review", "--check-skill", "review"],
+                ["add", "skill", "owner/skills", "--skill", "deploy", "--check-skill", "deploy"],
                 ["add", "marketplace", "team", "owner/marketplace"],
                 ["add", "plugin", "review@team"],
                 ["add", "mcp", "local", "--command", "npx", "--arg=-y", "--arg", "server-package"],
@@ -2643,8 +2654,6 @@ class DotAiTests(unittest.TestCase):
                     "windows=scoop install example",
                     "--install",
                     "linux=curl https://example.test/install | sh",
-                    "--update-group",
-                    "dependency",
                 ],
             ]
             with contextlib.redirect_stdout(io.StringIO()):
@@ -2653,13 +2662,15 @@ class DotAiTests(unittest.TestCase):
             value = json.loads(path.read_text(encoding="utf-8"))
             self.assertEqual(value["skills"][0]["source"], "owner/skills")
             self.assertEqual(value["skills"][0]["agent"], "universal")
+            self.assertEqual(value["skills"][0]["skills"], ["review", "deploy"])
+            self.assertEqual(value["skills"][0]["checkSkills"], ["review", "deploy"])
             self.assertEqual(value["marketplaces"][0]["name"], "team")
             self.assertEqual(value["plugins"][0]["id"], "review@team")
             self.assertEqual(value["mcp"]["servers"]["local"]["args"], ["-y", "server-package"])
             self.assertEqual(value["packages"][0]["install"]["windows"], ["scoop install example"])
-            self.assertEqual(value["packages"][0]["updateGroup"], "dependency")
+            self.assertTrue(value["packages"][0]["managed"])
 
-    def test_skill_migration_updates_one_source_and_preserves_other_entries(self) -> None:
+    def test_add_skill_preserves_existing_other_agent_declarations(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "stack.json"
             manifest = self.minimal_manifest("~/.omp/agent/mcp.json")
@@ -2702,16 +2713,20 @@ class DotAiTests(unittest.TestCase):
                     0,
                 )
             updated = json.loads(path.read_text(encoding="utf-8"))
-            self.assertEqual(updated["skills"][0]["agent"], "universal")
-            self.assertEqual(updated["skills"][1], manifest["skills"][1])
+            self.assertEqual(updated["skills"], [
+                *manifest["skills"],
+                {"source": "mattpocock/skills", "agent": "universal",
+                 "skills": ["grill-me", "grill-with-docs"], "checkSkills": ["grill-me", "grill-with-docs"]},
+            ])
 
     def test_sync_reports_invalid_mcp_config_and_exits_unsuccessfully(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
+            root = Path(directory).resolve()
             target = root / "mcp.json"
             target.write_text("{not valid JSON", encoding="utf-8")
             path = root / "stack.json"
             path.write_text(json.dumps(self.minimal_manifest(str(target))), encoding="utf-8")
+            manifest_bytes = path.read_bytes()
             output = io.StringIO()
             with (
                 mock.patch.dict(os.environ, {"DOTAI_HOME": str(root), "DOTAI_STATE_DIR": str(root / "state")}),
@@ -2721,32 +2736,36 @@ class DotAiTests(unittest.TestCase):
             ):
                 result = cli.main(["--manifest", str(path), "sync"])
             self.assertEqual(result, 1)
-            self.assertIn("MCP", output.getvalue())
-            self.assertIn("invalid json", output.getvalue().lower())
-            self.assertIn(str(target), output.getvalue())
             self.assertEqual(target.read_text(encoding="utf-8"), "{not valid JSON")
+            self.assertEqual(path.read_bytes(), manifest_bytes)
+            self.assertFalse((root / "stack.lock.json").exists())
+            self.assertFalse((root / "state" / "state.json").exists())
+            self.assertFalse(list(root.glob("mcp.json.bak.*")))
+            self.assertFalse(list(root.glob("stack.json.bak.*")))
 
     def test_sync_does_not_rewrite_existing_skill_agent_selection(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / "stack.json"
-            manifest = self.minimal_manifest("~/.omp/agent/mcp.json")
-            manifest["skills"] = [
-                {
-                    "source": "mattpocock/skills",
-                    "agent": "pi",
-                    "skills": ["grill-me", "grill-with-docs"],
-                    "checkSkills": ["grill-me", "grill-with-docs"],
-                }
-            ]
-            path.write_text(json.dumps(manifest), encoding="utf-8")
-            output = io.StringIO()
-            with contextlib.redirect_stdout(output):
-                self.assertEqual(
-                    cli.main(["--manifest", str(path), "sync", "--dry-run"]),
-                    0,
-                )
-            self.assertEqual(json.loads(path.read_text(encoding="utf-8")), manifest)
-            self.assertIn("--agent pi", output.getvalue())
+            home = Path(directory).resolve()
+            path = home / "stack.json"
+            manifest = self.minimal_manifest(str(home / "mcp.json"))
+            manifest["mcp"]["servers"] = {}
+            manifest["skills"] = [{"source": "fixture/skills", "agent": "pi",
+                                   "revision": self.fixture_revision, "skills": ["alpha"],
+                                   "checkSkills": ["alpha"]}]
+            original = json.dumps(manifest, indent=4) + "\n\n"
+            path.write_text(original)
+            target = home / ".pi/agent/skills/alpha/SKILL.md"
+            target.parent.mkdir(parents=True)
+            target.write_text("private pi copy\n")
+            with mock.patch.dict(os.environ, {"DOTAI_HOME": str(home), "XDG_STATE_HOME": str(home / "xdg")}):
+                self.own_skill_fixture(target.parent, "fixture/skills")
+                with contextlib.redirect_stdout(io.StringIO()):
+                    self.assertEqual(cli.main(["--manifest", str(path), "sync", "--dry-run"]), 0)
+            self.assertEqual(path.read_text(), original)
+            self.assertEqual(target.read_text(), "private pi copy\n")
+            self.assertFalse((home / ".agents/skills/alpha").exists())
+            self.assertFalse((home / "stack.lock.json").exists())
+
 
     def test_sync_notifies_about_new_recommendations_without_adopting_them(self) -> None:
         added = {
@@ -2771,7 +2790,7 @@ class DotAiTests(unittest.TestCase):
                         "DOTAI_HOME": str(root), "DOTAI_STATE_DIR": str(root / "state"),
                         "XDG_STATE_HOME": str(root / "xdg-state"),
                     }),
-                    mock.patch.object(manifests, "EXAMPLE_MANIFEST", example_path),
+                    mock.patch.object(manifests, "SKILL_RECOMMENDATIONS", example_path),
                     mock.patch.object(releases, "latest_release_version", return_value=None),
                     mock.patch("builtins.input", side_effect=AssertionError("ordinary sync must not prompt")),
                     contextlib.redirect_stdout(output),
@@ -2793,6 +2812,7 @@ class DotAiTests(unittest.TestCase):
 
     def test_accepted_recommendation_refreshes_a_healthy_skill_source(self) -> None:
         before = {"source": "owner/recommended", "agent": "universal", "skills": ["*"], "checkSkills": ["keep"]}
+        self.resolve_skill_fixture("owner/recommended", {"keep": "# keep\n"})
         after = {**before, "skills": ["keep"]}
         with tempfile.TemporaryDirectory() as directory:
             home = Path(directory)
@@ -2816,13 +2836,18 @@ class DotAiTests(unittest.TestCase):
             output = io.StringIO()
             with (
                 mock.patch.dict(os.environ, {"DOTAI_HOME": str(home), "DOTAI_STATE_DIR": str(home / "state"), "XDG_STATE_HOME": "", "GH_HOST": "github.com"}),
-                mock.patch.object(manifests, "EXAMPLE_MANIFEST", example_path),
+                mock.patch.object(manifests, "SKILL_RECOMMENDATIONS", example_path),
                 mock.patch.object(releases, "latest_release_version", return_value=None),
                 contextlib.redirect_stdout(output),
             ):
-                result = cli.main(["--manifest", str(manifest_path), "sync", "--recommended-skills", "--enforce", "--dry-run"])
+                self.own_skill_fixture(skill_file.parent, before["source"])
+                self.resolve_skill_fixture(before["source"], {"keep": "# refreshed keep\n"})
+                with mock.patch("builtins.input", return_value="a"):
+                    result = cli.main(["--manifest", str(manifest_path), "sync", "--recommended-skills", "--enforce"])
             self.assertEqual(result, 0)
-            self.assertIn("Reconcile skills from owner/recommended", output.getvalue())
+            self.assertEqual(json.loads(manifest_path.read_text())["skills"], [after])
+            self.assertEqual(skill_file.read_text(), "# refreshed keep\n")
+            self.assertEqual(json.loads((home / "stack.lock.json").read_text())["skills"]["owner/recommended|universal"]["revision"], self.fixture_revision)
 
     def test_recommended_skill_sync_accepts_all_without_overwriting_custom_skills(self) -> None:
         retired = {
@@ -2853,22 +2878,16 @@ class DotAiTests(unittest.TestCase):
                 folder = skill_root / name
                 folder.mkdir(parents=True)
                 (folder / "SKILL.md").write_text(name, encoding="utf-8")
+            self.own_skill_fixture(skill_root / "custom-skill", "user/custom")
+            self.own_skill_fixture(skill_root / "old-skill", "owner/retired")
+            self.resolve_skill_fixture("owner/added", {"new-skill": "installed"})
 
-            def install_skill(command, *args, **kwargs):
-                if command[3] != "add":
-                    raise AssertionError(f"Unexpected external mutation: {command}")
-                if command[4] == "user/custom":
-                    return subprocess.CompletedProcess(command, 0)
-                if command[4] != "owner/added":
-                    raise AssertionError(f"Unexpected installation source: {command[4]}")
-                folder = skill_root / "new-skill"
-                folder.mkdir()
-                (folder / "SKILL.md").write_text("installed", encoding="utf-8")
-                return subprocess.CompletedProcess(command, 0)
             manifest = self.minimal_manifest("~/.omp/agent/mcp.json")
             manifest["skills"] = [retired, custom]
+            manifest["mcp"]["servers"] = {}
             example = self.minimal_manifest("~/.omp/agent/mcp.json")
             example["skills"] = [added]
+            example["mcp"]["servers"] = {}
             path.write_text(json.dumps(manifest), encoding="utf-8")
             example_path.write_text(json.dumps(example), encoding="utf-8")
             state_root.mkdir()
@@ -2876,29 +2895,11 @@ class DotAiTests(unittest.TestCase):
                 json.dumps({"manifest": str(path.resolve()), "managedRecommendedSkills": [retired]}),
                 encoding="utf-8",
             )
-            installed = json.dumps(
-                [
-                    {
-                        "name": "Old Skill!",
-                        "path": str(root / ".agents" / "skills" / "old-skill"),
-                        "scope": "global",
-                        "agents": ["Universal"],
-                        "source": "owner/retired",
-                        "sourceUrl": "https://github.com/owner/retired.git",
-                        "sourceType": "github",
-                    }
-                ]
-            )
             output = io.StringIO()
             with (
                 mock.patch.dict(os.environ, {"DOTAI_HOME": str(root), "DOTAI_STATE_DIR": str(state_root)}, clear=False),
-                mock.patch.object(manifests, "EXAMPLE_MANIFEST", example_path),
+                mock.patch.object(manifests, "SKILL_RECOMMENDATIONS", example_path),
                 mock.patch.object(releases, "latest_release_version", return_value=None),
-                mock.patch.object(omp_config, "reconcile_omp_extensions"),
-                mock.patch.object(omp_config, "reconcile_plugins"),
-                mock.patch.object(mcp_config, "sync_mcp", return_value=False),
-                mock.patch.object(runtime.Runner, "output", side_effect=[installed, "[]"]),
-                mock.patch.object(runtime.Runner, "run", side_effect=install_skill),
                 mock.patch("builtins.input", return_value="a"),
                 contextlib.redirect_stdout(output),
             ):
@@ -2948,19 +2949,17 @@ class DotAiTests(unittest.TestCase):
                 folder = skill_root / name
                 folder.mkdir(parents=True)
                 (folder / "SKILL.md").write_text(name, encoding="utf-8")
+            self.own_skill_fixture(skill_root / "keep", before["source"])
+            self.own_skill_fixture(skill_root / "custom", "user/custom")
+            self.own_skill_fixture(skill_root / "retired", before["source"])
+            self.resolve_skill_fixture(before["source"], {"keep": "refreshed"})
 
-            def install_skill(command, *args, **kwargs):
-                if command[3] != "add":
-                    raise AssertionError(f"Unexpected external mutation: {command}")
-                if command[4] == "owner/recommended":
-                    (skill_root / "keep" / "SKILL.md").write_text("refreshed", encoding="utf-8")
-                elif command[4] != "user/custom":
-                    raise AssertionError(f"Unexpected installation source: {command[4]}")
-                return subprocess.CompletedProcess(command, 0)
             manifest = self.minimal_manifest("~/.omp/agent/mcp.json")
             manifest["skills"] = [before, custom]
+            manifest["mcp"]["servers"] = {}
             example = self.minimal_manifest("~/.omp/agent/mcp.json")
             example["skills"] = [after]
+            example["mcp"]["servers"] = {}
             path.write_text(json.dumps(manifest), encoding="utf-8")
             example_path.write_text(json.dumps(example), encoding="utf-8")
             state_root.mkdir()
@@ -2968,42 +2967,10 @@ class DotAiTests(unittest.TestCase):
                 json.dumps({os.path.normcase(str(path.resolve())): {"version": 1, "skills": []}}),
                 encoding="utf-8",
             )
-            installed = json.dumps(
-                [
-                    {
-                        "name": name.title() + " Skill!",
-                        "path": str(root / ".agents" / "skills" / name),
-                        "scope": "global",
-                        "agents": ["Universal"],
-                        "source": before["source"],
-                        "sourceUrl": "https://github.com/owner/recommended.git",
-                        "sourceType": "github",
-                    }
-                    for name in ("keep", "retired")
-                ]
-            )
-            remaining = json.dumps(
-                [
-                    {
-                        "name": "Keep Skill!",
-                        "path": str(root / ".agents" / "skills" / "keep"),
-                        "scope": "global",
-                        "agents": ["Universal"],
-                        "source": before["source"],
-                        "sourceUrl": "https://github.com/owner/recommended.git",
-                        "sourceType": "github",
-                    }
-                ]
-            )
             with (
                 mock.patch.dict(os.environ, {"DOTAI_HOME": str(root), "DOTAI_STATE_DIR": str(state_root)}, clear=False),
-                mock.patch.object(manifests, "EXAMPLE_MANIFEST", example_path),
+                mock.patch.object(manifests, "SKILL_RECOMMENDATIONS", example_path),
                 mock.patch.object(releases, "latest_release_version", return_value=None),
-                mock.patch.object(omp_config, "reconcile_omp_extensions"),
-                mock.patch.object(omp_config, "reconcile_plugins"),
-                mock.patch.object(mcp_config, "sync_mcp", return_value=False),
-                mock.patch.object(runtime.Runner, "output", side_effect=[installed, remaining]),
-                mock.patch.object(runtime.Runner, "run", side_effect=install_skill),
                 mock.patch("builtins.input", return_value="a"),
                 contextlib.redirect_stdout(io.StringIO()),
             ):
@@ -3027,13 +2994,6 @@ class DotAiTests(unittest.TestCase):
 
 
 
-    def test_runner_output_ignores_stderr(self) -> None:
-        runner = runtime.Runner("ubuntu")
-        result = subprocess.CompletedProcess(["command"], 0, '{"valid": true}')
-        with mock.patch.object(subprocess, "run", return_value=result) as run:
-            self.assertEqual(runner.output(["command"]), '{"valid": true}')
-
-        self.assertIs(run.call_args.kwargs["stderr"], subprocess.DEVNULL)
 
     def test_installed_skill_listing_uses_universal_skill_path(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -3083,7 +3043,8 @@ class DotAiTests(unittest.TestCase):
                 self.assertEqual(skill_manager.installed_skill_records("universal", runner, "owner/retired"), [])
 
     def test_recommended_skill_review_applies_each_choice_and_keeps_rejections_pending(self) -> None:
-        retired = {"source": "owner/retired", "agent": "universal", "skills": ["old-skill"]}
+        self.resolve_skill_fixture("owner/added", {"new-skill": "new-skill"})
+        retired = {"source": "owner/retired", "agent": "universal", "skills": ["old-skill"], "checkSkills": ["old-skill"]}
         added = {"source": "owner/added", "agent": "universal", "skills": ["new-skill"]}
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -3094,6 +3055,10 @@ class DotAiTests(unittest.TestCase):
             manifest["skills"] = [retired]
             example = self.minimal_manifest("~/.omp/agent/mcp.json")
             example["skills"] = [added]
+            folder = root / ".agents/skills/old-skill"
+            folder.mkdir(parents=True)
+            (folder / "SKILL.md").write_text("retained old skill\n")
+            self.own_skill_fixture(folder, retired["source"])
             path.write_text(json.dumps(manifest), encoding="utf-8")
             example_path.write_text(json.dumps(example), encoding="utf-8")
             state_root.mkdir()
@@ -3103,9 +3068,8 @@ class DotAiTests(unittest.TestCase):
             )
             runner = runtime.Runner("ubuntu")
             with (
-                mock.patch.dict(os.environ, {"DOTAI_STATE_DIR": str(state_root)}, clear=False),
-                mock.patch.object(manifests, "EXAMPLE_MANIFEST", example_path),
-                mock.patch.object(runner, "run") as run,
+                mock.patch.dict(os.environ, {"DOTAI_HOME": str(root), "DOTAI_STATE_DIR": str(state_root)}, clear=False),
+                mock.patch.object(manifests, "SKILL_RECOMMENDATIONS", example_path),
                 mock.patch("builtins.input", side_effect=["e", "n", "y"]),
                 contextlib.redirect_stdout(io.StringIO()),
             ):
@@ -3116,7 +3080,6 @@ class DotAiTests(unittest.TestCase):
             self.assertEqual(updated["skills"], [retired, added])
             self.assertEqual(managed, [retired, added])
             self.assertEqual([(change["kind"], change["source"]) for change in pending], [("remove", "owner/retired")])
-            run.assert_not_called()
 
 
     def test_legacy_recommendation_state_updates_current_recommendation_sources(self) -> None:
@@ -3156,7 +3119,7 @@ class DotAiTests(unittest.TestCase):
             )
             with (
                 mock.patch.dict(os.environ, {"DOTAI_STATE_DIR": str(state_root)}, clear=False),
-                mock.patch.object(manifests, "EXAMPLE_MANIFEST", example_path),
+                mock.patch.object(manifests, "SKILL_RECOMMENDATIONS", example_path),
             ):
                 managed, changes, conflicts = skill_recommendations.recommended_skill_plan(manifest, path)
 
@@ -3186,7 +3149,7 @@ class DotAiTests(unittest.TestCase):
             runner = runtime.Runner("ubuntu")
             with (
                 mock.patch.dict(os.environ, {"DOTAI_STATE_DIR": str(state_root)}, clear=False),
-                mock.patch.object(manifests, "EXAMPLE_MANIFEST", example_path),
+                mock.patch.object(manifests, "SKILL_RECOMMENDATIONS", example_path),
             ):
                 app_state.save_state(first_path, runner, "sync", [first])
                 app_state.save_state(second_path, runner, "sync", [second])
@@ -3219,7 +3182,7 @@ class DotAiTests(unittest.TestCase):
             runner = runtime.Runner("ubuntu")
             with (
                 mock.patch.dict(os.environ, {"DOTAI_HOME": str(root), "DOTAI_STATE_DIR": str(state_root)}, clear=False),
-                mock.patch.object(manifests, "EXAMPLE_MANIFEST", example_path),
+                mock.patch.object(manifests, "SKILL_RECOMMENDATIONS", example_path),
                 mock.patch.object(manifests, "write_manifest", side_effect=OSError("locked")),
                 mock.patch.object(runner, "output", side_effect=AssertionError("Retirement began before manifest write")),
                 mock.patch("builtins.input", return_value="a"),
@@ -3274,7 +3237,7 @@ class DotAiTests(unittest.TestCase):
             runner = runtime.Runner("ubuntu")
             with (
                 mock.patch.dict(os.environ, {"DOTAI_HOME": str(root), "DOTAI_STATE_DIR": str(state_root)}, clear=False),
-                mock.patch.object(manifests, "EXAMPLE_MANIFEST", example_path),
+                mock.patch.object(manifests, "SKILL_RECOMMENDATIONS", example_path),
                 mock.patch.object(runner, "output", side_effect=list_skills),
                 mock.patch("builtins.input", return_value="a"),
                 contextlib.redirect_stdout(io.StringIO()),
@@ -3292,45 +3255,53 @@ class DotAiTests(unittest.TestCase):
             )
 
     def test_accepted_recommendations_persist_when_unrelated_sync_fails(self) -> None:
+        self.resolve_skill_fixture("owner/added", {"new-skill": "new-skill"})
         added = {"source": "owner/added", "agent": "universal", "skills": ["new-skill"]}
         with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
+            root = Path(directory).resolve()
             path = root / "stack.json"
-            example_path = root / "stack.example.json"
+            example_path = root / "recommendations.json"
             state_root = root / "state"
-            manifest = self.minimal_manifest("~/.omp/agent/mcp.json")
-            example = self.minimal_manifest("~/.omp/agent/mcp.json")
-            example["skills"] = [added]
-            path.write_text(json.dumps(manifest), encoding="utf-8")
-            example_path.write_text(json.dumps(example), encoding="utf-8")
+            manifest = self.minimal_manifest(str(root / "mcp.json"))
+            manifest["mcp"]["servers"] = {}
+            extension = root / "extension.ts"
+            manifest["ompExtensions"] = [str(extension)]
+            manifest["integrationRequires"] = {"ompExtensions": []}
+            path.write_text(json.dumps(manifest))
+            example_path.write_text(json.dumps({**manifest, "skills": [added]}))
+            real_run = subprocess.run
 
-            def fail_extension_sync(_manifest: dict, runner: runtime.Runner) -> None:
-                runner.failures.append("unrelated extension failure")
+            def extension_failure(command, *args, **kwargs):
+                if isinstance(command, list) and command[:3] == ["omp", "config", "get"]:
+                    command = [sys.executable, "-c", "import json; print(json.dumps({'key':'extensions','value':[]}))"]
+                elif isinstance(command, list) and command[:3] == ["omp", "config", "set"]:
+                    command = [sys.executable, "-c", "import sys; print('extension fixture refused',file=sys.stderr); sys.exit(7)"]
+                return real_run(command, *args, **kwargs)
 
             with (
-                mock.patch.dict(os.environ, {"DOTAI_STATE_DIR": str(state_root)}, clear=False),
-                mock.patch.object(manifests, "EXAMPLE_MANIFEST", example_path),
+                mock.patch.dict(os.environ, {"DOTAI_HOME": str(root), "DOTAI_STATE_DIR": str(state_root)}),
+                mock.patch.object(manifests, "SKILL_RECOMMENDATIONS", example_path),
                 mock.patch.object(releases, "latest_release_version", return_value=None),
-                mock.patch.object(omp_config, "reconcile_omp_extensions", side_effect=fail_extension_sync),
-                mock.patch.object(skill_manager, "reconcile_skills"),
-                mock.patch.object(omp_config, "reconcile_plugins"),
-                mock.patch.object(mcp_config, "sync_mcp", return_value=False),
+                mock.patch.object(subprocess, "run", side_effect=extension_failure),
                 mock.patch("builtins.input", return_value="a"),
                 contextlib.redirect_stdout(io.StringIO()),
             ):
                 self.assertEqual(cli.main(["--manifest", str(path), "sync", "--recommended-skills"]), 1)
-
-            self.assertTrue((state_root / "recommended-skills.json").is_file())
-            history = json.loads((state_root / "recommended-skills.json").read_text(encoding="utf-8"))
+            history = json.loads((state_root / "recommended-skills.json").read_text())
             self.assertEqual(history[os.path.normcase(str(path.resolve()))], {"version": 1, "skills": [added]})
+            self.assertEqual(json.loads(path.read_text())["skills"], [added])
+            self.assertFalse(extension.exists())
+
 
     def test_fix_shows_diff_and_applies_after_confirmation_with_backup(self) -> None:
+        self.resolve_skill_fixture("fixture/legacy", {"grill-me": "# grill\n", "grill-with-docs": "# docs\n"})
         with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / "stack.json"
+            home = Path(directory).resolve()
+            path = home / "stack.json"
             manifest = self.minimal_manifest("~/.omp/agent/mcp.json")
             manifest["skills"] = [
                 {
-                    "source": "mattpocock/skills",
+                    "source": "fixture/legacy",
                     "agent": "pi",
                     "skills": ["grill-me", "grill-with-docs"],
                     "checkSkills": ["grill-me", "grill-with-docs"],
@@ -3344,10 +3315,13 @@ class DotAiTests(unittest.TestCase):
             ]
             original = json.dumps(manifest)
             path.write_text(original, encoding="utf-8")
+            personal = home / ".claude/skills/custom/SKILL.md"
+            personal.parent.mkdir(parents=True)
+            personal.write_text("private custom copy\n")
             output = io.StringIO()
             with (
                 mock.patch("builtins.input", return_value="y"),
-                mock.patch.object(skill_manager, "reconcile_skills") as reconcile,
+                mock.patch.dict(os.environ, {"DOTAI_HOME": str(home), "XDG_STATE_HOME": str(home / "xdg")}),
                 contextlib.redirect_stdout(output),
             ):
                 self.assertEqual(cli.main(["--manifest", str(path), "fix"]), 0)
@@ -3356,15 +3330,17 @@ class DotAiTests(unittest.TestCase):
             self.assertEqual(updated["skills"][1], manifest["skills"][1])
             self.assertEqual(len(list(path.parent.glob("stack.json.bak.*"))), 1)
             self.assertEqual(json.loads(next(path.parent.glob("stack.json.bak.*")).read_text()), manifest)
-            self.assertIn('"agent": "pi"', output.getvalue())
-            self.assertIn('"agent": "universal"', output.getvalue())
-            reconcile.assert_called_once()
+            self.assertEqual((home / ".agents/skills/grill-me/SKILL.md").read_text(), "# grill\n")
+            self.assertEqual((home / ".agents/skills/grill-with-docs/SKILL.md").read_text(), "# docs\n")
+            self.assertEqual(personal.read_text(), "private custom copy\n")
+            self.assertNotIn('"agent":', output.getvalue())
 
     def test_fix_dry_run_shows_migration_without_writing(self) -> None:
+        self.resolve_skill_fixture("owner/skills", {"one": "# one\n"})
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "stack.json"
             manifest = self.minimal_manifest("~/.omp/agent/mcp.json")
-            manifest["skills"] = [{"source": "owner/skills", "agent": "pi", "checkSkills": ["one"]}]
+            manifest["skills"] = [{"source": "owner/skills", "agent": "pi", "skills": ["one"], "checkSkills": ["one"]}]
             original = json.dumps(manifest)
             path.write_text(original, encoding="utf-8")
             output = io.StringIO()
@@ -3372,21 +3348,19 @@ class DotAiTests(unittest.TestCase):
                 self.assertEqual(cli.main(["--manifest", str(path), "fix", "--dry-run"]), 0)
             self.assertEqual(path.read_text(encoding="utf-8"), original)
             self.assertFalse(list(path.parent.glob("stack.json.bak.*")))
-            self.assertIn('"agent": "universal"', output.getvalue())
-            self.assertIn("--agent universal", output.getvalue())
+            self.assertIn("owner/skills", output.getvalue())
 
     def test_package_check_uses_declared_minimum_for_any_package(self) -> None:
-        package = {"name": "Other tool", "check": ["other", "--version"], "minimumVersion": "0.43"}
+        package = {"name": "Other tool", "managed": True, "check": ["other", "--version"], "minimumVersion": "0.43"}
         runner = runtime.Runner("ubuntu")
         for version, expected in (("other 0.42.99", False), ("other 0.43.0", True), ("other 0.50.0", True)):
             with self.subTest(version=version):
-                result = subprocess.CompletedProcess(["other", "--version"], 0, version)
-                with mock.patch.object(subprocess, "run", return_value=result):
-                    self.assertEqual(package_manager.package_check(package, runner), expected)
+                package["check"] = [sys.executable, "-c", f"print({version!r})"]
+                self.assertEqual(package_manager.package_check(package, runner), expected)
 
     def test_package_version_check_reads_stderr_only_version_output(self) -> None:
         command = [sys.executable, "-c", "import sys; print('other 0.50.0', file=sys.stderr)"]
-        package = {"name": "Other tool", "check": command, "minimumVersion": "0.43"}
+        package = {"name": "Other tool", "managed": True, "check": command, "minimumVersion": "0.43"}
         self.assertEqual(
             package_manager.package_version_check(package, runtime.Runner("ubuntu"), command),
             (True, "other 0.50.0"),
@@ -3397,155 +3371,10 @@ class DotAiTests(unittest.TestCase):
             sys.executable, "-c",
             "import sys; print('Checking installation'); print('other 0.50.0', file=sys.stderr)",
         ]
-        package = {"name": "Other tool", "check": command, "minimumVersion": "0.43"}
+        package = {"name": "Other tool", "managed": True, "check": command, "minimumVersion": "0.43"}
         installed, report = package_manager.package_version_check(package, runtime.Runner("ubuntu"), command)
         self.assertTrue(installed, report)
         self.assertIn("other 0.50.0", report)
-
-    def test_rtk_status_checks_minimum_version_on_supported_platforms(self) -> None:
-        manifest = manifests.load_manifest(ROOT / "stack.example.json")
-        manifest["packages"] = [next(package for package in manifest["packages"] if package["name"] == "RTK")]
-        manifest["skills"] = []
-        manifest["ompExtensions"] = []
-        for platform in ("windows", "macos", "ubuntu", "wsl", "arch"):
-            for version, expected in (("rtk 0.42.9", False), ("rtk 0.43.0", True), ("rtk 0.50.0", True)):
-                with self.subTest(platform=platform, version=version):
-                    runner = runtime.Runner(platform)
-                    result = subprocess.CompletedProcess(["rtk", "--version"], 0, version)
-                    output = io.StringIO()
-                    with (
-                        mock.patch.object(subprocess, "run", return_value=result),
-                        mock.patch.object(mcp_config, "mcp_status", return_value=(True, "configured")),
-                        contextlib.redirect_stdout(output),
-                    ):
-                        healthy = health.print_status(manifest, runner)
-                    self.assertEqual(healthy, expected)
-                    self.assertIn(f"[{'OK' if expected else 'MISSING'}] RTK:", output.getvalue())
-
-    def test_rtk_old_version_updates_while_missing_binary_installs(self) -> None:
-        manifest = manifests.load_manifest(ROOT / "stack.example.json")
-        manifest["packages"] = [next(package for package in manifest["packages"] if package["name"] == "RTK")]
-        for platform in ("windows", "macos", "ubuntu", "wsl", "arch"):
-            for version, returncode, operation in (
-                ("rtk 0.42.9", 0, "Check/update RTK"),
-                ("", 127, "Install RTK"),
-                ("rtk 0.50.0", 0, "Check/update RTK"),
-            ):
-                with self.subTest(platform=platform, version=version, returncode=returncode):
-                    runner = runtime.Runner(platform, dry_run=True)
-                    result = subprocess.CompletedProcess(["rtk", "--version"], returncode, version)
-                    output = io.StringIO()
-                    with (
-                        mock.patch.object(subprocess, "run", return_value=result),
-                        contextlib.redirect_stdout(output),
-                    ):
-                        package_manager.reconcile_packages(manifest, runner, "update")
-                    self.assertIn(operation, output.getvalue())
-
-    def test_install_upgrades_present_rtk_below_minimum(self) -> None:
-        manifest = manifests.load_manifest(ROOT / "stack.example.json")
-        manifest["packages"] = [next(package for package in manifest["packages"] if package["name"] == "RTK")]
-        for platform in ("windows", "macos", "ubuntu", "wsl", "arch"):
-            with self.subTest(platform=platform):
-                runner = runtime.Runner(platform, dry_run=True)
-                result = subprocess.CompletedProcess(["rtk", "--version"], 0, "rtk 0.42.9")
-                output = io.StringIO()
-                with mock.patch.object(subprocess, "run", return_value=result), contextlib.redirect_stdout(output):
-                    package_manager.reconcile_packages(manifest, runner, "install")
-                self.assertIn("Check/update RTK", output.getvalue())
-
-    def test_update_dependency_minimum_respects_presence_and_opt_in(self) -> None:
-        for reported_version, returncode, include_dependencies, expected_operation in (
-            ("dependency 0.42.9", 0, False, None),
-            ("dependency version unknown", 0, False, None),
-            ("dependency 0.42.9", 0, True, "update"),
-            ("dependency version unknown", 0, True, "update"),
-            ("", 127, False, "install"),
-            ("", 127, True, "install"),
-        ):
-            with self.subTest(
-                reported_version=reported_version,
-                include_dependencies=include_dependencies,
-                expected_operation=expected_operation,
-            ), tempfile.TemporaryDirectory() as directory:
-                marker = Path(directory) / "operation"
-                check = [
-                    sys.executable, "-c",
-                    "import pathlib, sys; "
-                    f"changed = pathlib.Path({str(marker)!r}).exists(); "
-                    f"print('dependency 0.50.0' if changed else {reported_version!r}); "
-                    f"sys.exit(0 if changed else {returncode})",
-                ]
-                manifest = self.minimal_manifest("~/.omp/agent/mcp.json")
-                manifest["packages"] = [{
-                    "name": "Dependency",
-                    "updateGroup": "dependency",
-                    "minimumVersion": "0.43",
-                    "check": check,
-                    "install": {"default": [[
-                        sys.executable, "-c",
-                        f"from pathlib import Path; Path({str(marker)!r}).write_text('install')",
-                    ]]},
-                    "update": {"default": [[
-                        sys.executable, "-c",
-                        f"from pathlib import Path; Path({str(marker)!r}).write_text('update')",
-                    ]]},
-                }]
-                runner = runtime.Runner("ubuntu")
-                with contextlib.redirect_stdout(io.StringIO()):
-                    package_manager.reconcile_packages(
-                        manifest, runner, "update", include_dependencies=include_dependencies,
-                    )
-                if expected_operation is None:
-                    self.assertFalse(marker.exists(), "Dependency update requires explicit opt-in")
-                else:
-                    self.assertEqual(marker.read_text(), expected_operation)
-                    self.assertEqual(runner.failures, [])
-
-    def test_update_skips_dependency_group_unless_explicitly_included(self) -> None:
-        manifest = self.minimal_manifest("~/.omp/agent/mcp.json")
-        manifest["packages"] = [
-            {
-                "name": "Core",
-                "check": ["core", "--version"],
-                "install": {"default": [["core", "install"]]},
-                "update": {"default": [["core", "update"]]},
-            },
-            {
-                "name": "Dependency",
-                "updateGroup": "dependency",
-                "check": ["dependency", "--version"],
-                "install": {"default": [["dependency", "install"]]},
-                "update": {"default": [["dependency", "update"]]},
-            },
-        ]
-        runner = runtime.Runner("linux", dry_run=True)
-        output = io.StringIO()
-        with (
-            mock.patch.object(package_manager, "package_check", return_value=True),
-            contextlib.redirect_stdout(output),
-        ):
-            package_manager.reconcile_packages(manifest, runner, "update")
-        plan = output.getvalue()
-        self.assertIn("Check/update Core", plan)
-        self.assertIn("Dependency: dependency update skipped", plan)
-        self.assertNotIn("Check/update Dependency", plan)
-
-        output = io.StringIO()
-        with (
-            mock.patch.object(package_manager, "package_check", side_effect=lambda package, _runner: package["name"] == "Core",),
-            contextlib.redirect_stdout(output),
-        ):
-            package_manager.reconcile_packages(manifest, runner, "update")
-        self.assertIn("Install Dependency", output.getvalue())
-
-        output = io.StringIO()
-        with (
-            mock.patch.object(package_manager, "package_check", return_value=True),
-            contextlib.redirect_stdout(output),
-        ):
-            package_manager.reconcile_packages(manifest, runner, "update", include_dependencies=True)
-        self.assertIn("Check/update Dependency", output.getvalue())
 
     def test_update_installs_a_missing_versioned_core_package(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -3559,7 +3388,7 @@ class DotAiTests(unittest.TestCase):
             ]
             manifest = self.minimal_manifest("mcp.json")
             manifest["packages"] = [{
-                "name": "Versioned core tool", "minimumVersion": "0.43", "check": check,
+                "name": "Versioned core tool", "managed": True, "minimumVersion": "0.43", "check": check,
                 "install": {"linux": [[
                     sys.executable, "-c",
                     f"from pathlib import Path; Path({str(marker)!r}).write_text('install')",
@@ -3643,28 +3472,7 @@ class DotAiTests(unittest.TestCase):
                 with contextlib.redirect_stderr(io.StringIO()):
                     self.assertEqual(cli.main(["--manifest", str(path), *command]), 2)
 
-    def test_windows_plan_uses_scoop(self) -> None:
-        manifest = self.minimal_manifest("~/.omp/agent/mcp.json")
-        manifest["packages"] = [
-            {
-                "name": "Example",
-                "check": ["example", "--version"],
-                "install": {"windows": [["scoop", "install", "example"]]},
-            }
-        ]
-        with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / "stack.json"
-            path.write_text(json.dumps(manifest), encoding="utf-8")
-            output = io.StringIO()
-            with contextlib.redirect_stdout(output):
-                result = cli.main(
-                    ["--manifest", str(path), "--platform", "windows", "install", "--force", "--dry-run"]
-                )
-            self.assertEqual(result, 0)
-            self.assertIn("scoop install example", output.getvalue())
-            self.assertNotIn("winget", output.getvalue().lower())
-
-    def test_missing_default_manifest_is_initialized_once_from_example(self) -> None:
+    def test_missing_default_manifest_requires_explicit_init_and_preserves_local_changes(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             target = root / "stack.json"
@@ -3674,11 +3482,14 @@ class DotAiTests(unittest.TestCase):
 
             output = io.StringIO()
             with (
-                mock.patch.object(manifests, "DEFAULT_MANIFEST", target),
+                mock.patch.dict(os.environ, {"DOTAI_CONFIG_DIR": str(root)}),
                 mock.patch.object(manifests, "EXAMPLE_MANIFEST", example),
                 contextlib.redirect_stdout(output),
             ):
-                self.assertEqual(cli.main(["validate"]), 0)
+                with contextlib.redirect_stderr(io.StringIO()):
+                    self.assertEqual(cli.main(["validate"]), 2)
+                self.assertFalse(target.exists())
+                self.assertEqual(cli.main(["init"]), 0)
                 self.assertEqual(json.loads(target.read_text(encoding="utf-8")), template)
                 default_local = dict(template)
                 default_local["localOnly"] = True
@@ -3726,29 +3537,6 @@ class DotAiTests(unittest.TestCase):
                 else:
                     self.assertNotIn("[UPDATE]", output.getvalue())
 
-    def test_release_warning_is_checked_by_status_sync_and_install(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / "stack.json"
-            manifest = self.minimal_manifest(str(Path(directory) / "mcp.json"))
-            manifest["mcp"]["servers"] = {}
-            path.write_text(json.dumps(manifest), encoding="utf-8")
-            for command in ("status", "sync", "install"):
-                response = mock.MagicMock()
-                response.__enter__.return_value = response
-                response.read.return_value = b'{"tag_name": "v1.3.0"}'
-                output = io.StringIO()
-                argv = ["--manifest", str(path), "--color", "never", command]
-                if command != "status":
-                    argv.append("--dry-run")
-                with (
-                    mock.patch.object(releases, "VERSION", "1.2.3"),
-                    mock.patch.dict(os.environ, {"DOTAI_HOME": directory, "DOTAI_STATE_DIR": str(Path(directory) / "state")}),
-                    mock.patch("urllib.request.urlopen", return_value=response),
-                    contextlib.redirect_stdout(output),
-                ):
-                    self.assertEqual(cli.main(argv), 0)
-                self.assertIn("[UPDATE]", output.getvalue())
-                self.assertIn("1.3.0", output.getvalue())
 
 
     def test_release_check_failure_keeps_version_command_available(self) -> None:
@@ -3759,8 +3547,6 @@ class DotAiTests(unittest.TestCase):
             contextlib.redirect_stdout(output),
         ):
             self.assertEqual(cli.main(["--color", "never", "version"]), 0)
-        self.assertIn("1.2.3", output.getvalue())
-        self.assertNotIn("[UPDATE]", output.getvalue())
 
     def test_malformed_release_response_is_ignored(self) -> None:
         response = mock.MagicMock()

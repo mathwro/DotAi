@@ -2,7 +2,7 @@
 
 DotAi is a declarative, cross-platform manager for a personal AI development stack. It applies the same tools, skills, plugins, and MCP servers across Windows, WSL, Ubuntu, Arch Linux, and macOS while preserving configuration that DotAi does not own.
 
-Repository defaults live in [`stack.example.json`](stack.example.json). On the first manifest-using command, DotAi copies that template to an ignored, user-owned `stack.json`; later runs install, update, synchronize, and extend the local manifest without overwriting it from the example.
+[`stack.example.json`](stack.example.json) is an empty version-2 baseline: no harness, tool, skill, plugin, extension, or MCP server is compulsory. Run `init` explicitly to create your personal manifest in the user configuration directory; inspection and dry-run commands never initialize it. Existing manifests and the old repository-local `stack.json` are never overwritten.
 
 ## Installation
 
@@ -13,24 +13,38 @@ Python 3.10 or newer must already be installed and available on `PATH`.
 ```sh
 git clone https://github.com/mathwro/DotAi.git
 cd DotAi
+./dotai.py init
 ./dotai.py install
 ```
+
+The new stack starts empty. Select only the optional components you want before installation:
+
+```sh
+./dotai.py add component omp
+./dotai.py add component rtk
+./dotai.py add component graphify
+./dotai.py install --dry-run
+./dotai.py install
+```
+
+Each selection is independent; omit OMP entirely for a non-OMP stack. Alternatively, initialize a fresh stack with repeatable `init --component NAME` selections.
 
 Direct execution uses `python3` from `PATH`. If your Python 3.10+ interpreter is available only as `python`, use `python dotai.py install` and replace `./dotai.py` with `python dotai.py` in the examples below.
 
 ### Windows PowerShell
 
-Install [Scoop](https://scoop.sh/) first, then run:
+With Python already available, run the commands below. Install [Scoop](https://scoop.sh/) externally only if a selected recipe requires it:
 
 ```powershell
 git clone https://github.com/mathwro/DotAi.git
 Set-Location DotAi
+python dotai.py init
 python dotai.py install
 ```
 
 If Python is available through the Windows launcher instead, use `py -3 dotai.py install` and replace `python dotai.py` with `py -3 dotai.py` in subsequent commands. If your interpreter is named `python3`, use `python3 dotai.py` instead. The selected interpreter must be Python 3.10 or newer.
 
-Native Windows uses Scoop for all managed package operations; Winget is intentionally not used.
+Windows recipes use Scoop when an operating-system package manager is required; Winget is intentionally not used. Other component installers, such as `uv` for Graphify, are checks-only external prerequisites too.
 
 ## Optional: configure OMP routing
 
@@ -61,14 +75,14 @@ Use `./dotai.py` on Linux, WSL, and macOS, or `python dotai.py` in PowerShell. T
 
 ```sh
 ./dotai.py install          # Install missing components and synchronize configuration
-./dotai.py update           # Update core components and synchronize configuration
-./dotai.py sync             # Reconcile skills, plugins, and MCP servers; no package operations
+./dotai.py update           # Update explicitly managed components and synchronize configuration
+./dotai.py sync             # Reconcile configuration; retain tool, skill source, and plugin versions
 ./dotai.py sync --update-skills  # Explicitly refresh already installed skill sources
 ./dotai.py sync --recommended-skills  # Review and apply repository skill recommendations
 ./dotai.py sync --recommended-skills --enforce  # Offer user-skill cleanup, then review exact recommendations
 ./dotai.py status           # Show installed, missing, inactive, or drifting components
 ./dotai.py doctor           # Check the stack plus platform prerequisites
-./dotai.py validate         # Initialize when absent, then validate stack.json
+./dotai.py validate         # Validate an existing version-2 manifest
 ./dotai.py version          # Print the version and warn about newer releases
 ./dotai.py platform         # Print the detected platform
 ```
@@ -82,16 +96,39 @@ Common options:
 ```sh
 ./dotai.py install --dry-run
 ./dotai.py install --force
-./dotai.py update --include-dependencies
 ./dotai.py --manifest path/to/stack.json status
 ./dotai.py --manifest path/to/new-stack.json init
+./dotai.py --manifest path/to/new-stack.json init --component graphify
+./dotai.py update --only tool:graphify
 ```
 
-`init` creates only a missing manifest and refuses to overwrite an existing file. Dependency tools such as Node.js and `uv` install when missing but update only with `--include-dependencies`. OMP updates use its version-aware `omp update` command.
+`init` creates only a missing manifest and refuses to overwrite an existing file. Node.js/npm, `uv`, Python, Git, curl, and platform package managers are external prerequisites: DotAi checks them but never installs, updates, or configures them. Install missing prerequisites yourself using the reported guidance, then retry. Requirements are checked only for selected, enabled components, before any dependent changes.
 
-Preview commands still initialize a missing default `stack.json` on first use. Run `./dotai.py validate` first if you want to separate manifest initialization from a dry-run preview.
+Version-1 manifests are rejected by normal commands before environment changes. Use the explicit `convert` command to review the one-way version-2 conversion before applying it; existing entries are preserved and prerequisite mutation commands are retired.
 
-Linux RTK installs and updates use the reviewed v0.50.0 release archives with pinned SHA-256 digests rather than executing an installer from a moving branch. To adopt this change on an existing installation, update the RTK commands in your personal `stack.json` from `stack.example.json`; DotAi does not overwrite that file.
+Packages require explicit `managed: true` permission. Disabled selections are excluded from installation intent; lifecycle operations disable or uninstall only supported, proven-owned runtime copies and refuse unsafe removal. Dry runs describe changes without creating a manifest or changing files.
+
+Human output describes plans and component outcomes in prose. DotAi captures noninteractive child stdout/stderr; `--verbose` exposes only sanitized diagnostics, never raw JSON or credentials. Multi-step mutations end with one numeric action summary, including partial failures; simple manifest-only commands end with a clear result line.
+
+Use `list` and `show kind:id` to inspect intent, observed versions, scope, and ownership without resolving mutable upstream metadata. `adopt kind:id` explicitly adopts matching existing content. `enable` and `disable` change supported owned activation. `remove kind:id` only forgets the declaration; `remove kind:id --uninstall` requires an exact unchanged owned snapshot and preserves shared or unrelated copies. Repeat `--only kind:id` on install, sync, or update to select components before prerequisite checks, including `tool:graphify`.
+
+Requested versions, skill revisions, and update policies stay in personal intent. Exact successful tool/skill/plugin resolutions and the pinned skills installer live separately in the adjacent private `stack.lock.json`; a concurrency guard protects reconciliation. Locks are not uninstall permission: machine-local ownership receipts are separate. Normal sync never silently upgrades uncertain content.
+
+OMP fresh/missing installs and reviewed owned `install --force` replacements use exact release artifacts with verified SHA-256 digests. Existing latest-policy copies use guarded `omp update --stable`, without updating unrelated plugins; the vendor-selected stable release can change after preview. The lock records the actual installed release and verifies its artifact digest. Matching exact requested or retained locked targets remain unchanged; a differing target requires a reviewed owned force-install rather than native update. See [recipe and pin limitations](docs/configuration.md#portable-personal-stack).
+
+### Convert an existing manifest
+
+```sh
+./dotai.py --manifest path/to/legacy-stack.json convert --dry-run
+./dotai.py --manifest path/to/legacy-stack.json convert
+# Noninteractive ownership review must name each package you authorize:
+./dotai.py --manifest path/to/legacy-stack.json convert --manage custom-ai --yes
+# Keep the original manifest and write the converted intent elsewhere:
+./dotai.py --manifest path/to/legacy-stack.json convert --destination path/to/new-stack.json
+```
+
+Conversion is file-only: it never installs or updates tools or rewrites their settings. It preserves skills, MCP entries, routing, custom package commands, and user metadata, while moving known general dependencies to checks-only prerequisites and retiring their mutation commands. Review management permission for each retained package. An exact private source backup is created before the confirmed write; an existing destination is never overwritten. See [conversion details](docs/configuration.md#convert-version-1-manifests).
+
 
 ### Status output
 
@@ -111,9 +148,10 @@ The `INACTIVE` hint for unconfigured optional routing is informational and does 
 
 ## Extending the stack
 
-Use `add` to record a desired integration in your local `stack.json`; adding it does not install it yet. Replace these example names and URLs with your own:
+Use `add` to record a desired integration in your explicitly initialized personal manifest; adding does not install it yet. Replace these example names and URLs with your own:
 
 ```sh
+./dotai.py add component graphify
 ./dotai.py add skill owner/repository --skill review
 ./dotai.py add mcp example --url https://example.com/mcp
 ./dotai.py add marketplace team owner/marketplace
@@ -122,20 +160,24 @@ Use `add` to record a desired integration in your local `stack.json`; adding it 
 
 Then preview with `./dotai.py sync --dry-run` and apply with `./dotai.py sync`. For command-line tools, use `./dotai.py add tool` with `--check` and platform-specific `--install` commands, then run `./dotai.py install`; `sync` does not install packages. Use `python dotai.py` instead of `./dotai.py` in PowerShell.
 
-Reusing a skill source, MCP or marketplace name, plugin ID, or tool name replaces that manifest entry. See [Extending the stack](docs/extending.md) for tool examples, stdio/SSE servers, authentication headers and environment references, skill checks, and recommendation management.
+Named skill selections merge by source and agent; pass `--replace` to explicitly replace that selection. Reusing an MCP or marketplace name, scoped plugin ID, or tool name replaces that manifest entry. Duplicate component identities are rejected instead of silently colliding. See [Extending the stack](docs/extending.md) for tool examples, stdio/SSE servers, authentication headers and environment references, skill checks, and recommendation management.
 
-## Managed stack
+## Optional components and recommendations
 
 | Type | Components |
 | --- | --- |
 | Harness | [Oh My Pi](https://github.com/can1357/oh-my-pi) |
-| Tools | [RTK](https://github.com/rtk-ai/rtk), [Graphify](https://github.com/Graphify-Labs/graphify), Node.js, `uv`, `curl` |
+| Tools | [RTK](https://github.com/rtk-ai/rtk), [Graphify](https://github.com/Graphify-Labs/graphify) |
 | Skills | [Ponytail](https://github.com/DietrichGebert/ponytail), [Superpowers](https://github.com/obra/superpowers), [Grilling and Writing for Agents](https://github.com/mattpocock/skills), [Choose Branch Structure](https://github.com/mathwro/Skills/tree/main/skills/choosing-branch-structure), [Commit and Document](https://github.com/mathwro/Skills), [Emil Design Engineering](https://github.com/emilkowalski/skills/tree/main/skills/emil-design-eng), [Web Design Guidelines](https://github.com/vercel-labs/agent-skills/tree/main/skills/web-design-guidelines), installed through [skills.sh](https://skills.sh/) |
 | MCP servers | [Context7](https://context7.com/), [Microsoft Learn](https://learn.microsoft.com/training/support/mcp) |
 
-RTK 0.43 or newer is configured for Pi and registered as an OMP global extension without replacing unrelated extensions. DotAi also enables OMP's **Hide Secrets** privacy setting during installation and updates.
+None of these entries are selected by the empty baseline. Skill suggestions live separately in [`skill-recommendations.json`](skill-recommendations.json) and are installed only after explicit acceptance with `sync --recommended-skills`. MCP integrations and OMP extensions must also be selected explicitly.
 
-DotAi installs the Graphify CLI, but its Pi skill and project graph generation are opt-in. Run `graphify extract . --code-only` in a project when you want a graph. Existing local manifests retain their earlier Graphify configuration; see [Optional Graphify](docs/configuration.md#optional-graphify) before your next `install` or `update`.
+Node.js/npm, `uv`, Python, Git, curl, and platform package managers are externally supplied prerequisites, never managed components.
+
+RTK can be selected as a standalone CLI without touching Pi or requiring OMP. Its Pi initialization runs only when the matching extension path is explicitly declared in `ompExtensions`; registering that extension requires the optional OMP harness. Selecting OMP enables its **Hide Secrets** privacy setting without altering unrelated settings.
+
+Selecting Graphify manages only its CLI: its Pi skill and project graph generation remain opt-in. Run `graphify extract . --code-only` in a project when you want a graph. Existing local manifests retain their earlier Graphify configuration; see [Optional Graphify](docs/configuration.md#optional-graphify) before your next `install` or `update`.
 
 Web interface coverage selects only `emil-design-eng` for component and interaction polish and `web-design-guidelines` for interface-quality review, not their repositories' full skill bundles. Existing users can preview these additions with `./dotai.py sync --recommended-skills --dry-run`, then review and apply them with `./dotai.py sync --recommended-skills`. Restart OMP after synchronization and invoke `/skill:emil-design-eng` or `/skill:web-design-guidelines` when relevant. These skills complement, rather than replace, project-specific UX decisions and real browser verification.
 
@@ -153,5 +195,5 @@ RTK is optional for running tests; omit `rtk` if it is not installed. On Windows
 
 - [Configuration](docs/configuration.md) — manifest lifecycle, safety guarantees, and OMP provider routing
 - [Extending the stack](docs/extending.md) — add skills, MCP servers, plugins, and command-line tools
-- [Vetted project skills](docs/project-skills.md) — conditional recommendations, project-local installation commands, and runtime boundaries
+- [Vetted project skills](docs/project-skills.md) — optional manual guidance; DotAi project-specific skill management is deferred
 - [Development](docs/development.md) — repository layout and contributor verification

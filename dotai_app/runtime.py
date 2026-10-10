@@ -91,13 +91,17 @@ class Runner:
         self.verbose = verbose
         self.failures: list[str] = []
         self.env = os.environ.copy()
+        self.env["HOME"] = str(home_dir())
+        self.env["USERPROFILE"] = str(home_dir())
+        self.outcomes: list[dict[str, str]] = []
         candidates = [
             home_dir() / ".local" / "bin",
             home_dir() / ".cargo" / "bin",
             home_dir() / ".bun" / "bin",
             Path(os.environ.get("SCOOP", home_dir() / "scoop")) / "shims",
-            Path(os.environ.get("APPDATA", "")) / "npm",
         ]
+        if self.env.get("APPDATA"):
+            candidates.append(Path(self.env["APPDATA"]) / "npm")
         self.env["PATH"] = os.pathsep.join(str(path) for path in candidates if str(path) != ".") + os.pathsep + self.env.get("PATH", "")
 
     def _format(self, value: str) -> str:
@@ -112,36 +116,115 @@ class Runner:
             return ["/bin/sh", "-c", text]
         return [self._format(str(part)) for part in command]
 
-    def display_command(self, command: str | list[str]) -> str:
-        return command if isinstance(command, str) else " ".join(str(part) for part in command)
+    def _secrets(self, command: str | list[str]) -> list[str]:
+        values = terminal.credential_values(self.env)
+        values.extend(terminal.credential_values(command))
+        if isinstance(command, list):
+            for index, part in enumerate(command[:-1]):
+                if terminal._SECRET_KEY.search(str(part)) and str(part).startswith("--") and "=" not in str(part):
+                    values.append(str(command[index + 1]))
+                elif part in {"--header", "-H", "--env", "-e"}:
+                    value = str(command[index + 1])
+                    separator = ":" if part in {"--header", "-H"} else "="
+                    if separator in value:
+                        values.append(value.split(separator, 1)[1].strip())
+        return values
 
-    def run(self, command: str | list[str], label: str, *, capture: bool = False, required: bool = True) -> subprocess.CompletedProcess[str] | None:
-        print(f"{terminal.badge('RUN')} {label}: {self.display_command(command)}")
+    def display_command(self, command: str | list[str]) -> str:
+        secrets = self._secrets(command)
+        if isinstance(command, str):
+            return terminal.redact(terminal.omit_protocol(command, "<structured configuration>"), secrets)
+        parts = []
+        for part in command:
+            text = terminal.omit_protocol(str(part), "<structured configuration>")
+            parts.append(terminal.redact(text, secrets))
+        return " ".join(parts)
+
+    def record_outcome(self, label: str, status: str, detail: str = "") -> None:
+        if status not in {"changed", "unchanged", "skipped", "failed", "planned"}:
+            raise ValueError(f"Unknown outcome status: {status}")
+        self.outcomes.append({
+            "label": terminal.redact(label, terminal.credential_values(self.env)),
+            "status": status,
+            "detail": terminal.redact(detail, terminal.credential_values(self.env)),
+        })
+
+    def summary(self) -> str:
+        counts = {status: sum(item["status"] == status for item in self.outcomes)
+                  for status in ("changed", "unchanged", "skipped", "failed", "planned")}
+        prefix = "Dry-run summary" if self.dry_run else (
+            "Partial completion" if counts["failed"] and any(counts[key] for key in ("changed", "unchanged"))
+            else "Summary"
+        )
+        text = f"{prefix}: " + ", ".join(f"{counts[key]} {key}" for key in counts if key != "planned" or counts[key]) + " actions"
         if self.dry_run:
+            text += "; no changes applied."
+        print(text)
+        return text
+
+    def _diagnostics(self, command: str | list[str], stdout: str | None, stderr: str | None) -> None:
+        if not self.verbose:
+            return
+        secrets = self._secrets(command)
+        for stream, text in (("stdout", stdout), ("stderr", stderr)):
+            if text:
+                lines = terminal.diagnostic_lines(text, secrets)
+                for line in lines[:30]:
+                    print(f"  {stream}: {line}")
+                if len(lines) > 30:
+                    print(f"  {stream}: further diagnostics omitted.")
+
+    def fail(self, label: str, cause: str, *, required: bool = True, command: str | list[str] | None = None) -> None:
+        command = command or []
+        detail = terminal.redact(cause, self._secrets(command))[:300]
+        message = terminal.redact(f"{label}: {detail}", self._secrets(command))
+        if required:
+            self.failures.append(message)
+        self.record_outcome(label, "failed", detail)
+        print(f"{terminal.badge('FAIL')} {message}", flush=True)
+        if "permission" in detail.lower() or "access denied" in detail.lower():
+            print("  Next step: check access to the component's target and rerun with --verbose.")
+        elif "no such file" in detail.lower() or "not found" in detail.lower():
+            print("  Next step: install the required executable, check PATH, and rerun with --verbose.")
+        else:
+            print("  Next step: rerun with --verbose, resolve the reported cause, then retry this component.")
+
+    def run(
+        self, command: str | list[str], label: str, *, capture: bool = False,
+        required: bool = True, interactive: bool = False,
+    ) -> subprocess.CompletedProcess[str] | None:
+        if interactive and capture:
+            raise ValueError("Interactive execution cannot capture its terminal streams.")
+        safe_label = terminal.redact(label, self._secrets(command))
+        action = "Would run" if self.dry_run else "Starting"
+        suffix = " (interactive; input and output use your terminal)" if interactive else ""
+        print(f"{terminal.badge('RUN')} {action} {safe_label}{suffix}", flush=True)
+        if self.verbose:
+            print(f"  Command: {self.display_command(command)}", flush=True)
+        if self.dry_run:
+            self.record_outcome(safe_label, "planned")
             return None
         try:
             result = subprocess.run(
-                self.argv(command),
-                env=self.env,
-                text=True,
-                stdout=subprocess.PIPE if capture else None,
-                stderr=subprocess.STDOUT if capture else None,
+                self.argv(command), env=self.env, text=True, encoding="utf-8", errors="replace",
+                stdin=None if interactive else subprocess.DEVNULL,
+                stdout=None if interactive else subprocess.PIPE,
+                stderr=None if interactive else subprocess.PIPE,
                 check=False,
             )
         except OSError as exc:
-            if required:
-                self.failures.append(f"{label}: {exc}")
-            print(f"{terminal.badge('FAIL')} {label}: {exc}")
+            self.fail(safe_label, str(exc), required=required, command=command)
             return None
         if result.returncode != 0:
-            detail = f" (exit {result.returncode})"
-            if capture and result.stdout:
-                detail += f": {result.stdout.strip()}"
-            if required:
-                self.failures.append(label + detail)
-            print(f"{terminal.badge('FAIL')} {label}{detail}")
-        elif self.verbose and capture and result.stdout:
-            print(result.stdout.rstrip())
+            secrets = self._secrets(command)
+            cause = terminal.failure_cause(result.stderr or "", secrets) or terminal.failure_cause(result.stdout or "", secrets)
+            if not cause:
+                cause = "The tool did not provide a plain-language error."
+            self.fail(safe_label, f"exit {result.returncode}: {cause}", required=required, command=command)
+        else:
+            self.record_outcome(safe_label, "changed")
+            print(f"{terminal.badge('OK')} {safe_label}: completed.", flush=True)
+        self._diagnostics(command, result.stdout, result.stderr)
         if self.platform == "windows":
             self._refresh_windows_path()
         return result
@@ -155,6 +238,7 @@ class Runner:
             result = subprocess.run(
                 ["powershell.exe", "-NoProfile", "-Command", script],
                 text=True,
+                env=self.env,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.DEVNULL,
                 check=False,
@@ -168,26 +252,51 @@ class Runner:
 
     def succeeds(self, command: str | list[str]) -> bool:
         try:
-            return subprocess.run(
-                self.argv(command), env=self.env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False
-            ).returncode == 0
-        except OSError:
+            result = subprocess.run(
+                self.argv(command), env=self.env, stdin=subprocess.DEVNULL,
+                text=True, encoding="utf-8", errors="replace",
+                stdout=subprocess.PIPE if self.verbose else subprocess.DEVNULL,
+                stderr=subprocess.PIPE if self.verbose else subprocess.DEVNULL, check=False,
+            )
+        except OSError as exc:
+            if self.verbose:
+                print(f"  Probe could not start: {terminal.redact(exc, self._secrets(command))}")
             return False
+        if self.verbose:
+            print(f"  Probe command: {self.display_command(command)} (exit {result.returncode})")
+            self._diagnostics(command, result.stdout, result.stderr)
+        return result.returncode == 0
 
     def output(self, command: str | list[str]) -> str:
         try:
             result = subprocess.run(
-                self.argv(command), env=self.env, text=True, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, check=False
+                self.argv(command), env=self.env, stdin=subprocess.DEVNULL,
+                text=True, encoding="utf-8", errors="replace", stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE, check=False,
             )
-            return result.stdout.strip() if result.returncode == 0 else ""
-        except OSError:
+        except OSError as exc:
+            if self.verbose:
+                print(f"  Probe could not start: {terminal.redact(exc, self._secrets(command))}")
             return ""
+        if self.verbose:
+            print(f"  Probe command: {self.display_command(command)} (exit {result.returncode})")
+            self._diagnostics(command, result.stdout, result.stderr)
+        return result.stdout.strip() if result.returncode == 0 else ""
 
 
 def run_steps(steps: Any, runner: Runner, label: str) -> None:
     for index, step in enumerate(steps or [], start=1):
         step_label = f"{label} ({index}/{len(steps)})"
+        previous_failures = len(runner.failures)
         if isinstance(step, (str, list)):
             runner.run(step, step_label)
         else:
-            runner.failures.append(f"{step_label}: invalid command entry")
+            runner.fail(step_label, "invalid command entry")
+        if len(runner.failures) > previous_failures:
+            for pending in range(index + 1, len(steps) + 1):
+                runner.record_outcome(f"{label} ({pending}/{len(steps)})", "skipped", "Earlier step failed")
+            if index < len(steps):
+                print(terminal.redact(
+                    f"{terminal.badge('INACTIVE')} {label}: {len(steps) - index} later step(s) not run after failure."
+                ))
+            break

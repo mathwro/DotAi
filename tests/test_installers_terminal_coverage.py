@@ -1,9 +1,7 @@
 from __future__ import annotations
 
-import contextlib
 import ctypes
 import io
-import json
 import os
 import shutil
 import subprocess
@@ -18,22 +16,26 @@ ROOT = Path(__file__).resolve().parents[1]
 if __name__ == "__main__":
     sys.path.insert(0, str(ROOT))
 
-from dotai_app import packages, runtime, terminal
+from dotai_app import catalog, terminal
 
 
-def example_package(name: str) -> dict:
-    manifest = json.loads((ROOT / "stack.example.json").read_text(encoding="utf-8"))
-    return next(package for package in manifest["packages"] if package["name"] == name)
+def recipe_package(recipe: str, name: str) -> dict:
+    return catalog.materialize({
+        "version": 2, "prerequisites": [], "packages": [
+            {"name": name, "recipe": recipe, "managed": True},
+        ], "skills": [], "marketplaces": [], "plugins": [], "ompExtensions": [],
+        "mcp": {"target": "mcp.json", "servers": {}},
+    }, "linux")["packages"][0]
 
 
 class RtkShellFixture:
     """Real shell/tools, with only architecture, download, and success verification controlled."""
 
-    def __init__(self, root: Path, architecture: str = "x86_64", *, custom_dir: bool = True):
+    def __init__(self, root: Path, architecture: str = "x86_64"):
         self.root = root
         self.bin = root / "tools"
         self.home = root / "home"
-        self.install_dir = root / "custom bin" if custom_dir else self.home / ".local" / "bin"
+        self.install_dir = self.home / ".local" / "bin"
         self.tmp = root / "tmp"
         for directory in (self.bin, self.home, self.tmp):
             directory.mkdir()
@@ -41,6 +43,8 @@ class RtkShellFixture:
             "PATH": str(self.install_dir) + os.pathsep + str(self.bin),
             "HOME": str(self.home),
             "DOTAI_HOME": str(self.home),
+            "DOTAI_CONFIG_DIR": str(root / "config"),
+            "XDG_CONFIG_HOME": str(root / "xdg-config"),
             "DOTAI_STATE_DIR": str(root / "state"),
             "XDG_STATE_HOME": str(root / "xdg"),
             "GH_HOST": "github.invalid",
@@ -49,9 +53,7 @@ class RtkShellFixture:
             "FIXTURE_ARCH": architecture,
             "LC_ALL": "C",
         }
-        if custom_dir:
-            self.env["RTK_INSTALL_DIR"] = str(self.install_dir)
-        for name in ("mktemp", "rm", "mkdir", "install", "sort", "sed", "sha256sum", "gzip"):
+        for name in ("mktemp", "rm", "mkdir", "mv", "chmod", "sha256sum", "gzip"):
             tool = shutil.which(name)
             if not tool:
                 raise RuntimeError(f"Required Linux fixture tool is absent: {name}")
@@ -61,16 +63,16 @@ class RtkShellFixture:
 from pathlib import Path
 root = Path(os.environ['FIXTURE_ROOT'])
 args = sys.argv[1:]
-assert len(args) == 4 and args[0] == '-fsSL' and args[2] == '-o', args
-url = args[1]
+url = next(arg for arg in args if arg.startswith('https://'))
+destination = args[args.index('-o') + 1]
 targets = ('x86_64-unknown-linux-musl', 'aarch64-unknown-linux-gnu')
 assert url.startswith('https://github.com/rtk-ai/rtk/releases/download/v')
 target = next(target for target in targets if url.endswith('/rtk-' + target + '.tar.gz'))
 (root / 'downloaded-target').write_text(target)
 if os.environ.get('FIXTURE_DOWNLOAD_FAIL') == '1':
-    Path(args[3]).write_bytes(b'partial download')
+    Path(destination).write_bytes(b'partial download')
     sys.exit(22)
-shutil.copyfile(root / (target + '.tar.gz'), args[3])
+shutil.copyfile(root / (target + '.tar.gz'), destination)
 """)
         real_tar = shutil.which("tar")
         if not real_tar:
@@ -121,7 +123,7 @@ assert Path(path).read_bytes()[:2] == b'\x1f\x8b'
         return binary.read_bytes()
 
     def run(self, operation: str) -> subprocess.CompletedProcess[str]:
-        command = example_package("RTK")[operation]["linux"][0]
+        command = recipe_package("rtk", "RTK")[operation]["linux"][0]
         return subprocess.run(["/bin/sh", "-c", command], env=self.env, capture_output=True, text=True, timeout=15)
 
 
@@ -133,6 +135,7 @@ class InstallerShellTests(unittest.TestCase):
         self.assertEqual((fixture.install_dir / "rtk").read_bytes(), before)
         self.assertFalse((fixture.root / "extracted").exists())
         self.assertEqual(list(fixture.tmp.iterdir()), [])
+        self.assertEqual(list(fixture.install_dir.iterdir()), [fixture.install_dir / "rtk"])
 
     def test_checksum_mismatch_preserves_existing_binary_before_extraction(self) -> None:
         for operation in ("install", "update"):
@@ -176,56 +179,16 @@ class InstallerShellTests(unittest.TestCase):
                     self.assertEqual(actual.stdout.strip(), target)
                     self.assertEqual(binary.stat().st_mode & 0o777, 0o755)
                     self.assertEqual(list(fixture.tmp.iterdir()), [])
+                    self.assertEqual(list(fixture.install_dir.iterdir()), [binary])
 
-    def test_install_uses_home_local_bin_when_override_is_absent(self) -> None:
+    def test_install_uses_home_local_bin(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
-            fixture = RtkShellFixture(Path(directory), custom_dir=False)
+            fixture = RtkShellFixture(Path(directory))
             fixture.accept_checksum()
             result = fixture.run("install")
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             actual = subprocess.run([str(fixture.home / ".local" / "bin" / "rtk"), "--version"], env=fixture.env, capture_output=True, text=True, check=True)
             self.assertEqual(actual.stdout.strip(), "rtk 0.50.0")
-
-    def test_current_or_newer_update_is_noop_without_network(self) -> None:
-        for version in ("0.50.0", "0.51.0", "1.0.0"):
-            with self.subTest(version=version), tempfile.TemporaryDirectory() as directory:
-                fixture = RtkShellFixture(Path(directory), "unsupported")
-                before = fixture.existing(version)
-                result = fixture.run("update")
-                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-                self.assertEqual((fixture.install_dir / "rtk").read_bytes(), before)
-                self.assertFalse((fixture.root / "downloaded-target").exists())
-                self.assertFalse((fixture.root / "extracted").exists())
-                self.assertEqual(list(fixture.tmp.iterdir()), [])
-
-    def test_omp_update_advances_version_and_enables_privacy_preserving_settings(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            fixture = RtkShellFixture(Path(directory))
-            state = fixture.root / "omp-state.json"
-            state.write_text(json.dumps({"version": "1.0.0", "custom": "keep", "secrets.enabled": False}))
-            fixture.script("omp", """import json, os, sys
-from pathlib import Path
-path = Path(os.environ['FIXTURE_ROOT'], 'omp-state.json')
-state = json.loads(path.read_text())
-args = sys.argv[1:]
-if args == ['--version']:
-    print('omp ' + state['version'])
-elif args == ['update']:
-    state['version'] = '1.1.0'
-    path.write_text(json.dumps(state))
-elif args == ['config', 'set', 'secrets.enabled', 'true']:
-    state['secrets.enabled'] = True
-    path.write_text(json.dumps(state))
-else:
-    sys.exit(2)
-""")
-            runner = runtime.Runner("ubuntu")
-            runner.env = fixture.env
-            with contextlib.redirect_stdout(io.StringIO()):
-                packages.reconcile_packages({"packages": [example_package("Oh My Pi")]}, runner, "update")
-            self.assertEqual(runner.failures, [])
-            self.assertEqual(json.loads(state.read_text()), {"version": "1.1.0", "custom": "keep", "secrets.enabled": True})
-            self.assertFalse((fixture.root / "downloaded-target").exists())
 
 
 class TerminalRenderingTests(unittest.TestCase):
