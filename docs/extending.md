@@ -1,6 +1,6 @@
 # Extending the stack
 
-Use `./dotai.py` on Linux, WSL, and macOS, or `python dotai.py` in PowerShell. The `add` commands validate and save entries in your user-owned `stack.json`; they do not install or start integrations. Reusing a skill source, MCP or marketplace name, plugin ID, or tool name replaces that entire manifest entry, so repeat every skill selection or option you want to retain.
+Use `./dotai.py` on Linux, WSL, and macOS, or `python dotai.py` in PowerShell. The `add` commands validate and save entries in your selected manifest; they do not install or start integrations. Reusing an MCP or marketplace name, plugin ID, or tool name replaces that manifest entry. Skill additions merge selections for the same source and agent; use `--replace` to replace that source's selections explicitly.
 
 For skills, MCP servers, marketplaces, and plugins, preview with `./dotai.py sync --dry-run`, then apply with `./dotai.py sync`. For command-line tools, use `./dotai.py install --dry-run` and `./dotai.py install`; `sync` skips package checks, installation, updates, and package configuration. Invalid additions leave the existing manifest unchanged, so correct the input and retry. On a fresh clone, initialize the default manifest with `./dotai.py validate` before previews if you want to separate first-use initialization from a dry run.
 
@@ -20,15 +20,13 @@ If no skills are named (or `--skill '*'` is used), status reports `UNVERIFIED` r
 
 After synchronization, restart OMP so it discovers newly installed skills. With OMP's default `skills.enableSkillCommands` setting, invoke them as `/skill:<name>` commands, for example `/skill:grilling` or `/skill:commit-and-document`; the shorter `/<name>` form is not the registered command syntax.
 
-Normal `install`, `update`, and `sync` leave named skills untouched only when their configured-agent files match the GitHub folder tree hash in the skills.sh v3 global lock and its source metadata matches the requested repository. The lock is keyed by skill name, not agent: another agent's independent copy does not prove ownership of the configured target. DotAi checks the entire installed folder, including supporting files and executable modes, rather than trusting a matching name or `SKILL.md` alone.
+Normal synchronization installs missing skills but never refreshes an existing copy silently. A healthy copy with proven source and full-folder ownership remains unchanged. Unknown provenance, local modifications, partial selections, and unverifiable wildcard selections report actionable `DRIFT` instead of overwriting content. The configured agent's files, including supporting files and executable modes, must match the recorded source; another agent's independent copy is not proof.
 
 DotAi reads `$XDG_STATE_HOME/skills/.skill-lock.json` when `XDG_STATE_HOME` is set; otherwise it reads `~/.agents/.skill-lock.json`. Setting XDG changes only the lock location, not the installed skill directory. It does not fall back to a stale home-directory lock when the XDG lock is missing or unreadable.
 
-Public GitHub repository-root spellings such as `owner/repo`, `github:owner/repo`, and `https://github.com/owner/repo` (with an optional `.git` suffix or trailing slash on the URL) are treated as equivalent. Different repositories, hosts, refs, and subpaths are not collapsed together. Refresh avoidance is conservative: non-GitHub sources, ref/subpath selections, missing or invalid hashes, changed content or modes, and copies whose original tree cannot be reconstructed are reconciled rather than attributed to the wrong source. Such sources may be fetched again on each run.
+Public GitHub repository-root spellings such as `owner/repo`, `github:owner/repo`, and `https://github.com/owner/repo` (with an optional `.git` suffix or trailing slash on the URL) are treated as equivalent for ownership checks. Different repositories, hosts, refs, and subpaths are not collapsed together. Add `--revision COMMIT` and `--installer-version VERSION` to declare a reproducible source and installer; unsupported revision/source combinations refuse rather than fetching latest.
 
-Use `./dotai.py sync --update-skills` to refresh healthy skills explicitly; `./dotai.py install --force` refreshes them too. Accepting a changed recommended source also refreshes it.
-
-Sources without named `checkSkills` cannot be confirmed installed and are still reconciled on each run. Naming the expected skills enables source and content verification; it does not override missing or ambiguous ownership evidence.
+Use `./dotai.py update` to refresh selected skills and plugins explicitly. The compatibility `sync --update-skills` option and accepted recommendation changes are also explicit skill refresh requests. Existing copies with uncertain ownership or local changes still require explicit adoption or manual resolution before refresh. Missing named selections install only when doing so cannot overwrite existing uncertain content. Wildcard sources cannot prove that an upstream add is safe and require explicit review.
 
 Normal `sync`, including `sync --dry-run`, compares your existing manifest with the repository's recommended skills. Pending additions, updates, and removals appear as a human-readable list of `owner/repository` sources and selected skill names, with instructions for reviewing them; locally differing recommended sources are reported and preserved. This notice does not prompt, adopt recommendations, or install skills absent from your manifest. No notice is shown when recommendations already match.
 
@@ -124,6 +122,8 @@ Plugin scope can be `user` or `project`.
 
 `status` and `doctor` check marketplace registration and the plugin's selected user or project registry. Missing, malformed, or unreadable registries, including invalid UTF-8, are unhealthy rather than successful installations. Extension health independently requires both global registration and an available source file; registering a path alone does not make the extension healthy.
 
+Synchronization leaves registered marketplaces and installed plugins at their current versions; missing plugins install without `--force`. Use `update` for explicit marketplace/plugin refresh. An exact plugin version that OMP cannot install is rejected rather than silently replaced with latest. Keep a pinned plugin's marketplace source reproducible.
+
 ## Add a command-line tool
 
 ```sh
@@ -136,7 +136,7 @@ Plugin scope can be `user` or `project`.
 
 Add repeatable `--update PLATFORM=COMMAND` options when the tool has a separate update operation. Platform keys are `windows`, `wsl`, `ubuntu`, `arch`, `macos`, `linux`, and `default`.
 
-Use `--update-group dependency` for supporting tools that should be installed when missing but updated only by `./dotai.py update --include-dependencies`.
+Declare checks-only supporting prerequisites with repeatable `--requires NAME`. DotAi never installs Node.js, npm, uv, Git, curl, or platform package managers as an incidental dependency.
 
 For more complex entries, edit the local `stack.json` directly and run the runtime validator; [`stack.schema.json`](../stack.schema.json) also describes the format for editors:
 

@@ -67,7 +67,24 @@ def add_integration(args: argparse.Namespace, manifest: dict[str, Any], path: Pa
             "skills": skills,
             "checkSkills": check_skills,
         }
-        upsert(manifest["skills"], "source", value)
+        if getattr(args, "revision", None):
+            value["revision"] = args.revision
+        if getattr(args, "installer_version", None):
+            value["installerVersion"] = args.installer_version
+        for index, previous in enumerate(manifest["skills"]):
+            if previous["source"] != value["source"] or previous.get("agent", "universal") != value["agent"]:
+                continue
+            if not getattr(args, "replace", False):
+                value = {
+                    **previous,
+                    **value,
+                    "skills": list(dict.fromkeys([*previous.get("skills", []), *skills])),
+                    "checkSkills": list(dict.fromkeys([*previous.get("checkSkills", []), *check_skills])),
+                }
+            manifest["skills"][index] = value
+            break
+        else:
+            manifest["skills"].append(value)
     elif kind == "marketplace":
         upsert(manifest["marketplaces"], "name", {"name": args.name, "source": args.source})
     elif kind == "plugin":
@@ -98,9 +115,9 @@ def add_integration(args: argparse.Namespace, manifest: dict[str, Any], path: Pa
         installs = parse_platform_commands(args.install_commands, "--install")
         if not installs:
             raise runtime.DotAiError("At least one --install PLATFORM=COMMAND is required")
-        value = {"name": args.name, "check": args.check_command, "install": installs}
-        if args.update_group != "core":
-            value["updateGroup"] = args.update_group
+        value = {"name": args.name, "managed": True, "check": args.check_command, "install": installs}
+        if getattr(args, "requires", None):
+            value["requires"] = args.requires
         updates = parse_platform_commands(args.update_commands, "--update")
         if updates:
             value["update"] = updates
