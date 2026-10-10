@@ -13,6 +13,7 @@ from . import runtime
 from . import skills as skill_manager
 from . import state as app_state
 from . import terminal
+from . import catalog, locking
 
 
 def reconcile(
@@ -26,13 +27,19 @@ def reconcile(
     refresh_sources: set[str] | None = None,
     recommended_only: bool = False,
 ) -> int:
+    intent = manifest
     try:
         manifests.validate_manifest(manifest)
+        manifest = catalog.materialize(manifest, runner.platform)
     except runtime.DotAiError as exc:
-        runner.failures.append(str(exc))
-        print(f"{terminal.badge('FAIL')} {exc}")
+        runner.fail("Manifest plan", str(exc))
         return 1
-    if not prerequisites.preflight(manifest, runner, mode):
+    if not prerequisites.preflight(manifest, runner, mode, force=force):
+        return 1
+    try:
+        manifest = locking.prepare(intent, manifest_path, runner, mode)
+    except (OSError, runtime.DotAiError) as exc:
+        runner.fail("Resolved stack plan", str(exc))
         return 1
     if mode != "sync":
         package_manager.reconcile_packages(manifest, runner, mode, force)
@@ -45,15 +52,24 @@ def reconcile(
     )
     omp_config.reconcile_plugins(manifest, runner, "install" if mode == "sync" else mode)
     try:
-        mcp_config.sync_mcp(manifest, runner)
+        if manifest.get("mcp", {}).get("servers"):
+            mcp_config.sync_mcp(manifest, runner)
     except (OSError, runtime.DotAiError) as exc:
-        runner.failures.append(str(exc))
-        print(f"{terminal.badge('FAIL')} MCP: {exc}")
+        runner.fail("MCP", str(exc))
+    if not runner.failures:
+        try:
+            if locking.record(intent, manifest_path, runner, mode):
+                print(f"{terminal.badge('OK')} Recorded observed stack versions and revisions.")
+        except (OSError, runtime.DotAiError) as exc:
+            runner.fail("Stack lock", str(exc))
     app_state.save_state(manifest_path, runner, mode, managed_skills)
     if runner.failures:
         print(f"\n{terminal.styled('Reconciliation failed:', 'red', 'bold')}")
         for failure in runner.failures:
             print(f"  - {failure}")
         return 1
-    print(f"\n{terminal.styled(f'DotAi {mode} complete for {runner.platform}.', 'green', 'bold')}")
+    if runner.dry_run:
+        print(f"\n{terminal.badge('RUN')} DotAi {mode} preview for {runner.platform}; no changes applied.")
+    else:
+        print(f"\n{terminal.styled(f'DotAi {mode} complete for {runner.platform}.', 'green', 'bold')}")
     return 0

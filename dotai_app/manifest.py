@@ -12,11 +12,10 @@ import re
 import shutil
 import tempfile
 import shlex
+from . import catalog
+from . import portable
 from . import runtime
 from . import terminal
-
-
-DEFAULT_MANIFEST = runtime.ROOT / "stack.json"
 
 
 EXAMPLE_MANIFEST = runtime.ROOT / "stack.example.json"
@@ -96,8 +95,39 @@ def validate_enabled(entry: dict[str, Any], path: str) -> None:
         validate_requirements(entry["requires"], f"{path}.requires")
 
 
-def initialize_manifest(path: Path, *, allow_custom: bool = False) -> bool:
-    if path.exists() or (not allow_custom and path.resolve() != DEFAULT_MANIFEST.resolve()):
+def component_intent(name: str, *, version: str | None = None, update_policy: str | None = None) -> dict[str, Any]:
+    require_nonempty_string(name, "component recipe")
+    intent = {"name": name, "recipe": name, "managed": True}
+    if version is not None:
+        intent["version"] = version
+    if update_policy is not None:
+        intent["updatePolicy"] = update_policy
+    catalog.resolve_package(intent)
+    return intent
+
+
+def extension_identity(value: str) -> str:
+    if value.startswith(("~/", "~\\")) or Path(value).is_absolute():
+        return os.path.normcase(str(runtime.expand_path(value).resolve()))
+    return value
+
+
+def validate_unique_components(data: dict[str, Any]) -> None:
+    identities = {
+        "packages": [(entry["name"],) for entry in data["packages"]],
+        "skills": [(entry["source"], entry.get("agent", "universal")) for entry in data["skills"]],
+        "marketplaces": [(entry["name"],) for entry in data["marketplaces"]],
+        "plugins": [(entry["id"], entry.get("scope", "user")) for entry in data["plugins"]],
+        "ompExtensions": [(extension_identity(entry if isinstance(entry, str) else entry["path"]),)
+                          for entry in data.get("ompExtensions", [])],
+    }
+    for section, keys in identities.items():
+        if len(keys) != len(set(keys)):
+            raise runtime.DotAiError(f"Manifest '{section}' contains duplicate component identities; merge or rename them explicitly")
+
+
+def initialize_manifest(path: Path, *, allow_custom: bool = False, components: list[str] | None = None) -> bool:
+    if path.exists() or (not allow_custom and path.resolve() != portable.default_manifest_path().resolve()):
         return False
     try:
         payload = EXAMPLE_MANIFEST.read_text(encoding="utf-8")
@@ -108,6 +138,11 @@ def initialize_manifest(path: Path, *, allow_custom: bool = False) -> bool:
         raise runtime.DotAiError(f"Invalid JSON in {EXAMPLE_MANIFEST}: {exc}") from exc
     except UnicodeError as exc:
         raise runtime.DotAiError(f"Manifest is not UTF-8: {EXAMPLE_MANIFEST}: {exc}") from exc
+    if components:
+        if not isinstance(data.get("packages"), list):
+            raise runtime.DotAiError("Example manifest packages must be an array")
+        data["packages"].extend(component_intent(name) for name in components)
+        payload = json.dumps(data, indent=2) + "\n"
     validate_manifest(data)
     path.parent.mkdir(parents=True, exist_ok=True)
     try:
@@ -122,12 +157,8 @@ def initialize_manifest(path: Path, *, allow_custom: bool = False) -> bool:
     except Exception:
         path.unlink(missing_ok=True)
         raise
-    print(f"{terminal.badge('OK')} Initialized {path} from {EXAMPLE_MANIFEST.name}")
+    print(f"{terminal.badge('OK')} Initialized {terminal.redact(path)} from {EXAMPLE_MANIFEST.name}")
     return True
-
-
-def initialize_default_manifest(path: Path) -> bool:
-    return initialize_manifest(path)
 
 
 def validate_omp_routing(value: Any, *, allow_legacy: bool = False) -> dict[str, Any]:
@@ -376,6 +407,10 @@ def validate_manifest(data: Any, *, allow_legacy_routing: bool = False) -> dict[
                 raise runtime.DotAiError(f"Manifest '{path_name}.{field}' must be a numeric version" + (" or latest" if field == "version" else ""))
         if "updatePolicy" in package and package["updatePolicy"] not in ("latest", "pinned"):
             raise runtime.DotAiError(f"Manifest '{path_name}.updatePolicy' must be latest or pinned")
+        if "updateRequires" in package:
+            validate_requirements(package["updateRequires"], f"{path_name}.updateRequires")
+        if "configureWhen" in package and not isinstance(package["configureWhen"], dict):
+            raise runtime.DotAiError(f"Manifest '{path_name}.configureWhen' must be an object of expected selections")
         if "provides" in package:
             if not isinstance(package["provides"], list) or any(not isinstance(name, str) or not name for name in package["provides"]):
                 raise runtime.DotAiError(f"Manifest '{path_name}.provides' must be an array of names")
@@ -415,11 +450,17 @@ def validate_manifest(data: Any, *, allow_legacy_routing: bool = False) -> dict[
         if "scope" in plugin and plugin["scope"] not in ("user", "project"):
             raise runtime.DotAiError(f"Manifest '{path_name}.scope' must be 'user' or 'project'")
     extensions = data.get("ompExtensions", [])
-    if not isinstance(extensions, list) or any(not isinstance(item, str) or not item for item in extensions):
-        raise runtime.DotAiError("Manifest 'ompExtensions' must be an array of non-empty strings")
-    if len(extensions) != len(set(extensions)):
-        raise runtime.DotAiError("Manifest 'ompExtensions' entries must be unique")
-    if "ompRouting" in data:
+    if not isinstance(extensions, list):
+        raise runtime.DotAiError("Manifest 'ompExtensions' must be an array")
+    for index, entry in enumerate(extensions):
+        if isinstance(entry, str):
+            require_nonempty_string(entry, f"ompExtensions[{index}]")
+        elif isinstance(entry, dict):
+            require_nonempty_string(entry.get("path"), f"ompExtensions[{index}].path")
+            validate_enabled(entry, f"ompExtensions[{index}]")
+        else:
+            raise runtime.DotAiError("OMP extensions must be paths or path/enabled objects")
+    if "ompRouting" in data and data["ompRouting"] is not None:
         data = {
             **data,
             "ompRouting": validate_omp_routing(
@@ -437,6 +478,7 @@ def validate_manifest(data: Any, *, allow_legacy_routing: bool = False) -> dict[
         if not SERVER_NAME.fullmatch(name):
             raise runtime.DotAiError(f"Invalid MCP server name: {name}")
         validate_mcp_server(server, f"mcp.servers.{name}")
+    validate_unique_components(data)
     return data
 
 
