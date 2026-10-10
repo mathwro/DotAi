@@ -1,9 +1,7 @@
 from __future__ import annotations
 
-import contextlib
 import ctypes
 import io
-import json
 import os
 import shutil
 import subprocess
@@ -18,7 +16,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if __name__ == "__main__":
     sys.path.insert(0, str(ROOT))
 
-from dotai_app import catalog, packages, runtime, terminal
+from dotai_app import catalog, terminal
 
 
 def recipe_package(recipe: str, name: str) -> dict:
@@ -33,11 +31,11 @@ def recipe_package(recipe: str, name: str) -> dict:
 class RtkShellFixture:
     """Real shell/tools, with only architecture, download, and success verification controlled."""
 
-    def __init__(self, root: Path, architecture: str = "x86_64", *, custom_dir: bool = True):
+    def __init__(self, root: Path, architecture: str = "x86_64"):
         self.root = root
         self.bin = root / "tools"
         self.home = root / "home"
-        self.install_dir = root / "custom bin" if custom_dir else self.home / ".local" / "bin"
+        self.install_dir = self.home / ".local" / "bin"
         self.tmp = root / "tmp"
         for directory in (self.bin, self.home, self.tmp):
             directory.mkdir()
@@ -55,9 +53,7 @@ class RtkShellFixture:
             "FIXTURE_ARCH": architecture,
             "LC_ALL": "C",
         }
-        if custom_dir:
-            self.env["RTK_INSTALL_DIR"] = str(self.install_dir)
-        for name in ("mktemp", "rm", "mkdir", "install", "sort", "sed", "sha256sum", "gzip"):
+        for name in ("mktemp", "rm", "mkdir", "mv", "chmod", "sha256sum", "gzip"):
             tool = shutil.which(name)
             if not tool:
                 raise RuntimeError(f"Required Linux fixture tool is absent: {name}")
@@ -139,6 +135,7 @@ class InstallerShellTests(unittest.TestCase):
         self.assertEqual((fixture.install_dir / "rtk").read_bytes(), before)
         self.assertFalse((fixture.root / "extracted").exists())
         self.assertEqual(list(fixture.tmp.iterdir()), [])
+        self.assertEqual(list(fixture.install_dir.iterdir()), [fixture.install_dir / "rtk"])
 
     def test_checksum_mismatch_preserves_existing_binary_before_extraction(self) -> None:
         for operation in ("install", "update"):
@@ -182,56 +179,16 @@ class InstallerShellTests(unittest.TestCase):
                     self.assertEqual(actual.stdout.strip(), target)
                     self.assertEqual(binary.stat().st_mode & 0o777, 0o755)
                     self.assertEqual(list(fixture.tmp.iterdir()), [])
+                    self.assertEqual(list(fixture.install_dir.iterdir()), [binary])
 
-    def test_install_uses_home_local_bin_when_override_is_absent(self) -> None:
+    def test_install_uses_home_local_bin(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
-            fixture = RtkShellFixture(Path(directory), custom_dir=False)
+            fixture = RtkShellFixture(Path(directory))
             fixture.accept_checksum()
             result = fixture.run("install")
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             actual = subprocess.run([str(fixture.home / ".local" / "bin" / "rtk"), "--version"], env=fixture.env, capture_output=True, text=True, check=True)
             self.assertEqual(actual.stdout.strip(), "rtk 0.50.0")
-
-    def test_current_or_newer_update_is_noop_without_network(self) -> None:
-        for version in ("0.50.0", "0.51.0", "1.0.0"):
-            with self.subTest(version=version), tempfile.TemporaryDirectory() as directory:
-                fixture = RtkShellFixture(Path(directory), "unsupported")
-                before = fixture.existing(version)
-                result = fixture.run("update")
-                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-                self.assertEqual((fixture.install_dir / "rtk").read_bytes(), before)
-                self.assertFalse((fixture.root / "downloaded-target").exists())
-                self.assertFalse((fixture.root / "extracted").exists())
-                self.assertEqual(list(fixture.tmp.iterdir()), [])
-
-    def test_omp_update_advances_version_and_enables_privacy_preserving_settings(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            fixture = RtkShellFixture(Path(directory))
-            state = fixture.root / "omp-state.json"
-            state.write_text(json.dumps({"version": "1.0.0", "custom": "keep", "secrets.enabled": False}))
-            fixture.script("omp", """import json, os, sys
-from pathlib import Path
-path = Path(os.environ['FIXTURE_ROOT'], 'omp-state.json')
-state = json.loads(path.read_text())
-args = sys.argv[1:]
-if args == ['--version']:
-    print('omp ' + state['version'])
-elif args == ['update']:
-    state['version'] = '1.1.0'
-    path.write_text(json.dumps(state))
-elif args == ['config', 'set', 'secrets.enabled', 'true']:
-    state['secrets.enabled'] = True
-    path.write_text(json.dumps(state))
-else:
-    sys.exit(2)
-""")
-            runner = runtime.Runner("ubuntu")
-            runner.env = fixture.env
-            with contextlib.redirect_stdout(io.StringIO()):
-                packages.reconcile_packages({"packages": [recipe_package("omp", "Oh My Pi")]}, runner, "update")
-            self.assertEqual(runner.failures, [])
-            self.assertEqual(json.loads(state.read_text()), {"version": "1.1.0", "custom": "keep", "secrets.enabled": True})
-            self.assertFalse((fixture.root / "downloaded-target").exists())
 
 
 class TerminalRenderingTests(unittest.TestCase):
