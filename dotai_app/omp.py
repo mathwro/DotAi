@@ -155,6 +155,9 @@ def marketplace_record(marketplace: dict[str, Any]) -> dict[str, Any] | None:
         return None
     if len(matches) != 1 or matches[0].get("sourceUri") != marketplace["source"]:
         raise runtime.DotAiError("Marketplace name does not prove the declared source; resolve its registration")
+    catalog_path = matches[0].get("catalogPath")
+    if not isinstance(catalog_path, str) or not catalog_path or "\0" in catalog_path:
+        raise runtime.DotAiError("Invalid OMP marketplace catalog path; repair its registration before reconciliation")
     return matches[0]
 
 

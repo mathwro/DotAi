@@ -238,19 +238,23 @@ def fix_legacy_skills(manifest: dict[str, Any], path: Path, runner: runtime.Runn
         if not prerequisites.preflight(effective, runner, "install", show_available=False):
             return 1
         _describe_plan(effective, runner, "install", False, set())
+        if not runner.dry_run:
+            try:
+                answer = input("Apply these changes and install the migrated skills? [y/N] ")
+            except (EOFError, KeyboardInterrupt):
+                answer = ""
+            if answer.strip().lower() not in {"y", "yes"}:
+                print(f"{terminal.badge('OK')} No changes applied.")
+                return 0
+            with locking.execution(path, runner):
+                backup = manifests.write_manifest(path, updated, backup=True)
+                print(f"{terminal.badge('OK')} Manifest backup written to {terminal.redact(backup)}")
+        return reconcile(selected, path, runner, "install", provenance_manifest=updated, summarize=False)
     except (OSError, ValueError, runtime.DotAiError) as exc:
-        runner.fail("Skill migration plan", str(exc))
-        runner.summary()
+        runner.fail("Skill migration", str(exc))
         return 1
-    if not runner.dry_run:
-        try:
-            answer = input("Apply these changes and install the migrated skills? [y/N] ")
-        except (EOFError, KeyboardInterrupt):
-            answer = ""
-        if answer.strip().lower() not in {"y", "yes"}:
-            print(f"{terminal.badge('OK')} No changes applied.")
-            return 0
-        with locking.execution(path, runner):
-            backup = manifests.write_manifest(path, updated, backup=True)
-            print(f"{terminal.badge('OK')} Manifest backup written to {terminal.redact(backup)}")
-    return reconcile(selected, path, runner, "install", provenance_manifest=updated)
+    finally:
+        if runner.failures and not any(outcome["status"] == "failed" for outcome in runner.outcomes):
+            runner.record_outcome("Skill migration", "failed", runner.failures[-1])
+        if runner.outcomes or runner.failures:
+            runner.summary()
