@@ -79,6 +79,8 @@ _SECRET_NAME = r"[\w.-]*(?:token|password|passwd|secret|api[_-]?key|authorizatio
 _SECRET_KEY = re.compile(_SECRET_NAME, re.IGNORECASE)
 _ANSI_ESCAPE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 _JSON_START = re.compile(r"[\[{]")
+_LOG_LABEL = re.compile(r"\[(?:[A-Za-z][A-Za-z _-]*|\d+/\d+)\](?=\s|$)")
+_LOG_LINE = re.compile(r"(?m)^[ \t]*\[(?:[A-Za-z][A-Za-z _-]*|\d+/\d+)\](?=\s|$)")
 _CREDENTIAL_ASSIGNMENT = re.compile(
     rf"""((?:["']?{_SECRET_NAME}["']?)\s*(?:=|:)\s*)(?:"([^"]*)"|'([^']*)'|([^\s,;&}}]+))""",
     re.IGNORECASE,
@@ -151,7 +153,7 @@ def redact(text: Any, secrets: Any = ()) -> str:
 
 
 def omit_protocol(text: str, replacement: str = "Structured tool response captured; content omitted.") -> str:
-    """Omit complete JSON records, including embedded and multiline responses."""
+    """Omit structured responses, including truncated records, but retain log labels."""
     decoder = json.JSONDecoder()
     parts: list[str] = []
     cursor = 0
@@ -161,7 +163,27 @@ def omit_protocol(text: str, replacement: str = "Structured tool response captur
         try:
             value, end = decoder.raw_decode(text, start)
         except ValueError:
-            scan = start + 1
+            if text[start] == "[" and _LOG_LABEL.match(text, start):
+                scan = start + 1
+                continue
+            end = len(text)
+            boundary = start
+            quoted = escaped = False
+            for following in _LOG_LINE.finditer(text, start + 1):
+                for char in text[boundary:following.start()]:
+                    if escaped:
+                        escaped = False
+                    elif quoted and char == "\\":
+                        escaped = True
+                    elif char == '"':
+                        quoted = not quoted
+                boundary = following.start()
+                if not quoted:
+                    end = boundary
+                    break
+            parts.extend((text[cursor:start], replacement + "\n"))
+            cursor = end
+            scan = end
             continue
         if isinstance(value, (dict, list)):
             parts.extend((text[cursor:start], replacement))
