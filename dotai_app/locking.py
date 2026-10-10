@@ -543,17 +543,18 @@ def _writer(path: Path):
         descriptor = os.open(guard, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
     except OSError as exc:
         raise runtime.DotAiError(f"Cannot exclusively reconcile stack lock {path}; another writer may be active") from exc
+    identity = None
     try:
-        identity = os.fstat(descriptor)
         try:
+            identity = os.fstat(descriptor)
             if os.name != "nt":
                 os.fchmod(descriptor, 0o600)
-            yield guard, identity
         finally:
-            if _owns_guard(guard, identity):
-                guard.unlink(missing_ok=True)
+            os.close(descriptor)
+        yield guard, identity
     finally:
-        os.close(descriptor)
+        if identity is not None and _owns_guard(guard, identity):
+            guard.unlink(missing_ok=True)
 
 
 @contextmanager

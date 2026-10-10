@@ -59,12 +59,12 @@ def package_version_check(package: dict[str, Any], runner: runtime.Runner, comma
         return False, "not found"
     try:
         result = subprocess.run(
-            runner.argv(command), env=runner.env, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False
+            runner.argv(command), env=runner.env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False
         )
+        stdout = (result.stdout or b"").decode("utf-8").strip()
+        stderr = (result.stderr or b"").decode("utf-8").strip()
     except (OSError, UnicodeError):
         return False, "not found"
-    stdout = (result.stdout or "").strip()
-    stderr = (result.stderr or "").strip()
     version = PACKAGE_VERSION_PATTERN.search(stdout)
     if version:
         output = stdout
