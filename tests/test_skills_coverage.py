@@ -149,10 +149,8 @@ class SkillCoverageTests(unittest.TestCase):
         output = contextlib.redirect_stdout(io.StringIO())
         output.__enter__()
         self.addCleanup(output.__exit__, None, None, None)
-        binary = self.home / ".local" / "bin" / "npx"
-        binary.parent.mkdir(parents=True)
-        binary.write_text(f"#!{sys.executable}\n" + INSTALLER, encoding="utf-8")
-        binary.chmod(0o755)
+        binary = self.home / "installer.py"
+        binary.write_text(INSTALLER, encoding="utf-8")
         real_run = subprocess.run
         def external_boundary(command, **kwargs):
             if isinstance(command, list) and command[0] == "npx":

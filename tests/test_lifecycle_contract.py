@@ -571,10 +571,27 @@ class LifecycleContractTests(unittest.TestCase):
         self.assertTrue(extension.is_file())
         self.assertFalse(json.loads(self.path.read_text())["ompExtensions"][0]["enabled"])
 
+    def create_tool(self, name):
+        if os.name == "nt":
+            self.runner.platform = "windows"
+            binary = self.home / (name + ".cmd")
+            binary.write_bytes(b"@echo off\r\necho 1.2.3\r\n")
+        else:
+            binary = self.home / name
+            binary.write_bytes(b"#!/bin/sh\nprintf '1.2.3\\n'\n")
+            binary.chmod(0o755)
+        return binary
+
+    def point_tool_launcher(self, launcher, binary):
+        if os.name == "nt":
+            launcher.write_text(f'@echo off\ncall "{binary}" %*\n', encoding="utf-8", newline="\r\n")
+            launcher.with_suffix(".shim").write_text(f'path = "{binary}"\n', encoding="utf-8")
+        else:
+            launcher.unlink(missing_ok=True)
+            launcher.symlink_to(binary)
+
     def test_tool_uninstall_refuses_unsupported_operation_even_after_adoption(self):
-        binary = self.home / "example"
-        binary.write_text("#!/bin/sh\nprintf '1.2.3\\n'\n")
-        binary.chmod(0o755)
+        binary = self.create_tool("example")
         self.manifest["skills"] = []
         self.manifest["packages"] = [{"name": "Example", "managed": True, "check": [str(binary), "--version"], "install": []}]
         self.save()
@@ -585,20 +602,15 @@ class LifecycleContractTests(unittest.TestCase):
         self.assertEqual([], self.runner.commands)
 
     def test_adopted_tool_launcher_detects_retargeted_binary_before_uninstall(self):
-        binary = self.home / "actual-example"
-        binary.write_text("#!/bin/sh\nprintf '1.2.3\\n'\n")
-        binary.chmod(0o755)
-        launcher = self.home / "example"
-        launcher.symlink_to(binary)
+        binary = self.create_tool("actual-example")
+        launcher = self.home / ("example.cmd" if os.name == "nt" else "example")
+        self.point_tool_launcher(launcher, binary)
         self.manifest["skills"] = []
         self.manifest["packages"] = [{"name": "Example", "managed": True, "check": [str(launcher), "--version"], "install": [], "uninstall": [["reviewed-uninstaller", "Example"]]}]
         self.save()
         self.assertEqual(0, self.dispatch("adopt", "tool:Example"))
-        launcher.unlink()
-        other = self.home / "unmanaged-binary"
-        other.write_text("#!/bin/sh\nprintf '1.2.3\\n'\n")
-        other.chmod(0o755)
-        launcher.symlink_to(other)
+        other = self.create_tool("unmanaged-binary")
+        self.point_tool_launcher(launcher, other)
         with self.assertRaises(runtime.DotAiError):
             self.dispatch("remove", "tool:Example", uninstall=True)
         self.assertEqual([], self.runner.commands)
@@ -606,9 +618,7 @@ class LifecycleContractTests(unittest.TestCase):
         self.assertTrue(other.is_file())
 
     def test_tool_uninstall_refuses_binary_shared_by_another_enabled_declaration(self):
-        binary = self.home / "example"
-        binary.write_text("#!/bin/sh\nprintf '1.2.3\\n'\n")
-        binary.chmod(0o755)
+        binary = self.create_tool("example")
         self.manifest["skills"] = []
         tool = {"name": "Example", "managed": True, "check": [str(binary), "--version"], "install": [], "uninstall": [["reviewed-uninstaller", "Example"]]}
         self.manifest["packages"] = [tool, {**tool, "name": "Other"}]

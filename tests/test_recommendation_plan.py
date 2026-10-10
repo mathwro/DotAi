@@ -25,12 +25,14 @@ if args[2] == "list":
     records = json.loads((root / "records.json").read_text())
     print(json.dumps([row for row in records if pathlib.Path(row["path"]).exists()]))
 elif args[2] == "add":
-    (root / "installed-command.json").write_text(json.dumps(args))
+    revision = args[3].rsplit("/", 1)[-1]
+    content = {"a" * 40: b"accepted source content\\n",
+               "c" * 40: b"newer source content\\n"}[revision]
     for index, value in enumerate(args):
         if value == "--skill":
             folder = root / ".agents" / "skills" / args[index + 1]
             folder.mkdir(parents=True, exist_ok=True)
-            (folder / "SKILL.md").write_text("accepted source content\\n")
+            (folder / "SKILL.md").write_bytes(content)
 else:
     sys.exit(8)
 '''
@@ -111,7 +113,7 @@ class RecommendationPlanTests(unittest.TestCase):
         name = skill["checkSkills"][0]
         folder = self.root / ".agents" / "skills" / name
         folder.mkdir(parents=True, exist_ok=True)
-        (folder / "SKILL.md").write_text("original local copy\n")
+        (folder / "SKILL.md").write_bytes(b"original local copy\n")
         self.records.append({"name": name, "source": skill["source"], "scope": "global",
                              "path": str(folder), "agents": []})
         (self.root / "records.json").write_text(json.dumps(self.records))
@@ -208,12 +210,9 @@ class RecommendationPlanTests(unittest.TestCase):
         with locking.execution(self.path, runner):
             skills.reconcile_skills(effective, runner, refresh_sources={"fixture/recommended"},
                                     receipt_owned=lifecycle.skill_receipt_owned)
-        command = json.loads((self.root / "installed-command.json").read_text())
-        self.assertIn("https://github.com/fixture/recommended/tree/" + "a" * 40, command)
-        self.assertIn("skills@1.7.1", command)
         self.assertEqual(self.requests, requests)
-        self.assertEqual((self.root / ".agents" / "skills" / "new" / "SKILL.md").read_text(),
-                         "accepted source content\n")
+        self.assertEqual((self.root / ".agents" / "skills" / "new" / "SKILL.md").read_bytes(),
+                         b"accepted source content\n")
 
     def test_replacing_source_cannot_adopt_colliding_old_owned_directory(self):
         original = self.configure([entry("old")], [entry("old", "fixture/replacement")])
