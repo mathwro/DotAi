@@ -18,12 +18,16 @@ ROOT = Path(__file__).resolve().parents[1]
 if __name__ == "__main__":
     sys.path.insert(0, str(ROOT))
 
-from dotai_app import packages, runtime, terminal
+from dotai_app import catalog, packages, runtime, terminal
 
 
-def example_package(name: str) -> dict:
-    manifest = json.loads((ROOT / "stack.example.json").read_text(encoding="utf-8"))
-    return next(package for package in manifest["packages"] if package["name"] == name)
+def recipe_package(recipe: str, name: str) -> dict:
+    return catalog.materialize({
+        "version": 2, "prerequisites": [], "packages": [
+            {"name": name, "recipe": recipe, "managed": True},
+        ], "skills": [], "marketplaces": [], "plugins": [], "ompExtensions": [],
+        "mcp": {"target": "mcp.json", "servers": {}},
+    }, "linux")["packages"][0]
 
 
 class RtkShellFixture:
@@ -41,6 +45,8 @@ class RtkShellFixture:
             "PATH": str(self.install_dir) + os.pathsep + str(self.bin),
             "HOME": str(self.home),
             "DOTAI_HOME": str(self.home),
+            "DOTAI_CONFIG_DIR": str(root / "config"),
+            "XDG_CONFIG_HOME": str(root / "xdg-config"),
             "DOTAI_STATE_DIR": str(root / "state"),
             "XDG_STATE_HOME": str(root / "xdg"),
             "GH_HOST": "github.invalid",
@@ -61,16 +67,16 @@ class RtkShellFixture:
 from pathlib import Path
 root = Path(os.environ['FIXTURE_ROOT'])
 args = sys.argv[1:]
-assert len(args) == 4 and args[0] == '-fsSL' and args[2] == '-o', args
-url = args[1]
+url = next(arg for arg in args if arg.startswith('https://'))
+destination = args[args.index('-o') + 1]
 targets = ('x86_64-unknown-linux-musl', 'aarch64-unknown-linux-gnu')
 assert url.startswith('https://github.com/rtk-ai/rtk/releases/download/v')
 target = next(target for target in targets if url.endswith('/rtk-' + target + '.tar.gz'))
 (root / 'downloaded-target').write_text(target)
 if os.environ.get('FIXTURE_DOWNLOAD_FAIL') == '1':
-    Path(args[3]).write_bytes(b'partial download')
+    Path(destination).write_bytes(b'partial download')
     sys.exit(22)
-shutil.copyfile(root / (target + '.tar.gz'), args[3])
+shutil.copyfile(root / (target + '.tar.gz'), destination)
 """)
         real_tar = shutil.which("tar")
         if not real_tar:
@@ -121,7 +127,7 @@ assert Path(path).read_bytes()[:2] == b'\x1f\x8b'
         return binary.read_bytes()
 
     def run(self, operation: str) -> subprocess.CompletedProcess[str]:
-        command = example_package("RTK")[operation]["linux"][0]
+        command = recipe_package("rtk", "RTK")[operation]["linux"][0]
         return subprocess.run(["/bin/sh", "-c", command], env=self.env, capture_output=True, text=True, timeout=15)
 
 
@@ -222,7 +228,7 @@ else:
             runner = runtime.Runner("ubuntu")
             runner.env = fixture.env
             with contextlib.redirect_stdout(io.StringIO()):
-                packages.reconcile_packages({"packages": [example_package("Oh My Pi")]}, runner, "update")
+                packages.reconcile_packages({"packages": [recipe_package("omp", "Oh My Pi")]}, runner, "update")
             self.assertEqual(runner.failures, [])
             self.assertEqual(json.loads(state.read_text()), {"version": "1.1.0", "custom": "keep", "secrets.enabled": True})
             self.assertFalse((fixture.root / "downloaded-target").exists())

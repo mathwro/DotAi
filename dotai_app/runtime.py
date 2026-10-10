@@ -91,14 +91,17 @@ class Runner:
         self.verbose = verbose
         self.failures: list[str] = []
         self.env = os.environ.copy()
+        self.env["HOME"] = str(home_dir())
+        self.env["USERPROFILE"] = str(home_dir())
         self.outcomes: list[dict[str, str]] = []
         candidates = [
             home_dir() / ".local" / "bin",
             home_dir() / ".cargo" / "bin",
             home_dir() / ".bun" / "bin",
             Path(os.environ.get("SCOOP", home_dir() / "scoop")) / "shims",
-            Path(os.environ.get("APPDATA", "")) / "npm",
         ]
+        if self.env.get("APPDATA"):
+            candidates.append(Path(self.env["APPDATA"]) / "npm")
         self.env["PATH"] = os.pathsep.join(str(path) for path in candidates if str(path) != ".") + os.pathsep + self.env.get("PATH", "")
 
     def _format(self, value: str) -> str:
@@ -153,7 +156,7 @@ class Runner:
             "Partial completion" if counts["failed"] and any(counts[key] for key in ("changed", "unchanged"))
             else "Summary"
         )
-        text = f"{prefix}: " + ", ".join(f"{counts[key]} {key}" for key in counts if key != "planned" or counts[key])
+        text = f"{prefix}: " + ", ".join(f"{counts[key]} {key}" for key in counts if key != "planned" or counts[key]) + " actions"
         if self.dry_run:
             text += "; no changes applied."
         print(text)
@@ -235,6 +238,7 @@ class Runner:
             result = subprocess.run(
                 ["powershell.exe", "-NoProfile", "-Command", script],
                 text=True,
+                env=self.env,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.DEVNULL,
                 check=False,

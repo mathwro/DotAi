@@ -151,23 +151,38 @@
         "windows": [
           "scoop"
         ],
-        "macos": [
-          "curl"
-        ],
-        "linux": [
-          "curl"
+        "default": [
+          "python"
         ]
       },
       "updateRequires": [
         "omp-native-update"
       ],
       "source": "https://github.com/can1357/oh-my-pi",
+      "nativeUpdate": true,
+      "footprint": {
+        "windows": {"kind": "scoop", "app": "dotai-omp", "launcher": "omp.exe"},
+        "default": {"kind": "standalone", "launcher": ".local/bin/omp"}
+      },
+      "versionMetadata": {
+        "kind": "github-release",
+        "latest": "https://api.github.com/repos/can1357/oh-my-pi/releases/latest",
+        "exact": "https://api.github.com/repos/can1357/oh-my-pi/releases/tags/v{version}",
+        "download": "https://github.com/can1357/oh-my-pi/releases/download/v{version}/{artifact}",
+        "artifacts": {
+          "windows": "omp-windows-{arch}.exe",
+          "macos": "omp-darwin-{arch}",
+          "linux": "omp-linux-{arch}"
+        }
+      },
       "install": {
-        "macos": [
-          "set -eu; install_dir=\"$HOME/.local/bin\"; if [ -L \"$HOME/.local\" ] || [ -L \"$install_dir\" ] || [ -d \"$install_dir/omp\" ]; then printf \"Refusing redirected standalone OMP destination\\n\" >&2; exit 1; fi; mkdir -p \"$install_dir\"; tmp=$(mktemp -d \"$install_dir/.dotai-omp.XXXXXX\"); trap 'rm -rf \"$tmp\"' EXIT; curl -fsSL https://omp.sh/install -o \"$tmp/install.sh\"; PI_INSTALL_DIR=\"$tmp/bin\" sh \"$tmp/install.sh\" --binary; test -f \"$tmp/bin/omp\"; mv -f \"$tmp/bin/omp\" \"$install_dir/omp\""
-        ],
-        "linux": [
-          "set -eu; install_dir=\"$HOME/.local/bin\"; if [ -L \"$HOME/.local\" ] || [ -L \"$install_dir\" ] || [ -d \"$install_dir/omp\" ]; then printf \"Refusing redirected standalone OMP destination\\n\" >&2; exit 1; fi; mkdir -p \"$install_dir\"; tmp=$(mktemp -d \"$install_dir/.dotai-omp.XXXXXX\"); trap 'rm -rf \"$tmp\"' EXIT; curl -fsSL https://omp.sh/install -o \"$tmp/install.sh\"; PI_INSTALL_DIR=\"$tmp/bin\" sh \"$tmp/install.sh\" --binary; test -f \"$tmp/bin/omp\"; mv -f \"$tmp/bin/omp\" \"$install_dir/omp\""
+        "default": [
+          ["{python}", "-c", "import json,sys; sys.path.insert(0,sys.argv[1]); from dotai_app.packages import install_native_release; install_native_release(json.loads(sys.argv[2]),sys.argv[3],sys.argv[4])", "{repo}", "{artifact}", ".local/bin/omp", "omp"]
+        ]
+      },
+      "pinInstall": {
+        "default": [
+          ["{python}", "-c", "import json,sys; sys.path.insert(0,sys.argv[1]); from dotai_app.packages import install_native_release; install_native_release(json.loads(sys.argv[2]),sys.argv[3],sys.argv[4])", "{repo}", "{artifact}", ".local/bin/omp", "omp"]
         ]
       },
       "scoopApp": "dotai-omp",
@@ -189,7 +204,8 @@
         "default": [
           [
             "omp",
-            "update"
+            "update",
+            "--stable"
           ]
         ]
       },
@@ -235,6 +251,10 @@
         ]
       },
       "source": "https://github.com/rtk-ai/rtk",
+      "footprint": {
+        "windows": {"kind": "scoop", "app": "rtk", "launcher": "rtk.exe"},
+        "default": {"kind": "standalone", "launcher": ".local/bin/rtk"}
+      },
       "supportedVersions": [
         "0.50.0"
       ],
@@ -309,6 +329,9 @@
         "python"
       ],
       "source": "https://pypi.org/project/graphifyy/",
+      "footprint": {
+        "default": {"kind": "uv", "package": "graphifyy", "launcher": "graphify"}
+      },
       "install": {
         "default": [
           [

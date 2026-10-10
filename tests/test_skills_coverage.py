@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import contextlib
 import io
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -16,16 +17,22 @@ ROOT = Path(__file__).resolve().parents[1]
 if __name__ == "__main__":
     sys.path.insert(0, str(ROOT))
 
-from dotai_app import cli, manifest as manifests, recommendations, releases, runtime, skills, state, terminal
+from dotai_app import cli, locking, manifest as manifests, recommendations, releases, runtime, skills, state, terminal
 
 
 # Listing preserves frontmatter names and canonical paths separately. Removal
 # models the upstream all-agent default and canonical retention/deletion rules.
-INSTALLER = '''import json, os, pathlib, re, shutil, sys
+INSTALLER = r'''import hashlib, json, os, pathlib, re, shutil, sys
 home = pathlib.Path(os.environ["DOTAI_HOME"])
 control = home / "installer.json"
 data = json.loads(control.read_text())
 args = sys.argv[1:]
+if args == ["--version"]:
+    print("10.0.0")
+    sys.exit(0)
+if args == ["--yes", "skills@1.7.1", "--version"]:
+    print("1.7.1")
+    sys.exit(0)
 action = args[2]
 def identity(name):
     return re.sub(r"[^a-z0-9._]+", "-", name.lower()).strip(".-")[:255] or "unnamed-skill"
@@ -87,13 +94,23 @@ elif action == "add":
                 folder = root / identity(args[index + 1])
                 folder.mkdir(parents=True, exist_ok=True)
                 (folder / "SKILL.md").write_text("refreshed by installer")
+                lock_path = pathlib.Path(os.environ["XDG_STATE_HOME"]) / "skills" / ".skill-lock.json"
+                owners = json.loads(lock_path.read_text()) if lock_path.exists() else {"version": 3, "skills": {}}
+                content = (folder / "SKILL.md").read_bytes()
+                blob = hashlib.sha1(b"blob " + str(len(content)).encode() + b"\0" + content).digest()
+                tree = b"100644 SKILL.md\0" + blob
+                digest = hashlib.sha1(b"tree " + str(len(tree)).encode() + b"\0" + tree).hexdigest()
+                repo, revision = args[3].removeprefix("https://github.com/").split("/tree/")
+                owners["skills"][folder.name] = {"source": repo, "sourceType": "github", "sourceUrl": "https://github.com/" + repo + ".git", "ref": revision, "skillPath": "skills/" + folder.name + "/SKILL.md", "skillFolderHash": digest}
+                lock_path.parent.mkdir(parents=True, exist_ok=True)
+                lock_path.write_text(json.dumps(owners))
 else:
     sys.exit(11)
 '''
 
 
 def manifest(entries):
-    return {"version": 1, "packages": [], "skills": entries, "marketplaces": [],
+    return {"version": 2, "prerequisites": [], "packages": [], "skills": entries, "marketplaces": [],
             "plugins": [], "ompExtensions": [], "mcp": {"target": "~/.omp/agent/mcp.json", "servers": {}}}
 
 
@@ -113,12 +130,14 @@ class SkillCoverageTests(unittest.TestCase):
         self.example = self.home / "example.json"
         self.history = self.home / "state" / "recommended-skills.json"
         env = {"HOME": str(self.home), "DOTAI_HOME": str(self.home),
+               "USERPROFILE": str(self.home), "DOTAI_CONFIG_DIR": str(self.home / "config"),
+               "XDG_CONFIG_HOME": str(self.home / "xdg-config"),
                "DOTAI_STATE_DIR": str(self.home / "state"), "XDG_STATE_HOME": str(self.home / "xdg"),
                "GH_HOST": "github.com", "NO_COLOR": "1", "DOTAI_PLATFORM": "linux"}
         patch = mock.patch.dict(os.environ, env)
         patch.start()
         self.addCleanup(patch.stop)
-        patch = mock.patch.object(manifests, "EXAMPLE_MANIFEST", self.example)
+        patch = mock.patch.object(manifests, "SKILL_RECOMMENDATIONS", self.example)
         patch.start()
         self.addCleanup(patch.stop)
         patch = mock.patch.object(releases, "latest_release_version", return_value=None)
@@ -138,12 +157,62 @@ class SkillCoverageTests(unittest.TestCase):
         def external_boundary(command, **kwargs):
             if isinstance(command, list) and command[0] == "npx":
                 command = [sys.executable, str(binary), *command[1:]]
+            elif command == ["node", "--version"]:
+                command = [sys.executable, "-c", "print('v24.0.0')"]
             return real_run(command, **kwargs)
         patch = mock.patch.object(subprocess, "run", side_effect=external_boundary)
         patch.start()
         self.addCleanup(patch.stop)
         self.control = {"entries": []}
         self.configure()
+        self.source_catalog = {
+            "owner/repo": ("External.Name", "alpha", "beta", "new", "old", "personal", "recommended", "review-code"),
+            "user/custom": ("personal",),
+        }
+        patch = mock.patch.object(locking, "urlopen", side_effect=self.metadata)
+        patch.start()
+        self.addCleanup(patch.stop)
+
+    def metadata(self, request, **kwargs):
+        url = request.full_url
+        if url.startswith("https://registry.npmjs.org/skills/"):
+            payload = {"name": "skills", "version": "1.7.1", "engines": {"node": ">=22.0.0"},
+                       "dist": {"tarball": "https://registry.npmjs.org/skills/-/skills-1.7.1.tgz",
+                                "integrity": "sha512-" + "A" * 86 + "=="}}
+        else:
+            payload = None
+            content = b"refreshed by installer"
+            blob = hashlib.sha1(b"blob " + str(len(content)).encode() + b"\0" + content).digest()
+            folder_tree = b"100644 SKILL.md\0" + blob
+            folder_sha = hashlib.sha1(b"tree " + str(len(folder_tree)).encode() + b"\0" + folder_tree).hexdigest()
+            for repo, names in self.source_catalog.items():
+                base = f"https://api.github.com/repos/{repo}/"
+                # The same synthetic commit always has this complete repository
+                # tree, independent of manifest edits during recommendation review.
+                skills_tree = b"".join(
+                    b"40000 " + name.encode() + b"\0" + bytes.fromhex(folder_sha)
+                    for name in sorted(names)
+                )
+                skills_sha = hashlib.sha1(b"tree " + str(len(skills_tree)).encode() + b"\0" + skills_tree).hexdigest()
+                root_tree = b"40000 skills\0" + bytes.fromhex(skills_sha)
+                root_sha = hashlib.sha1(b"tree " + str(len(root_tree)).encode() + b"\0" + root_tree).hexdigest()
+                if url in (base + "commits/HEAD", base + "commits/" + "a" * 40):
+                    payload = {"sha": "a" * 40, "commit": {"tree": {"sha": root_sha}}}
+                elif url == base + "git/trees/" + root_sha + "?recursive=1":
+                    rows = [{"path": "skills", "type": "tree", "mode": "040000", "sha": skills_sha}]
+                    for name in sorted(names):
+                        rows.extend([
+                            {"path": f"skills/{name}", "type": "tree", "mode": "040000", "sha": folder_sha},
+                            {"path": f"skills/{name}/SKILL.md", "type": "blob", "mode": "100644",
+                             "sha": blob.hex(), "size": len(content)},
+                        ])
+                    payload = {"sha": root_sha, "truncated": False, "tree": rows}
+            if payload is None:
+                raise AssertionError("Unexpected external metadata URL: " + url)
+        response = mock.MagicMock()
+        response.__enter__.return_value = response
+        response.read.return_value = json.dumps(payload).encode()
+        return response
 
     def configure(self, **options):
         self.control.update(options)
@@ -157,6 +226,22 @@ class SkillCoverageTests(unittest.TestCase):
         self.control["entries"].append({"name": name, "source": repo, "sourceUrl": "https://github.com/" + repo + ".git", "sourceType": "github", "scope": "global", "path": str(folder), "agents": [] if agent == "universal" else ["Pi"], "targetAgent": agent})
         self.configure()
         return folder
+
+    def own_installation(self, folder, repo="owner/repo"):
+        with tempfile.TemporaryDirectory(dir=self.home) as directory:
+            tree = Path(directory)
+            subprocess.run(["git", "init", "--quiet", "--object-format=sha1", str(tree)], check=True, capture_output=True)
+            shutil.copytree(folder, tree, dirs_exist_ok=True)
+            subprocess.run(["git", "-C", str(tree), "-c", "core.filemode=true", "-c", "core.autocrlf=false", "add", "--all"], check=True, capture_output=True)
+            digest = subprocess.run(["git", "-C", str(tree), "write-tree"], check=True, text=True, capture_output=True).stdout.strip()
+        path = self.home / "xdg" / "skills" / ".skill-lock.json"
+        lock = json.loads(path.read_text()) if path.exists() else {"version": 3, "skills": {}}
+        lock["skills"][folder.name] = {
+            "source": repo, "sourceType": "github", "sourceUrl": f"https://github.com/{repo}.git",
+            "ref": None, "skillPath": f"skills/{folder.name}/SKILL.md", "skillFolderHash": digest,
+        }
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(lock), encoding="utf-8")
 
     def prepare(self, before, desired, baseline=None):
         original = manifest(before)
@@ -184,15 +269,6 @@ class SkillCoverageTests(unittest.TestCase):
         self.assertTrue(all(not folder.exists() for folder in removed))
         self.assertTrue(all((folder / "SKILL.md").is_file() for folder in survivors))
 
-    def test_wildcard_narrowing_retains_normalized_selection(self):
-        before, after = source(["*"]), source(["ALPHA", "Review / Code"])
-        kept = [self.installed("alpha", display_name="ALPHA"), self.installed("review-code", display_name="Review / Code")]
-        retired = self.installed("retired")
-        original = self.prepare([before], [after], [before])
-        updated, baseline, runner = self.review(original)
-        self.assertEqual((updated["skills"], baseline, runner.failures), ([after], [after], []))
-        self.assertTrue(all(folder.exists() for folder in kept))
-        self.assertFalse(retired.exists())
 
     def test_explicit_check_names_are_retirement_authority_without_normalization(self):
         before = source(["ALPHA"], checks=["External.Name"])
@@ -204,13 +280,6 @@ class SkillCoverageTests(unittest.TestCase):
         self.assertFalse(retired.exists())
         self.assertTrue(unrelated.exists())
 
-    def test_wildcard_narrowing_preserves_explicit_check_directory(self):
-        before, after = source(["*"]), source(["ALPHA"], checks=["External.Name"])
-        kept, retired = self.installed("External.Name", display_name="ALPHA"), self.installed("alpha")
-        original = self.prepare([before], [after], [before])
-        self.review(original)
-        self.assertTrue(kept.exists())
-        self.assertFalse(retired.exists())
 
     def test_universal_retirement_preserves_independent_pi_copy(self):
         before = source(["alpha"])
@@ -279,9 +348,11 @@ class SkillCoverageTests(unittest.TestCase):
         self.assertFalse(list(self.home.glob("stack.json.bak.*")))
 
     def test_agent_switch_retires_only_the_old_agent_copy(self):
-        before, after = source(["ALPHA"], agent="pi"), source(["*"], agent="universal")
+        before, after = source(["ALPHA"], agent="pi"), source(["ALPHA"], agent="universal")
         retired = self.installed("alpha", display_name="ALPHA", agent="pi")
         retained = self.installed("alpha", display_name="ALPHA")
+        (retained / "SKILL.md").write_text("refreshed by installer")
+        self.own_installation(retained)
         original = self.prepare([before], [after], [before])
         updated, _, runner = self.review(original)
         self.assertEqual(runner.failures, [])
@@ -459,9 +530,12 @@ class SkillCoverageTests(unittest.TestCase):
         self.assertTrue(undeclared.is_dir())
         self.assertEqual((self.home / ".agents" / "skills" / "recommended" / "SKILL.md").read_text(), "refreshed by installer")
         self.assertIn(original_bytes, [p.read_bytes() for p in self.home.glob("stack.json.bak.*")])
+        if os.name != "nt":
+            self.assertTrue(all(path.stat().st_mode & 0o777 == 0o600 for path in self.home.glob("stack.json.bak.*")))
 
+    @unittest.skipUnless(shutil.which("git"), "Git independently verifies fixture trees")
     def test_enforce_declined_cleanup_preserves_and_skips_user_sources(self):
-        custom = {**source(["personal"]), "source": "user/custom"}
+        custom = {**source(["personal"], checks=["personal"]), "source": "user/custom"}
         recommended = source(["recommended"], checks=["recommended"])
         personal = self.installed("personal", repo="user/custom")
         active = self.installed("recommended")
@@ -470,7 +544,11 @@ class SkillCoverageTests(unittest.TestCase):
         for answer in ("n", "", EOFError(), KeyboardInterrupt()):
             with self.subTest(answer=answer):
                 self.prepare([custom, recommended], [recommended], [recommended])
+                portable_lock = self.path.with_name(self.path.stem + ".lock.json")
+                portable_lock.unlink(missing_ok=True)
+                (self.home / "state" / "component-receipts.json").unlink(missing_ok=True)
                 (active / "SKILL.md").write_text("old recommended content")
+                self.own_installation(active)
                 with mock.patch("builtins.input", side_effect=[answer]):
                     result = cli.main(["--manifest", str(self.path), "sync", "--recommended-skills", "--enforce", "--update-skills"])
                 self.assertEqual(result, 0)
@@ -478,7 +556,9 @@ class SkillCoverageTests(unittest.TestCase):
                 self.assertEqual((personal / "SKILL.md").read_bytes(), personal_bytes)
                 self.assertEqual((active / "SKILL.md").read_text(), "refreshed by installer")
         self.assertFalse(list(self.home.glob("stack.json.bak.*")))
-        # Ordinary sync still manages declared custom sources.
+        # Explicit refresh still manages source-proven declared custom sources.
+        self.own_installation(personal, "user/custom")
+        self.own_installation(active)
         self.assertEqual(cli.main(["--manifest", str(self.path), "sync", "--update-skills"]), 0)
         self.assertEqual((personal / "SKILL.md").read_text(), "refreshed by installer")
 
@@ -510,8 +590,6 @@ class SkillCoverageTests(unittest.TestCase):
             result = cli.main(["--manifest", str(self.path), "sync", "--recommended-skills", "--enforce", "--dry-run"])
         self.assertEqual(result, 0)
         self.assertIn(str(personal), output.getvalue())
-        self.assertIn("Reconcile skills from owner/repo", output.getvalue())
-        self.assertNotIn("Reconcile skills from user/custom", output.getvalue())
         self.assertEqual(self.path.read_bytes(), manifest_bytes)
         self.assertEqual(self.history.read_bytes(), history_bytes)
         self.assertTrue(personal.is_dir())
@@ -530,6 +608,21 @@ class SkillCoverageTests(unittest.TestCase):
         self.assertFalse((self.home / "state" / "state.json").exists())
         self.assertFalse((self.home / ".agents" / "skills" / "alpha").exists())
 
+    def test_accepted_recommendation_metadata_failure_preserves_unaccepted_state(self):
+        added = source(["alpha"], checks=["alpha"])
+        original = self.prepare([], [added], [])
+        manifest_bytes, history_bytes = self.path.read_bytes(), self.history.read_bytes()
+        with mock.patch.object(locking, "urlopen", side_effect=OSError("fixture source unavailable")), mock.patch("builtins.input", return_value="a"):
+            result = cli.main(["--manifest", str(self.path), "sync", "--recommended-skills"])
+        self.assertEqual(result, 1)
+        self.assertEqual(json.loads(self.path.read_text()), original)
+        self.assertEqual(self.path.read_bytes(), manifest_bytes)
+        self.assertEqual(self.history.read_bytes(), history_bytes)
+        self.assertFalse(list(self.home.glob("stack.json.bak.*")))
+        self.assertFalse((self.home / "fetched.json").exists())
+        self.assertFalse(self.path.with_suffix(".lock.json").exists())
+        self.assertFalse((self.home / ".agents" / "skills" / "alpha").exists())
+
     def test_failed_accepted_migration_retains_saved_target_and_backup_for_retry(self):
         before = source(["alpha"], agent="pi", checks=["alpha"])
         old_files = self.installed("alpha", agent="pi")
@@ -542,6 +635,8 @@ class SkillCoverageTests(unittest.TestCase):
         self.assertEqual(json.loads(self.path.read_text())["skills"], [{**before, "agent": "universal"}])
         backups = list(self.home.glob("stack.json.bak.*"))
         self.assertEqual([path.read_bytes() for path in backups], [original_bytes])
+        if os.name != "nt":
+            self.assertEqual(backups[0].stat().st_mode & 0o777, 0o600)
         self.assertTrue(old_files.exists())
         self.assertFalse((self.home / ".agents" / "skills" / "alpha").exists())
 
@@ -558,37 +653,37 @@ class SkillCoverageTests(unittest.TestCase):
         subprocess.run(["git", "-C", str(git_dir), "-c", "core.filemode=true", "-c", "core.autocrlf=false", "add", "--all"], check=True, capture_output=True)
         digest = subprocess.run(["git", "-C", str(git_dir), "write-tree"], check=True, text=True, capture_output=True).stdout.strip()
         entry = {"source": "owner/repo", "sourceType": "github", "sourceUrl": "https://github.com/owner/repo.git",
-                 "ref": None, "skillFolderHash": digest}
+                 "ref": None, "skillPath": "skills/alpha/SKILL.md", "skillFolderHash": digest}
         lock = {"version": 3, "skills": {"alpha": entry}}
         lock_path = self.home / "xdg" / "skills" / ".skill-lock.json"
         lock_path.parent.mkdir(parents=True)
         lock_path.write_text(json.dumps(lock), encoding="utf-8")
         return folder, lock_path, lock
 
-    def refresh(self, selected=None):
+    def refresh(self, selected=None, *, blocked=False):
         runner = runtime.Runner("linux")
         skills.reconcile_skills(manifest([selected or source(["ALPHA"], checks=["alpha"])]), runner)
-        self.assertEqual(runner.failures, [])
+        self.assertEqual(bool(runner.failures), blocked)
         return (self.home / "fetched.json").exists()
 
     @unittest.skipIf(os.name == "nt", "POSIX executable mode contract")
     @unittest.skipUnless(shutil.which("git"), "Git independently verifies fixture trees")
-    def test_executable_nested_tree_skips_refresh_until_mode_changes(self):
+    def test_executable_nested_tree_skips_refresh_and_rejects_changed_mode(self):
         folder, _, _ = self.owned_tree()
         self.assertFalse(self.refresh())
         (folder / "run.sh").chmod(0o644)
-        self.assertTrue(self.refresh())
+        self.assertFalse(self.refresh(blocked=True))
 
     @unittest.skipIf(os.name == "nt", "POSIX symlink fixture")
     @unittest.skipUnless(shutil.which("git"), "Git independently verifies fixture trees")
-    def test_symlink_tree_conservatively_refreshes(self):
+    def test_symlink_tree_conservatively_refuses_refresh(self):
         folder, _, _ = self.owned_tree()
         link = folder / "linked"
         link.symlink_to(folder / "SKILL.md")
-        self.assertTrue(self.refresh())
+        self.assertFalse(self.refresh(blocked=True))
 
     @unittest.skipUnless(shutil.which("git"), "Git independently verifies fixture trees")
-    def test_unreadable_tree_conservatively_refreshes(self):
+    def test_unreadable_tree_conservatively_refuses_refresh(self):
         folder, _, _ = self.owned_tree()
         original = Path.read_bytes
         def unreadable(path):
@@ -596,40 +691,37 @@ class SkillCoverageTests(unittest.TestCase):
                 raise PermissionError("deterministic fixture read failure")
             return original(path)
         with mock.patch.object(Path, "read_bytes", unreadable):
-            self.assertTrue(self.refresh())
+            self.assertFalse(self.refresh(blocked=True))
 
     @unittest.skipUnless(shutil.which("git"), "Git independently verifies fixture trees")
     def test_missing_or_malformed_xdg_lock_never_borrows_valid_home_lock(self):
         _, lock_path, lock = self.owned_tree()
         (self.home / ".agents" / ".skill-lock.json").write_text(json.dumps(lock), encoding="utf-8")
         lock_path.unlink()
-        self.assertTrue(self.refresh())
-        (self.home / "fetched.json").unlink()
+        self.assertFalse(self.refresh(blocked=True))
         lock_path.write_text("{invalid", encoding="utf-8")
-        self.assertTrue(self.refresh())
+        self.assertFalse(self.refresh(blocked=True))
 
     @unittest.skipUnless(shutil.which("git"), "Git independently verifies fixture trees")
     def test_enterprise_host_requires_explicit_public_source(self):
         self.owned_tree()
         with mock.patch.dict(os.environ, {"GH_HOST": "github.enterprise.invalid"}):
-            self.assertTrue(self.refresh())
-            (self.home / "fetched.json").unlink()
+            self.assertFalse(self.refresh(blocked=True))
             explicit = source(["ALPHA"], checks=["alpha"])
             explicit["source"] = "https://github.com/owner/repo"
             self.assertFalse(self.refresh(explicit))
 
     @unittest.skipUnless(shutil.which("git"), "Git independently verifies fixture trees")
-    def test_wrong_source_url_and_one_invalid_member_refresh_entire_source(self):
+    def test_wrong_source_url_and_one_invalid_member_refuse_entire_source(self):
         _, lock_path, lock = self.owned_tree()
         lock["skills"]["alpha"]["sourceUrl"] = "https://github.com/foreign/repo"
         lock_path.write_text(json.dumps(lock), encoding="utf-8")
-        self.assertTrue(self.refresh())
-        (self.home / "fetched.json").unlink()
+        self.assertFalse(self.refresh(blocked=True))
         lock["skills"]["alpha"]["sourceUrl"] = "https://github.com/owner/repo"
         self.installed("beta")
         lock["skills"]["beta"] = {**lock["skills"]["alpha"], "skillFolderHash": "not-a-hash"}
         lock_path.write_text(json.dumps(lock), encoding="utf-8")
-        self.assertTrue(self.refresh(source(["alpha", "beta"], checks=["alpha", "beta"])))
+        self.assertFalse(self.refresh(source(["alpha", "beta"], checks=["alpha", "beta"]), blocked=True))
 
 
 if __name__ == "__main__":

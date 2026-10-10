@@ -66,7 +66,7 @@ def required_prerequisites(manifest: dict[str, Any], runner: runtime.Runner, mod
     return [definitions[name] for name in names]
 
 
-def status(manifest: dict[str, Any], runner: runtime.Runner, *, record_failures: bool = False, mode: str = "status", force: bool = False) -> bool:
+def status(manifest: dict[str, Any], runner: runtime.Runner, *, record_failures: bool = False, mode: str = "status", force: bool = False, show_available: bool = True) -> bool:
     secrets = terminal.credential_values(manifest) + terminal.credential_values(runner.env)
     try:
         requirements = required_prerequisites(manifest, runner, mode, force)
@@ -76,18 +76,19 @@ def status(manifest: dict[str, Any], runner: runtime.Runner, *, record_failures:
         print(f"{terminal.badge('FAIL')} Prerequisites: {terminal.redact(exc, secrets)}")
         return False
     healthy = True
-    if requirements:
+    if requirements and show_available:
         print(terminal.heading("External prerequisites:"))
     for prerequisite in requirements:
         available = packages.package_check(prerequisite, runner)
         healthy &= available
         hint = prerequisite.get("hint", f"Install {prerequisite['name']} externally and retry.")
         detail = "available" if available else hint
-        print(f"  {terminal.badge('OK' if available else 'FAIL')} {terminal.redact(prerequisite['name'], secrets)}: {terminal.redact(detail, secrets)}")
+        if show_available or not available:
+            print(f"  {terminal.badge('OK' if available else 'FAIL')} {terminal.redact(prerequisite['name'], secrets)}: {terminal.redact(detail, secrets)}")
         if not available and record_failures:
             runner.failures.append(terminal.redact(f"Prerequisite {prerequisite['name']}: {hint}", secrets))
     return healthy
 
 
-def preflight(manifest: dict[str, Any], runner: runtime.Runner, mode: str = "sync", force: bool = False) -> bool:
-    return status(manifest, runner, record_failures=True, mode=mode, force=force)
+def preflight(manifest: dict[str, Any], runner: runtime.Runner, mode: str = "sync", force: bool = False, *, show_available: bool = True) -> bool:
+    return status(manifest, runner, record_failures=True, mode=mode, force=force, show_available=show_available)

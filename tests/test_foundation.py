@@ -317,21 +317,30 @@ class OptionalComponentTests(unittest.TestCase):
             self.assertTrue(desired.exists())
             self.assertFalse(obsolete.exists())
 
+    @unittest.skipIf(os.name == "nt", "POSIX independent executable fixture")
     def test_exact_version_mismatch_runs_reviewed_pin_installer(self):
         with tempfile.TemporaryDirectory() as directory:
-            version = Path(directory) / "version"
+            root = Path(directory).resolve()
+            version = root / "version"
             version.write_text("2.0.0")
-            check = command(f"from pathlib import Path; print(Path({str(version)!r}).read_text())")
+            binary = root / "ai-helper"
+            binary.write_text(f"#!{sys.executable}\nfrom pathlib import Path\nprint(Path({str(version)!r}).read_text())\n")
+            binary.chmod(0o755)
+            check = [str(binary), "--version"]
             install = command(f"from pathlib import Path; Path({str(version)!r}).write_text('1.2.0')")
             data = stack()
             data["packages"] = [{"name": "ai-helper", "managed": True, "version": "1.2.0", "updatePolicy": "pinned",
                                  "check": check, "install": [install], "update": [install], "pinInstall": [install]}]
-            runner = runtime.Runner("macos")
-            self.assertFalse(packages.package_check(data["packages"][0], runner))
-            with contextlib.redirect_stdout(io.StringIO()):
-                packages.reconcile_packages(data, runner, "install")
-            self.assertEqual(version.read_text(), "1.2.0")
-            self.assertEqual(runner.failures, [])
+            from dotai_app import lifecycle
+            with mock.patch.dict(os.environ, {"DOTAI_HOME": str(root), "DOTAI_STATE_DIR": str(root / "state")}):
+                runner = runtime.Runner("macos")
+                self.assertFalse(packages.package_check(data["packages"][0], runner))
+                lifecycle.record_install("tool", "ai-helper", data["packages"][0], data, runner)
+                with contextlib.redirect_stdout(io.StringIO()):
+                    packages.reconcile_packages(data, runner, "install", ownership_check=lambda value, current, actor, operation:
+                                                lifecycle.check_update_ownership("tool", value["name"], value, current, actor, operation=operation))
+                self.assertEqual(version.read_text(), "1.2.0")
+                self.assertEqual(runner.failures, [])
 
     def test_missing_updater_requirement_blocks_update_before_marker(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -348,20 +357,25 @@ class OptionalComponentTests(unittest.TestCase):
             self.assertFalse(marker.exists())
             self.assertFalse((root / "state").exists())
 
+    @unittest.skipIf(os.name == "nt", "POSIX independent executable fixture")
     def test_force_install_uses_installer_not_unsafe_update(self):
         with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
+            root = Path(directory).resolve()
             version, marker, path = root / "version", root / "unsafe-updater", root / "stack.json"
             version.write_text("1.0.0")
+            binary = root / "ai-helper"
+            binary.write_text(f"#!{sys.executable}\nfrom pathlib import Path\nprint(Path({str(version)!r}).read_text())\n")
+            binary.chmod(0o755)
             data = stack()
             data["prerequisites"] = [{"name": "safe-updater", "check": command("raise SystemExit(1)")}]
             data["packages"] = [{"name": "ai-helper", "managed": True, "minimumVersion": "2.0.0",
-                                 "check": command(f"from pathlib import Path; print(Path({str(version)!r}).read_text())"),
+                                 "check": [str(binary), "--version"],
                                  "install": [command(f"from pathlib import Path; Path({str(version)!r}).write_text('2.0.0')")],
                                  "updateRequires": ["safe-updater"],
                                  "update": [command(f"from pathlib import Path; Path({str(marker)!r}).touch()")]}]
             path.write_text(json.dumps(data))
             with mock.patch.dict(os.environ, {"DOTAI_HOME": str(root / "home"), "DOTAI_STATE_DIR": str(root / "state")}):
+                self.assertEqual(self.invoke(path, "adopt", "tool:ai-helper"), 0)
                 self.assertEqual(self.invoke(path, "install", "--force"), 0)
             self.assertEqual(version.read_text(), "2.0.0")
             self.assertFalse(marker.exists())

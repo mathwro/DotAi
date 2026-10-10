@@ -10,16 +10,18 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
+import io
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from dotai_app import catalog, portable, runtime
+from dotai_app import catalog, packages, portable, runtime
 
 
 class ScopedRecipeTests(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary.cleanup)
-        self.root = Path(self.temporary.name)
+        self.root = Path(self.temporary.name).resolve()
         self.bin = self.root / "bin"
         self.bin.mkdir()
         self.env = {**os.environ, "HOME": str(self.root), "DOTAI_HOME": str(self.root),
@@ -61,32 +63,74 @@ class ScopedRecipeTests(unittest.TestCase):
         self.assertFalse(target.exists())
         self.assertEqual(unrelated.read_bytes(), b"preserved")
 
-    @unittest.skipUnless(os.name != "nt", "POSIX fixture executable")
-    def test_failed_official_omp_binary_installer_preserves_previous_copy(self):
+    @unittest.skipUnless(os.name != "nt", "POSIX standalone release")
+    def test_wrong_omp_release_digest_preserves_previous_binary(self):
         target = self.root / ".local" / "bin" / "omp"
         target.parent.mkdir(parents=True)
         target.write_bytes(b"previous standalone application")
-        installer = self.root / "installer.sh"
-        installer.write_text('''#!/bin/sh
-set -eu
-case "$*" in *--binary*) ;; *) touch "$HOME/runtime-mutated"; exit 9;; esac
-mkdir -p "${PI_INSTALL_DIR:-$HOME/.local/bin}"
-printf damaged > "${PI_INSTALL_DIR:-$HOME/.local/bin}/omp"
-exit 7
-''')
-        self.executable("curl", f'''#!{sys.executable}
-import pathlib, shutil, sys
-source = pathlib.Path({str(installer)!r})
-if '-o' in sys.argv:
-    shutil.copyfile(source, sys.argv[sys.argv.index('-o') + 1])
-else:
-    sys.stdout.write(source.read_text())
-''')
-        steps = runtime.selected(catalog.resolve_package({"name": "OMP", "recipe": "omp", "managed": True}, "linux")["install"], "linux")
-        result = self.run_step(steps[0])
-        self.assertNotEqual(result.returncode, 0)
+        facts = {"version": "18.8.7", "release": "v18.8.7", "artifact": "omp-linux-x64",
+                 "url": "https://github.com/can1357/oh-my-pi/releases/download/v18.8.7/omp-linux-x64",
+                 "sha256": "0" * 64}
+        with patch.dict(os.environ, self.env, clear=True), patch.object(packages.urllib.request, "urlopen", return_value=io.BytesIO(b"damaged")):
+            with self.assertRaisesRegex(RuntimeError, "checksum"):
+                packages.install_native_release(facts, ".local/bin/omp", "omp")
         self.assertEqual(target.read_bytes(), b"previous standalone application")
-        self.assertFalse((self.root / "runtime-mutated").exists())
+
+    @unittest.skipUnless(os.name != "nt", "POSIX standalone release")
+    def test_verified_omp_release_is_staged_before_exact_cutover(self):
+        payload = b"#!/bin/sh\nprintf 'omp 18.8.7\\n'\n"
+        facts = {"version": "18.8.7", "release": "v18.8.7", "artifact": "omp-linux-x64",
+                 "url": "https://github.com/can1357/oh-my-pi/releases/download/v18.8.7/omp-linux-x64",
+                 "sha256": hashlib.sha256(payload).hexdigest()}
+        target = self.root / ".local" / "bin" / "omp"
+        target.parent.mkdir(parents=True)
+        target.write_bytes(b"previous standalone application")
+        with patch.dict(os.environ, self.env, clear=True), patch.object(packages.urllib.request, "urlopen", return_value=io.BytesIO(payload)):
+            packages.install_native_release(facts, ".local/bin/omp", "omp")
+        self.assertEqual(target.read_bytes(), payload)
+
+    @unittest.skipUnless(os.name != "nt", "POSIX subprocess home smoke")
+    def test_recipe_subprocess_uses_dotai_home_without_mutating_process_home(self):
+        other = self.root / "real-home"
+        selected = self.root / "selected-home"
+        for home in (other, selected):
+            target = home / ".local/bin/omp"
+            target.parent.mkdir(parents=True)
+            target.write_bytes(b"home-owned application")
+        before = (other / ".local/bin/omp").read_bytes()
+        with patch.dict(os.environ, {**self.env, "HOME": str(other), "USERPROFILE": str(other), "DOTAI_HOME": str(selected)}, clear=True):
+            runner = runtime.Runner("linux")
+            package = catalog.resolve_uninstall({"name": "OMP", "recipe": "omp", "managed": True}, "linux")
+            runtime.run_steps(runtime.selected(package["uninstall"], "linux"), runner, "Isolated home removal")
+        self.assertFalse((selected / ".local/bin/omp").exists())
+        self.assertEqual((other / ".local/bin/omp").read_bytes(), before)
+
+    @unittest.skipIf(os.name == "nt", "POSIX executable shim fixture")
+    def test_scoop_shim_retargeting_refuses_owned_backend_uninstall(self):
+        from dotai_app import lifecycle
+        shims = self.root / "scoop/shims"
+        backend = self.root / "scoop/apps/dotai-omp/current/omp.exe"
+        shims.mkdir(parents=True)
+        backend.parent.mkdir(parents=True)
+        backend.write_bytes(b"owned binary")
+        launcher = shims / "omp.exe"
+        launcher.write_text("#!/bin/sh\nprintf 'omp 18.8.7\\n'\n")
+        launcher.chmod(0o755)
+        shim = launcher.with_suffix(".shim")
+        shim.write_text(f'path = "{backend}"\n')
+        intent = json.loads((Path(__file__).resolve().parents[1] / "stack.example.json").read_text())
+        tool = {"name": "OMP", "recipe": "omp", "managed": True, "check": [str(launcher), "--version"]}
+        intent["packages"] = [tool]
+        with patch.dict(os.environ, {**self.env, "DOTAI_STATE_DIR": str(self.root / "state")}, clear=True):
+            runner = runtime.Runner("windows")
+            lifecycle.record_install("tool", "OMP", tool, intent, runner)
+            foreign = self.root / "foreign.exe"
+            foreign.write_bytes(b"foreign application")
+            shim.write_text(f'path = "{foreign}"\n')
+            with self.assertRaises(RuntimeError):
+                lifecycle.mutate_runtime("tool", "OMP", tool, intent, runner, "uninstall")
+        self.assertEqual(foreign.read_bytes(), b"foreign application")
+        self.assertEqual(backend.read_bytes(), b"owned binary")
 
     @unittest.skipUnless(os.name != "nt" and shutil.which("sha256sum"), "POSIX archive/checksum tools")
     def test_bad_linux_rtk_archive_digest_preserves_previous_binary(self):

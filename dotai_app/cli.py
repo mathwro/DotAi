@@ -11,6 +11,7 @@ from . import conversion
 from . import health
 from . import integrations
 from . import manifest as manifests
+from . import lifecycle
 from . import catalog
 from . import portable
 from . import prerequisites
@@ -35,14 +36,18 @@ def build_parser() -> argparse.ArgumentParser:
         help="Color output: auto for terminals, always, or never (default: auto)",
     )
     sub = parser.add_subparsers(dest="command", required=True)
+    lifecycle.register_commands(sub)
     install = sub.add_parser("install", help="Install missing components and synchronize configuration")
     install.add_argument("--force", action="store_true", help="Reinstall components already present")
     install.add_argument("--dry-run", action="store_true", help="Print actions without changing the machine")
     update = sub.add_parser("update", help="Update managed components and synchronize configuration")
     update.add_argument("--dry-run", action="store_true")
+    for mutation in (install, update):
+        mutation.add_argument("--only", action="append", metavar="TYPE:ID", help="Select a declared component; repeatable")
     sync = sub.add_parser("sync", help="Synchronize skills, plugins, and MCP configuration")
     sync.add_argument("--dry-run", action="store_true")
     sync.add_argument("--update-skills", action="store_true", help="Refresh already installed skills")
+    sync.add_argument("--only", action="append", metavar="TYPE:ID", help="Select a declared component; repeatable")
     sync.add_argument(
         "--recommended-skills",
         action="store_true",
@@ -141,6 +146,8 @@ def main(argv: list[str] | None = None) -> int:
         args.manifest = portable.default_manifest_path(args.platform)
     if args.command == "sync" and args.enforce and not args.recommended_skills:
         parser.error("--enforce requires --recommended-skills")
+    if args.command == "sync" and args.only and args.recommended_skills:
+        parser.error("--only cannot be combined with --recommended-skills; recommendation consent must cover the full manifest")
     terminal.configure_color(args.color)
     if args.platform:
         os.environ["DOTAI_PLATFORM"] = args.platform
@@ -179,7 +186,7 @@ def main(argv: list[str] | None = None) -> int:
             args.manifest, allow_legacy_routing=allow_legacy_routing
         )
         if args.command == "validate":
-            catalog.materialize(manifest)
+            catalog.materialize(manifest, platform_name)
     except (OSError, runtime.DotAiError) as exc:
         print(f"{terminal.styled('dotai:', 'red', 'bold')} {terminal.redact(exc)}", file=sys.stderr)
         return 2
@@ -200,13 +207,34 @@ def main(argv: list[str] | None = None) -> int:
             print(f"{terminal.styled('dotai:', 'red', 'bold')} {terminal.redact(exc)}", file=sys.stderr)
             return 2
     runner = runtime.Runner(platform_name, getattr(args, "dry_run", False), args.verbose)
-    try:
-        effective = catalog.materialize(manifest)
-    except (OSError, runtime.DotAiError) as exc:
-        print(f"{terminal.styled('dotai:', 'red', 'bold')} {terminal.redact(exc)}", file=sys.stderr)
-        return 2
-    if args.command in {"install", "update", "sync", "fix"} and not prerequisites.preflight(effective, runner, args.command, force=getattr(args, "force", False)):
-        return 1
+    if args.command in {"list", "show", "adopt", "remove", "enable", "disable"}:
+        try:
+            return lifecycle.dispatch(
+                args, manifest, args.manifest, runner,
+                activate=lambda selected, candidate: reconciliation.reconcile(
+                    selected, args.manifest, runner, "install", provenance_manifest=candidate, summarize=False,
+                ),
+            )
+        except (OSError, ValueError, runtime.DotAiError) as exc:
+            if not runner.failures:
+                runner.fail("Component operation", str(exc))
+            return 1
+        finally:
+            if args.command not in {"list", "show"}:
+                runner.summary()
+    provenance = manifest
+    if args.command in {"install", "update", "sync"}:
+        try:
+            manifest = lifecycle.filter_manifest(manifest, args.only)
+        except runtime.DotAiError as exc:
+            print(f"{terminal.styled('dotai:', 'red', 'bold')} {terminal.redact(exc)}", file=sys.stderr)
+            return 2
+    if args.command in {"status", "doctor", "configure", "fix"}:
+        try:
+            effective = catalog.materialize(manifest, runner.platform, inspect_only=True)
+        except (OSError, runtime.DotAiError) as exc:
+            print(f"{terminal.styled('dotai:', 'red', 'bold')} {terminal.redact(exc)}", file=sys.stderr)
+            return 2
     if args.command == "configure":
         try:
             return model_routing.configure_omp_routing(
@@ -217,7 +245,7 @@ def main(argv: list[str] | None = None) -> int:
             return 2
     if args.command == "fix":
         try:
-            return skill_manager.fix_legacy_skills(manifest, args.manifest, runner)
+            return reconciliation.fix_legacy_skills(manifest, args.manifest, runner)
         except (OSError, runtime.DotAiError) as exc:
             print(f"{terminal.styled('dotai:', 'red', 'bold')} {terminal.redact(exc)}", file=sys.stderr)
             return 2
@@ -238,9 +266,11 @@ def main(argv: list[str] | None = None) -> int:
             try:
                 old_skills = manifest["skills"]
                 manifest, managed_skills = skill_recommendations.review_recommended_skills(
-                    manifest, args.manifest, runner, args.enforce
+                    manifest, args.manifest, runner, args.enforce,
+                    update_skills=args.update_skills,
                 )
                 if runner.failures:
+                    runner.summary()
                     return 1
                 previous = {skill["source"]: skill for skill in old_skills}
                 refresh_sources = {
@@ -253,7 +283,7 @@ def main(argv: list[str] | None = None) -> int:
         return reconciliation.reconcile(
             manifest, args.manifest, runner, "sync", managed_skills=managed_skills,
             update_skills=args.update_skills, refresh_sources=refresh_sources,
-            recommended_only=args.enforce,
+            recommended_only=args.enforce, provenance_manifest=manifest if args.recommended_skills else provenance,
         )
     if args.command == "update":
         skill_manager.print_legacy_skill_notice(manifest)
@@ -263,4 +293,5 @@ def main(argv: list[str] | None = None) -> int:
         runner,
         args.command,
         getattr(args, "force", False),
+        provenance_manifest=provenance,
     )
