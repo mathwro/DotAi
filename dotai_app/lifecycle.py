@@ -195,9 +195,9 @@ def tool_backend_fingerprint(root: Path) -> str:
         for name in (*folders, *files):
             path = Path(directory) / name
             relative = path.relative_to(root)
-            if path.suffix == ".pyc" and "__pycache__" in relative.parts[:-1] and not path.is_symlink():
+            if path.suffix == ".pyc" and "__pycache__" in relative.parts[:-1] and not path.is_symlink() and path.is_file():
                 continue
-            if path.name == "__pycache__" and path.is_dir() and not path.is_symlink():
+            if path.name == "__pycache__" and path.is_dir() and not path.is_symlink() and path.resolve() == path:
                 continue
             mode = path.lstat().st_mode
             if path.is_symlink() or (path.is_dir() and path.resolve() != path):

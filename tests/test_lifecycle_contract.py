@@ -991,6 +991,26 @@ class ToolMutationOwnershipTests(unittest.TestCase):
             self.lifecycle.mutate_runtime("tool", "fixture", self.tool, self.manifest, self.runner, "uninstall")
         self.assertEqual(note.read_text(), "user content")
 
+    def test_cache_link_without_symlink_flag_cannot_hide_retargeted_backend(self):
+        root = self.uv_tool()
+        first = self.home / "external-cache"
+        second = self.home / "replacement-cache"
+        for folder in (first, second):
+            folder.mkdir()
+            (folder / "notes").write_text("unmanaged content")
+        cache = root / "__pycache__"
+        cache.symlink_to(first, target_is_directory=True)
+        is_symlink = Path.is_symlink
+        # Windows junctions are directory redirects without a symlink flag.
+        with patch.object(Path, "is_symlink", lambda path: False if path == cache else is_symlink(path)):
+            self.adopt()
+            cache.unlink()
+            cache.symlink_to(second, target_is_directory=True)
+            with self.assertRaises(runtime.DotAiError):
+                self.lifecycle.check_update_ownership("tool", "fixture", self.tool, self.manifest, self.runner)
+        self.assertEqual((first / "notes").read_text(), "unmanaged content")
+        self.assertEqual((second / "notes").read_text(), "unmanaged content")
+
     def test_fresh_reviewed_scope_install_preserves_foreign_existing_program(self):
         from dotai_app import catalog
         foreign = self.home / "foreign-bin/dotai-scoped-helper"
@@ -1052,7 +1072,10 @@ class WindowsBackendOwnershipTests(unittest.TestCase):
             outside.mkdir()
             dependency = outside / "runtime"
             dependency.write_bytes(b"external runtime")
-            for alias, target in ((root / "current", version), (version / "dependency", outside)):
+            cache = version / "__pycache__"
+            cache.mkdir()
+            for alias, target in ((root / "current", version), (version / "dependency", outside),
+                                  (root / "__pycache__", outside), (cache / "runtime.pyc", outside)):
                 result = subprocess.run(["cmd", "/c", "mklink", "/J", str(alias), str(target)], text=True, capture_output=True)
                 self.assertEqual(result.returncode, 0, result.stderr)
             before = lifecycle.tool_backend_fingerprint(root)
