@@ -253,6 +253,51 @@ class OutputContractTests(unittest.TestCase):
         self.assertNotIn("internal_record", report.getvalue())
         self.assertNotIn("private-value", report.getvalue())
 
+    def test_malformed_protocol_never_exposes_unknown_fields_in_failure_or_verbose_output(self) -> None:
+        command = self.script(
+            "import sys\n"
+            "print('[ERROR] Permission denied', file=sys.stderr)\n"
+            "print('{\\n  \"value\": \"private-response-data\"', file=sys.stderr)\n"
+            "raise SystemExit(8)\n"
+        )
+        for verbose in (False, True):
+            with self.subTest(verbose=verbose):
+                runner = runtime.Runner(self.platform, verbose=verbose)
+                with contextlib.redirect_stdout(io.StringIO()) as report:
+                    result = runner.run(command, "Configure example")
+                self.assertEqual(result.returncode, 8)
+                self.assertTrue(runner.failures)
+                self.assertIn("Permission denied", report.getvalue())
+                self.assertNotIn("private-response-data", report.getvalue() + " ".join(runner.failures))
+                self.assertNotIn('"value"', report.getvalue())
+
+    def test_malformed_array_preserves_following_bracketed_error(self) -> None:
+        command = self.script(
+            "import sys\n"
+            "print('[{\\n  \"value\": \"private-array-data\"', file=sys.stderr)\n"
+            "print('[ERROR] Target refused', file=sys.stderr)\n"
+            "raise SystemExit(8)\n"
+        )
+        runner = runtime.Runner(self.platform, verbose=True)
+        with contextlib.redirect_stdout(io.StringIO()) as report:
+            runner.run(command, "Configure example")
+        self.assertTrue(runner.failures)
+        self.assertIn("Target refused", report.getvalue())
+        self.assertNotIn("private-array-data", report.getvalue() + " ".join(runner.failures))
+
+    def test_truncated_json_string_does_not_turn_embedded_log_label_into_prose(self) -> None:
+        command = self.script(
+            "import sys\n"
+            "print('{\"value\": \"\\n[ERROR] private-string-data', file=sys.stderr)\n"
+            "raise SystemExit(8)\n"
+        )
+        runner = runtime.Runner(self.platform, verbose=True)
+        with contextlib.redirect_stdout(io.StringIO()) as report:
+            result = runner.run(command, "Configure example")
+        self.assertEqual(result.returncode, 8)
+        self.assertTrue(runner.failures)
+        self.assertNotIn("private-string-data", report.getvalue() + " ".join(runner.failures))
+
     def test_structured_failure_explains_available_error_without_dumping_payload(self) -> None:
         runner = runtime.Runner(self.platform)
         command = self.script(
