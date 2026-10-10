@@ -381,37 +381,6 @@ def legacy_skill_migration(manifest: dict[str, Any]) -> tuple[dict[str, Any], li
     return updated, migrated
 
 
-def fix_legacy_skills(manifest: dict[str, Any], path: Path, runner: runtime.Runner) -> int:
-    updated, migrated = legacy_skill_migration(manifest)
-    if not migrated:
-        print(f"{terminal.badge('OK')} No legacy Pi-targeted skills found in {path}.")
-        return 0
-
-    print(f"{terminal.heading('Proposed skill migration:')}")
-    print(manifests.manifest_diff(manifest, updated, path))
-    print(f"\nMigrates {len(migrated)} skill source(s) from Pi to the OMP universal target.")
-    if runner.dry_run:
-        print(f"{terminal.badge('RUN')} Dry run: no manifest changes applied.")
-        reconcile_skills(updated, runner)
-        return 1 if runner.failures else 0
-    try:
-        answer = input("Apply these changes and install the migrated skills? [y/N] ")
-    except (EOFError, KeyboardInterrupt):
-        answer = ""
-    if answer.strip().lower() not in {"y", "yes"}:
-        print(f"{terminal.badge('OK')} No changes applied.")
-        return 0
-
-    backup = manifests.write_manifest(path, updated, backup=True)
-    print(f"{terminal.badge('OK')} Manifest backup written to {backup}")
-    reconcile_skills(updated, runner)
-    if runner.failures:
-        print(f"{terminal.styled('Skill migration failed:', 'red', 'bold')}")
-        for failure in runner.failures:
-            print(f"  - {failure}")
-        return 1
-    print(f"{terminal.styled('Skill migration complete.', 'green', 'bold')}")
-    return 0
 
 
 def installed_skill_name(name: str) -> str:

@@ -18,21 +18,25 @@ def reconcile_plugins(
     ownership_check: Callable[..., None] | None = None,
 ) -> None:
     for marketplace in manifest["marketplaces"]:
+        try:
+            registered = marketplace_record(marketplace) is not None
+        except (OSError, UnicodeError, runtime.DotAiError) as exc:
+            runner.fail(f"Marketplace {marketplace['name']}", exc)
+            continue
         if marketplace.get("enabled") is False:
             if deactivate is not None:
                 deactivate("marketplace", marketplace["name"], marketplace, manifest, runner)
-            elif registry_contains(runtime.home_dir() / ".omp/marketplaces.json", marketplace["name"]):
+            elif registered:
                 detail = f"Marketplace {marketplace['name']}: disabling requires verified ownership; run 'dotai disable marketplace:{marketplace['name']}'"
                 runner.failures.append(detail)
                 print(f"{terminal.badge('DRIFT')} {detail}")
             else:
                 print(f"{terminal.badge('INACTIVE')} Marketplace {marketplace['name']}: not registered")
             continue
-        registry = runtime.home_dir() / ".omp" / "marketplaces.json"
-        if mode != "update" and registry_contains(registry, marketplace["name"]):
+        if mode != "update" and registered:
             print(f"{terminal.badge('OK')} Marketplace {marketplace['name']}: already registered")
             continue
-        if mode == "update" and registry_contains(registry, marketplace["name"]):
+        if mode == "update" and registered:
             try:
                 if ownership_check is None:
                     raise runtime.DotAiError("existing marketplace update requires verified ownership; adopt matching content first")
@@ -52,7 +56,7 @@ def reconcile_plugins(
         if plugin.get("enabled") is False:
             if deactivate is not None:
                 deactivate("plugin", plugin["id"], plugin, manifest, runner)
-            elif registry_contains(plugin_registry(plugin), plugin["id"]):
+            elif installed_plugin(plugin) is not None:
                 detail = f"Plugin {plugin['id']}: disabling requires verified ownership; run 'dotai disable plugin:{plugin['id']}'"
                 runner.failures.append(detail)
                 print(f"{terminal.badge('DRIFT')} {detail}")
@@ -139,6 +143,33 @@ def installed_plugin(plugin: dict[str, Any]) -> dict[str, Any] | None:
     if len(selected) > 1:
         raise runtime.DotAiError("Plugin scope has ambiguous installation records; resolve them before mutation")
     return selected[0] if selected else None
+
+def marketplace_record(marketplace: dict[str, Any]) -> dict[str, Any] | None:
+    """Match the actual registration name and declared source, not arbitrary JSON."""
+    path = runtime.home_dir() / ".omp" / "marketplaces.json"
+    records = manifests.load_json_object(path).get("marketplaces", [])
+    if not isinstance(records, list):
+        raise runtime.DotAiError("Invalid OMP marketplace registry; repair it before reconciliation")
+    matches = [entry for entry in records if isinstance(entry, dict) and entry.get("name") == marketplace["name"]]
+    if not matches:
+        return None
+    if len(matches) != 1 or matches[0].get("sourceUri") != marketplace["source"]:
+        raise runtime.DotAiError("Marketplace name does not prove the declared source; resolve its registration")
+    return matches[0]
+
+
+def plugin_status(plugin: dict[str, Any]) -> tuple[str, str]:
+    try:
+        entry = installed_plugin(plugin)
+    except (OSError, UnicodeError, runtime.DotAiError) as exc:
+        return "DRIFT", str(exc)
+    if entry is None or not Path(entry["installPath"]).is_dir():
+        return "MISSING", "installation source unavailable for this scope"
+    if not entry.get("enabled", True):
+        return "INACTIVE", "installed but disabled"
+    if plugin.get("version", "latest") not in ("latest", entry["version"]):
+        return "DRIFT", "installed version differs from the requested target"
+    return "OK", entry["version"]
 
 
 def preflight_plugin_install(plugin: dict[str, Any]) -> None:
@@ -236,18 +267,3 @@ def omp_extension_status(manifest: dict[str, Any], runner: runtime.Runner) -> tu
     if missing_files:
         return False, f"source missing: {', '.join(missing_files)}"
     return True, f"{len(desired)} managed extension(s) configured and available"
-
-
-def json_contains(value: Any, needle: str) -> bool:
-    if isinstance(value, dict):
-        return needle in value or any(json_contains(item, needle) for item in value.values())
-    if isinstance(value, list):
-        return any(json_contains(item, needle) for item in value)
-    return value == needle
-
-
-def registry_contains(path: Path, needle: str) -> bool:
-    try:
-        return json_contains(manifests.load_json_object(path), needle)
-    except (OSError, UnicodeError, runtime.DotAiError):
-        return False

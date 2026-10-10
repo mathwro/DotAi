@@ -10,7 +10,7 @@ from . import runtime
 from . import skills as skill_manager
 from . import state as app_state
 from . import terminal
-from . import catalog, prerequisites
+from . import catalog, lifecycle, locking, prerequisites
 
 
 def replace_skill(skills: list[dict[str, Any]], source: str, value: dict[str, Any] | None) -> None:
@@ -132,28 +132,63 @@ def print_recommended_skill_notice(manifest: dict[str, Any], manifest_path: Path
 
 def _apply_skill_changes(
     manifest: dict[str, Any], manifest_path: Path, runner: runtime.Runner,
-    managed: list[dict[str, Any]], selected: list[dict[str, Any]],
+    managed: list[dict[str, Any]], selected: list[dict[str, Any]], *,
+    update_skills: bool = False, recommended_only: bool = False,
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     updated, accepted = apply_recommended_skill_changes(manifest, managed, selected)
-    if not prerequisites.preflight(catalog.materialize(updated, runner.platform), runner, mode="sync"):
+    candidate = updated
+    if recommended_only:
+        recommended_keys = {
+            (skill["source"], skill.get("agent", "universal"))
+            for skill in manifests.recommended_skills()
+        }
+        candidate = {
+            **updated,
+            "skills": [
+                skill for skill in updated["skills"]
+                if (skill["source"], skill.get("agent", "universal")) in recommended_keys
+            ],
+        }
+    refresh_sources = {
+        change["after"]["source"] for change in selected if change["after"] is not None
+    }
+    try:
+        manifests.validate_manifest(updated)
+        if not prerequisites.preflight(catalog.materialize(candidate, runner.platform), runner, mode="sync"):
+            return manifest, managed
+        effective = locking.prepare(
+            candidate, manifest_path, runner, "sync", update_skills=update_skills,
+            refresh_sources=refresh_sources, skill_receipt_owned=lifecycle.skill_receipt_owned,
+            provenance_manifest=updated if recommended_only else None,
+        )
+    except (OSError, runtime.DotAiError) as exc:
+        runner.fail("Recommended skill plan", str(exc))
         return manifest, managed
-    backup = None
-    if not runner.dry_run:
-        backup = manifests.write_manifest(manifest_path, updated, backup=True)
-        print(terminal.redact(f"{terminal.badge('OK')} Manifest backup written to {backup}"))
-    skill_manager.remove_retired_skills(selected, runner)
-    if runner.failures:
-        if backup is not None:
-            shutil.copy2(backup, manifest_path)
-            print(terminal.redact(f"{terminal.badge('OK')} Restored {manifest_path} after skill removal failure"))
+    if not prerequisites.preflight(effective, runner, mode="sync", show_available=False):
         return manifest, managed
-    if not runner.dry_run:
-        app_state.save_managed_recommendations(manifest_path, accepted)
+    try:
+        with locking.execution(manifest_path, runner):
+            backup = None
+            if not runner.dry_run:
+                backup = manifests.write_manifest(manifest_path, updated, backup=True)
+                print(terminal.redact(f"{terminal.badge('OK')} Manifest backup written to {backup}"))
+            skill_manager.remove_retired_skills(selected, runner)
+            if runner.failures:
+                if backup is not None:
+                    shutil.copy2(backup, manifest_path)
+                    print(terminal.redact(f"{terminal.badge('OK')} Restored {manifest_path} after skill removal failure"))
+                return manifest, managed
+            if not runner.dry_run:
+                app_state.save_managed_recommendations(manifest_path, accepted)
+    except runtime.DotAiError as exc:
+        runner.fail("Recommended skill plan", str(exc))
+        return manifest, managed
     return updated, accepted
 
 
 def review_recommended_skills(
-    manifest: dict[str, Any], manifest_path: Path, runner: runtime.Runner, enforce: bool = False
+    manifest: dict[str, Any], manifest_path: Path, runner: runtime.Runner, enforce: bool = False, *,
+    update_skills: bool = False,
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     managed, changes, conflicts = recommended_skill_plan(manifest, manifest_path, enforce)
     conditional_cleanup = False
@@ -185,7 +220,10 @@ def review_recommended_skills(
                     answer = ""
                 remove_users = answer.strip().lower() in {"y", "yes"}
             if remove_users:
-                manifest, managed = _apply_skill_changes(manifest, manifest_path, runner, managed, removals)
+                manifest, managed = _apply_skill_changes(
+                    manifest, manifest_path, runner, managed, removals,
+                    update_skills=update_skills, recommended_only=enforce,
+                )
                 if runner.failures:
                     return manifest, managed
                 managed, changes, conflicts = recommended_skill_plan(manifest, manifest_path, enforce)
@@ -229,4 +267,7 @@ def review_recommended_skills(
         print(f"{terminal.badge('OK')} No recommended skill changes applied.")
         return manifest, managed
 
-    return _apply_skill_changes(manifest, manifest_path, runner, managed, selected)
+    return _apply_skill_changes(
+        manifest, manifest_path, runner, managed, selected,
+        update_skills=update_skills, recommended_only=enforce,
+    )
