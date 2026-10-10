@@ -76,7 +76,7 @@ Use `./dotai.py` on Linux, WSL, and macOS, or `python dotai.py` in PowerShell. T
 ```sh
 ./dotai.py install          # Install missing components and synchronize configuration
 ./dotai.py update           # Update explicitly managed components and synchronize configuration
-./dotai.py sync             # Reconcile skills, plugins, and MCP servers; no package operations
+./dotai.py sync             # Reconcile configuration; retain tool, skill source, and plugin versions
 ./dotai.py sync --update-skills  # Explicitly refresh already installed skill sources
 ./dotai.py sync --recommended-skills  # Review and apply repository skill recommendations
 ./dotai.py sync --recommended-skills --enforce  # Offer user-skill cleanup, then review exact recommendations
@@ -107,6 +107,14 @@ Common options:
 Version-1 manifests are rejected by normal commands before environment changes. Use the explicit `convert` command to review the one-way version-2 conversion before applying it; existing entries are preserved and prerequisite mutation commands are retired.
 
 Packages require explicit `managed: true` permission. Disabled selections are excluded from installation intent; lifecycle operations disable or uninstall only supported, proven-owned runtime copies and refuse unsafe removal. Dry runs describe changes without creating a manifest or changing files.
+
+Human output describes plans and component outcomes in prose. DotAi captures noninteractive child stdout/stderr; `--verbose` exposes only sanitized diagnostics, never raw JSON or credentials. Multi-step mutations end with one numeric action summary, including partial failures; simple manifest-only commands end with a clear result line.
+
+Use `list` and `show kind:id` to inspect intent, observed versions, scope, and ownership without resolving mutable upstream metadata. `adopt kind:id` explicitly adopts matching existing content. `enable` and `disable` change supported owned activation. `remove kind:id` only forgets the declaration; `remove kind:id --uninstall` requires an exact unchanged owned snapshot and preserves shared or unrelated copies. Repeat `--only kind:id` on install, sync, or update to select components before prerequisite checks, including `tool:graphify`.
+
+Requested versions, skill revisions, and update policies stay in personal intent. Exact successful tool/skill/plugin resolutions and the pinned skills installer live separately in the adjacent private `stack.lock.json`; a concurrency guard protects reconciliation. Locks are not uninstall permission: machine-local ownership receipts are separate. Normal sync never silently upgrades uncertain content.
+
+OMP fresh/missing installs and reviewed owned `install --force` replacements use exact release artifacts with verified SHA-256 digests. Existing latest-policy copies use guarded `omp update --stable`, without updating unrelated plugins; the vendor-selected stable release can change after preview. The lock records the actual installed release and verifies its artifact digest. Matching exact requested or retained locked targets remain unchanged; a differing target requires a reviewed owned force-install rather than native update. See [recipe and pin limitations](docs/configuration.md#portable-personal-stack).
 
 ### Convert an existing manifest
 
@@ -140,7 +148,7 @@ The `INACTIVE` hint for unconfigured optional routing is informational and does 
 
 ## Extending the stack
 
-Use `add` to record a desired integration in your local `stack.json`; adding it does not install it yet. Replace these example names and URLs with your own:
+Use `add` to record a desired integration in your explicitly initialized personal manifest; adding does not install it yet. Replace these example names and URLs with your own:
 
 ```sh
 ./dotai.py add component graphify
@@ -187,5 +195,5 @@ RTK is optional for running tests; omit `rtk` if it is not installed. On Windows
 
 - [Configuration](docs/configuration.md) — manifest lifecycle, safety guarantees, and OMP provider routing
 - [Extending the stack](docs/extending.md) — add skills, MCP servers, plugins, and command-line tools
-- [Vetted project skills](docs/project-skills.md) — conditional recommendations, project-local installation commands, and runtime boundaries
+- [Vetted project skills](docs/project-skills.md) — optional manual guidance; DotAi project-specific skill management is deferred
 - [Development](docs/development.md) — repository layout and contributor verification
