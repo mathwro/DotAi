@@ -51,8 +51,8 @@ class PortableCatalogTests(unittest.TestCase):
     def test_windows_and_xdg_paths_are_platform_specific(self):
         portable = feature(self, "portable")
         with patch.dict(os.environ, {"APPDATA": "/roaming", "XDG_CONFIG_HOME": "/xdg"}, clear=True):
-            self.assertEqual(str(portable.default_manifest_path("windows")), "/roaming/DotAi/stack.json")
-            self.assertEqual(str(portable.default_manifest_path("linux")), "/xdg/dotai/stack.json")
+            self.assertEqual(portable.default_manifest_path("windows"), Path("/roaming/DotAi/stack.json"))
+            self.assertEqual(portable.default_manifest_path("linux"), Path("/xdg/dotai/stack.json"))
 
 
 class StackLockTests(unittest.TestCase):
@@ -572,7 +572,7 @@ class SkillLockTests(unittest.TestCase):
         from dotai_app import skills
         folder = skills.skill_root(self.source) / "alpha"
         folder.mkdir(parents=True)
-        (folder / "SKILL.md").write_text("# Alpha\n")
+        (folder / "SKILL.md").write_bytes(b"# Alpha\n")
         upstream = self.root / "state" / "skills" / ".skill-lock.json"
         upstream.parent.mkdir(parents=True)
         upstream.write_text(json.dumps({"version": 3, "skills": {"alpha": {
