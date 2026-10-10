@@ -28,6 +28,11 @@ The Python entry point, manifests, and schema stay at the repository root becaus
 | `releases.py` | Application version and best-effort release notices |
 | `manifest.py` | Manifest validation, initialization, diffs, backups, and safe JSON writes |
 | `integrations.py` | Parse and persist declared integrations from `add` commands |
+| `prerequisites.py` | Read-only presence and compatibility checks for selected external prerequisites |
+| `catalog.py` | Maintained installation recipes and effective command resolution without rewriting personal intent |
+| `portable.py` | Per-user manifest and adjacent stack-lock paths, without initialization |
+| `conversion.py` | Explicit reviewed legacy-manifest conversion, backups, and management permission |
+| `locking.py` | Immutable target preparation and verified resolved-version/source recording |
 | `packages.py` | Package presence, minimum versions, and install/update decisions |
 | `skills.py` | Agent-scoped installation, ownership checks, health, retirement, and legacy migration |
 | `recommendations.py` | Plan, review, and apply recommended skill changes |
@@ -57,6 +62,10 @@ Use `terminal.redact(text, secrets=())` at output boundaries. It hides declared 
 Use `terminal.describe_changes(before, after, target)` for previews. It returns prose naming added/removed components and changed fields, without rendering configuration values; an unchanged candidate returns an empty string. Recommendations and routing describe proposed actions, preserve unmanaged configuration, and state that dry runs apply nothing. Cleanup-dependent recommendations must be explicitly conditional on the separate cleanup approval, not described as already accepted.
 
 `Runner.record_outcome(label, status, detail='')` records `changed`, `unchanged`, `skipped`, `failed`, or `planned`; `Runner.summary()` prints and returns concise counts, including partial completion. Successful run operations record `changed`, failures record `failed`, and dry runs record `planned`. Orchestration should account for domain decisions such as unchanged/disabled components and invoke the summary once after the operation. Probe commands do not add mutation outcomes.
+
+Use `Runner.fail(label, cause, *, required=True, command=None)` for operational failures so the exit-status list, sanitized cause, and failed-action accounting agree. Ordered `runtime.run_steps` stops after a failed required step and records later steps as skipped; it does not imply rollback of a partially executed external tool.
+
+Orchestration validates and materializes the complete selected recipe plan before package operations, then records observed stack-lock facts only after successful non-preview reconciliation. Accepted skill-recommendation candidates must pass prerequisite checks before manifest backups, writes, retirement, or ownership-state changes. Keep the saved personal manifest as intent, not expanded commands.
 
 Output boundary regressions use isolated Python subprocess scripts, including a parent-process capture to catch inherited file-descriptor leaks. Run them with `rtk python3 -m unittest discover -s tests -p test_output_contract.py -v`; never exercise installers or authenticated personal tools to test presentation.
 
