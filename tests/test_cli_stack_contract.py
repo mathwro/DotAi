@@ -121,6 +121,17 @@ class CliStackContractTests(unittest.TestCase):
         self.assertNotIn("complete for", result.stdout)
         self.assertEqual(1, result.stdout.lower().count("summary:"))
 
+    def test_fix_prerequisite_failure_reports_one_summary_without_mutation(self):
+        self.manifest["skills"] = [{"source": "fixture/legacy", "agent": "pi", "skills": ["alpha"], "checkSkills": ["alpha"]}]
+        self.manifest["prerequisites"] = [{"name": "node", "check": [sys.executable, "-c", "raise SystemExit(1)"], "hint": "Provide Node externally"}]
+        result = self.cli("fix")
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertEqual(self.manifest, json.loads(self.path.read_text()))
+        self.assertEqual(result.stdout.lower().count("summary:"), 1)
+        self.assertIn("1 failed", result.stdout)
+        self.assert_no_machine_state()
+        self.assertFalse(list(self.root.glob("stack.json.bak.*")))
+
     def test_dry_run_creates_no_receipts_state_lock_or_installed_files(self):
         self.manifest["packages"] = [self.tool()]
         result = self.cli("install", "--only", "tool:sample", "--dry-run")

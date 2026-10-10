@@ -466,6 +466,21 @@ class OmpHealthCoverageTests(unittest.TestCase):
         ]})
         self.assertEqual(self.run_cli("status").returncode, 1)
 
+    def test_malformed_marketplace_catalog_path_reports_drift_without_traceback(self) -> None:
+        self.manifest["marketplaces"] = [{"name": "team", "source": "owner/team"}]
+        for path in (None, 42, [], {}, "", "\0"):
+            with self.subTest(path=path):
+                self.write_json(self.marketplace_path, {"marketplaces": [
+                    {"name": "team", "sourceUri": "owner/team", "catalogPath": path},
+                ]})
+                before = self.marketplace_path.read_bytes()
+                for command in ("status", "doctor"):
+                    result = self.run_cli(command)
+                    self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+                    self.assertIn("[DRIFT]", result.stdout)
+                    self.assertNotIn("Traceback", result.stderr)
+                self.assertEqual(self.marketplace_path.read_bytes(), before)
+
     def test_status_reports_package_marketplace_scopes_and_extension_health(self) -> None:
         self.declare_plugins()
         installed = self.run_cli("install")
