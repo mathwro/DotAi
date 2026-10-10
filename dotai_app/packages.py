@@ -51,23 +51,18 @@ def reconcile_packages(
     runner: runtime.Runner,
     mode: str,
     force: bool = False,
-    include_dependencies: bool = False,
 ) -> None:
+    manifests.validate_manifest(manifest)
     for package in manifest["packages"]:
+        if not package.get("enabled", True):
+            continue
         name = package["name"]
         installed = package_check(package, runner)
         check_command = runtime.selected(package.get("check", []), runner.platform)
         present = installed or (
             "minimumVersion" in package and bool(check_command) and runner.succeeds(check_command)
         )
-        if (
-            mode == "update"
-            and present
-            and package.get("updateGroup", "core") == "dependency"
-            and not include_dependencies
-        ):
-            print(f"{terminal.badge('OK')} {name}: dependency update skipped (use --include-dependencies)")
-        elif mode == "install" and installed and not force:
+        if mode == "install" and installed and not force:
             print(f"{terminal.badge('OK')} {name}: already installed")
         else:
             operation = "update" if present and (mode == "update" or not installed) else "install"

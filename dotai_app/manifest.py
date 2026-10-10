@@ -6,12 +6,12 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 import datetime as dt
-import difflib
 import json
 import os
 import re
 import shutil
 import tempfile
+import shlex
 from . import runtime
 from . import terminal
 
@@ -20,6 +20,9 @@ DEFAULT_MANIFEST = runtime.ROOT / "stack.json"
 
 
 EXAMPLE_MANIFEST = runtime.ROOT / "stack.example.json"
+
+
+SKILL_RECOMMENDATIONS = runtime.ROOT / "skill-recommendations.json"
 
 
 SUPPORTED_ROUTING_PROVIDERS = frozenset({"github-copilot", "openai-codex", "anthropic"})
@@ -35,6 +38,62 @@ PLATFORMS = frozenset({"windows", "wsl", "ubuntu", "arch", "macos", "linux", "un
 
 
 VERSION_MINIMUM_PATTERN = re.compile(r"^(0|[1-9]\d*)\.(0|[1-9]\d*)(?:\.(0|[1-9]\d*))?$")
+
+
+PREREQUISITE_ALIASES = {
+    "node.js": "node", "nodejs": "node", "node": "node", "npm": "npm", "npx": "npx",
+    "uv": "uv", "python": "python", "python3": "python", "git": "git", "curl": "curl",
+    "brew": "brew", "homebrew": "brew", "scoop": "scoop", "apt": "apt-get",
+    "apt-get": "apt-get", "pacman": "pacman",
+}
+
+
+NON_CHECK_PREREQUISITE_FIELDS = frozenset({
+    "install", "update", "configure", "uninstall", "pinInstall", "updateGroup", "managed",
+    "recipe", "version", "updatePolicy", "requires", "provides", "enabled", "updateRequires",
+})
+
+
+def prerequisite_name(name: Any) -> str | None:
+    return PREREQUISITE_ALIASES.get(name.casefold()) if isinstance(name, str) else None
+
+
+def managed_prerequisite(package: dict[str, Any]) -> str | None:
+    for value in (package.get("name"), package.get("recipe")):
+        name = prerequisite_name(value)
+        if name:
+            return name
+    checks = package.get("check", [])
+    commands = checks.values() if isinstance(checks, dict) else [checks]
+    for command in commands:
+        try:
+            parts = shlex.split(command) if isinstance(command, str) else command
+        except ValueError:
+            continue
+        if isinstance(parts, list) and len(parts) == 2 and parts[1] in {"--version", "-V"} and isinstance(parts[0], str):
+            executable = re.split(r"[/\\]", parts[0])[-1]
+            if executable.casefold().endswith(".exe"):
+                executable = executable[:-4]
+            name = prerequisite_name(executable)
+            if name:
+                return name
+    return None
+
+
+def validate_requirements(value: Any, path: str) -> None:
+    entries = value.items() if isinstance(value, dict) else [(None, value)]
+    for platform, names in entries:
+        if platform is not None and platform not in PLATFORMS:
+            raise runtime.DotAiError(f"Manifest '{path}' has an unsupported platform: {platform}")
+        if not isinstance(names, list) or any(not isinstance(name, str) or not name for name in names):
+            raise runtime.DotAiError(f"Manifest '{path}' must contain arrays of prerequisite names")
+
+
+def validate_enabled(entry: dict[str, Any], path: str) -> None:
+    if "enabled" in entry and not isinstance(entry["enabled"], bool):
+        raise runtime.DotAiError(f"Manifest '{path}.enabled' must be a boolean")
+    if "requires" in entry:
+        validate_requirements(entry["requires"], f"{path}.requires")
 
 
 def initialize_manifest(path: Path, *, allow_custom: bool = False) -> bool:
@@ -187,6 +246,7 @@ def validate_platform_commands(value: Any, path: str, *, check: bool = False) ->
 def validate_mcp_server(server: Any, path: str) -> None:
     if not isinstance(server, dict):
         raise runtime.DotAiError(f"Manifest '{path}' must be an object")
+    validate_enabled(server, path)
     transport = server.get("type", "stdio")
     if not isinstance(transport, str):
         raise runtime.DotAiError(f"Manifest '{path}.type' must be 'stdio', 'http', or 'sse'")
@@ -237,7 +297,7 @@ def load_manifest(path: Path, *, allow_legacy_routing: bool = False) -> dict[str
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except FileNotFoundError as exc:
-        raise runtime.DotAiError(f"Manifest not found: {path}") from exc
+        raise runtime.DotAiError(f"Manifest not found: {path}. Run 'dotai --manifest {path} init' explicitly to create it.") from exc
     except json.JSONDecodeError as exc:
         raise runtime.DotAiError(f"Invalid JSON in {path}: {exc}") from exc
     except OSError as exc:
@@ -250,34 +310,85 @@ def load_manifest(path: Path, *, allow_legacy_routing: bool = False) -> dict[str
 def validate_manifest(data: Any, *, allow_legacy_routing: bool = False) -> dict[str, Any]:
     if not isinstance(data, dict):
         raise runtime.DotAiError("Manifest root must be an object")
-    if type(data.get("version")) is not int or data["version"] != 1:
-        raise runtime.DotAiError("Manifest 'version' must be 1")
+    if type(data.get("version")) is not int or data["version"] != 2:
+        if data.get("version") == 1:
+            raise runtime.DotAiError("Manifest version 1 is no longer supported; run 'dotai --manifest PATH convert --dry-run', then 'convert' to review and migrate it.")
+        raise runtime.DotAiError("Manifest 'version' must be 2")
     for section in ("packages", "skills", "marketplaces", "plugins"):
         if not isinstance(data.get(section), list):
             raise runtime.DotAiError(f"Manifest '{section}' must be an array")
+    integration_requirements = data.get("integrationRequires", {})
+    if not isinstance(integration_requirements, dict):
+        raise runtime.DotAiError("Manifest 'integrationRequires' must be an object")
+    for section, requirements in integration_requirements.items():
+        if section not in {"packages", "skills", "marketplaces", "plugins", "ompExtensions", "ompRouting", "mcp"}:
+            raise runtime.DotAiError(f"Unknown integration requirement section: {section}")
+        validate_requirements(requirements, f"integrationRequires.{section}")
+    prerequisites = data.get("prerequisites", [])
+    if not isinstance(prerequisites, list):
+        raise runtime.DotAiError("Manifest 'prerequisites' must be an array")
+    prerequisite_names = set()
+    for index, prerequisite in enumerate(prerequisites):
+        path_name = f"prerequisites[{index}]"
+        if not isinstance(prerequisite, dict):
+            raise runtime.DotAiError(f"Manifest '{path_name}' must be an object")
+        if set(prerequisite) & NON_CHECK_PREREQUISITE_FIELDS:
+            raise runtime.DotAiError(f"Manifest '{path_name}' is checks-only; operation and management fields are forbidden")
+        require_nonempty_string(prerequisite.get("name"), f"{path_name}.name")
+        if prerequisite["name"] in prerequisite_names:
+            raise runtime.DotAiError(f"Duplicate prerequisite: {prerequisite['name']}")
+        prerequisite_names.add(prerequisite["name"])
+        validate_platform_commands(prerequisite.get("check"), f"{path_name}.check", check=True)
+        if "hint" in prerequisite:
+            require_nonempty_string(prerequisite["hint"], f"{path_name}.hint")
+        if "minimumVersion" in prerequisite and (
+            not isinstance(prerequisite["minimumVersion"], str)
+            or not VERSION_MINIMUM_PATTERN.fullmatch(prerequisite["minimumVersion"])
+        ):
+            raise runtime.DotAiError(f"Manifest '{path_name}.minimumVersion' must be a numeric version")
     for index, package in enumerate(data["packages"]):
         path_name = f"packages[{index}]"
         if not isinstance(package, dict):
             raise runtime.DotAiError(f"Manifest '{path_name}' must be an object")
         require_nonempty_string(package.get("name"), f"{path_name}.name")
-        if package.get("updateGroup", "core") not in ("core", "dependency"):
-            raise runtime.DotAiError(f"Manifest '{path_name}.updateGroup' must be 'core' or 'dependency'")
-        for field in ("check", "install"):
-            if field not in package:
-                raise runtime.DotAiError(f"Manifest '{path_name}.{field}' is required")
-        validate_platform_commands(package["check"], f"{path_name}.check", check=True)
-        for field in ("install", "update", "configure"):
+        if managed_prerequisite(package):
+            raise runtime.DotAiError(f"{package['name']} is an external prerequisite, not a managed package")
+        if package.get("managed") is not True:
+            raise runtime.DotAiError(f"Manifest '{path_name}.managed' must explicitly be true; review ownership before granting management")
+        validate_enabled(package, path_name)
+        if "updateGroup" in package:
+            raise runtime.DotAiError(f"Manifest '{path_name}.updateGroup' is obsolete; use checks-only prerequisites")
+        if "recipe" in package:
+            require_nonempty_string(package["recipe"], f"{path_name}.recipe")
+        elif "check" not in package or "install" not in package:
+            raise runtime.DotAiError(f"Manifest '{path_name}' requires a recipe or custom check and install commands")
+        if "check" in package:
+            validate_platform_commands(package["check"], f"{path_name}.check", check=True)
+        for field in ("install", "update", "configure", "uninstall", "pinInstall"):
             if field in package:
                 validate_platform_commands(package[field], f"{path_name}.{field}")
-        minimum_version = package.get("minimumVersion")
-        if "minimumVersion" in package and (
-            not isinstance(minimum_version, str) or not VERSION_MINIMUM_PATTERN.fullmatch(minimum_version)
-        ):
-            raise runtime.DotAiError("Manifest package 'minimumVersion' must be a major.minor or major.minor.patch version")
+        for field in ("minimumVersion", "version"):
+            if field in package and (
+                not isinstance(package[field], str)
+                or (package[field] != "latest" or field == "minimumVersion")
+                and not VERSION_MINIMUM_PATTERN.fullmatch(package[field])
+            ):
+                raise runtime.DotAiError(f"Manifest '{path_name}.{field}' must be a numeric version" + (" or latest" if field == "version" else ""))
+        if "updatePolicy" in package and package["updatePolicy"] not in ("latest", "pinned"):
+            raise runtime.DotAiError(f"Manifest '{path_name}.updatePolicy' must be latest or pinned")
+        if "provides" in package:
+            if not isinstance(package["provides"], list) or any(not isinstance(name, str) or not name for name in package["provides"]):
+                raise runtime.DotAiError(f"Manifest '{path_name}.provides' must be an array of names")
     for index, skill in enumerate(data["skills"]):
         path_name = f"skills[{index}]"
         if not isinstance(skill, dict):
             raise runtime.DotAiError(f"Manifest '{path_name}' must be an object")
+        validate_enabled(skill, path_name)
+        if "updatePolicy" in skill and skill["updatePolicy"] not in ("latest", "pinned"):
+            raise runtime.DotAiError(f"Manifest '{path_name}.updatePolicy' must be latest or pinned")
+        for field in ("revision", "installerVersion"):
+            if field in skill:
+                require_nonempty_string(skill[field], f"{path_name}.{field}")
         require_nonempty_string(skill.get("source"), f"{path_name}.source")
         if "agent" in skill and not isinstance(skill["agent"], str):
             raise runtime.DotAiError(f"Manifest '{path_name}.agent' must be a string")
@@ -291,12 +402,14 @@ def validate_manifest(data: Any, *, allow_legacy_routing: bool = False) -> dict[
         path_name = f"marketplaces[{index}]"
         if not isinstance(marketplace, dict):
             raise runtime.DotAiError(f"Manifest '{path_name}' must be an object")
+        validate_enabled(marketplace, path_name)
         for field in ("name", "source"):
             require_nonempty_string(marketplace.get(field), f"{path_name}.{field}")
     for index, plugin in enumerate(data["plugins"]):
         path_name = f"plugins[{index}]"
         if not isinstance(plugin, dict):
             raise runtime.DotAiError(f"Manifest '{path_name}' must be an object")
+        validate_enabled(plugin, path_name)
         if not isinstance(plugin.get("id"), str) or not PLUGIN_ID.fullmatch(plugin["id"]):
             raise runtime.DotAiError(f"Manifest '{path_name}.id' must be a plugin@marketplace ID")
         if "scope" in plugin and plugin["scope"] not in ("user", "project"):
@@ -339,18 +452,22 @@ def load_json_object(path: Path) -> dict[str, Any]:
     return value
 
 
+def recommended_skills() -> list[dict[str, Any]]:
+    data = load_json_object(SKILL_RECOMMENDATIONS)
+    skills = data.get("skills")
+    candidate = {
+        "version": 2, "packages": [], "skills": skills, "marketplaces": [], "plugins": [],
+        "mcp": {"target": "~/.omp/agent/mcp.json", "servers": {}},
+    }
+    validate_manifest(candidate)
+    for index, skill in enumerate(skills):
+        if not skill.get("skills") or "*" in skill["skills"] or any(not name for name in skill["skills"]):
+            raise runtime.DotAiError(f"Recommended skills[{index}] must select named skills explicitly")
+    return skills
+
+
 def manifest_diff(before: dict[str, Any], after: dict[str, Any], path: Path) -> str:
-    old = json.dumps(before, indent=2).splitlines()
-    new = json.dumps(after, indent=2).splitlines()
-    return "\n".join(
-        difflib.unified_diff(
-            old,
-            new,
-            fromfile=str(path),
-            tofile=f"{path} (proposed)",
-            lineterm="",
-        )
-    )
+    return terminal.describe_changes(before, after, path)
 
 
 def backup_manifest(path: Path) -> Path:
@@ -368,12 +485,15 @@ def backup_manifest(path: Path) -> Path:
 
 
 def write_manifest(
-    path: Path, manifest: dict[str, Any], *, backup: bool = False
+    path: Path, manifest: dict[str, Any], *, backup: bool = False,
+    allow_legacy_routing: bool = False, exclusive: bool = False,
 ) -> Path | None:
     # The loader represents unconfigured routing as {}; persist its schema form.
     if manifest.get("ompRouting") == {}:
         manifest = {**manifest, "ompRouting": None}
-    validate_manifest(manifest)
+    validate_manifest(manifest, allow_legacy_routing=allow_legacy_routing)
+    if exclusive and path.exists():
+        raise FileExistsError(f"Refusing to overwrite manifest destination: {path}")
     payload = json.dumps(manifest, indent=2) + "\n"
     backup_path = backup_manifest(path) if backup else None
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -382,7 +502,11 @@ def write_manifest(
         with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=path.parent, delete=False) as handle:
             temp_path = Path(handle.name)
             handle.write(payload)
-        os.replace(temp_path, path)
+        if exclusive:
+            os.link(temp_path, path)
+            temp_path.unlink()
+        else:
+            os.replace(temp_path, path)
     except Exception:
         if temp_path is not None:
             temp_path.unlink(missing_ok=True)

@@ -6,6 +6,8 @@ from pathlib import Path
 from typing import Any
 from . import mcp as mcp_config
 from . import omp as omp_config
+from . import manifest as manifests
+from . import prerequisites
 from . import packages as package_manager
 from . import runtime
 from . import skills as skill_manager
@@ -19,14 +21,23 @@ def reconcile(
     runner: runtime.Runner,
     mode: str,
     force: bool = False,
-    include_dependencies: bool = False,
     managed_skills: list[dict[str, Any]] | None = None,
     update_skills: bool = False,
     refresh_sources: set[str] | None = None,
     recommended_only: bool = False,
 ) -> int:
+    try:
+        manifests.validate_manifest(manifest)
+    except runtime.DotAiError as exc:
+        runner.failures.append(str(exc))
+        print(f"{terminal.badge('FAIL')} {exc}")
+        return 1
+    if not prerequisites.preflight(manifest, runner, mode):
+        return 1
     if mode != "sync":
-        package_manager.reconcile_packages(manifest, runner, mode, force, include_dependencies)
+        package_manager.reconcile_packages(manifest, runner, mode, force)
+        if runner.failures:
+            return 1
     omp_config.reconcile_omp_extensions(manifest, runner)
     skill_manager.reconcile_skills(
         manifest, runner, update_skills=force or update_skills, refresh_sources=refresh_sources,

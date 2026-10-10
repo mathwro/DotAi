@@ -1,0 +1,10 @@
+{
+  "skills": [
+    {"source": "DietrichGebert/ponytail", "agent": "universal", "skills": ["ponytail", "ponytail-review"], "checkSkills": ["ponytail", "ponytail-review"]},
+    {"source": "obra/superpowers", "agent": "universal", "skills": ["test-driven-development", "verification-before-completion", "receiving-code-review", "writing-skills"], "checkSkills": ["test-driven-development", "verification-before-completion", "receiving-code-review", "writing-skills"]},
+    {"source": "mattpocock/skills", "agent": "universal", "skills": ["grilling", "writing-for-agents"], "checkSkills": ["grilling", "writing-for-agents"]},
+    {"source": "mathwro/Skills", "agent": "universal", "skills": ["choosing-branch-structure", "commit-and-document"], "checkSkills": ["choosing-branch-structure", "commit-and-document"]},
+    {"source": "emilkowalski/skills", "agent": "universal", "skills": ["emil-design-eng"], "checkSkills": ["emil-design-eng"]},
+    {"source": "vercel-labs/agent-skills", "agent": "universal", "skills": ["web-design-guidelines"], "checkSkills": ["web-design-guidelines"]}
+  ]
+}

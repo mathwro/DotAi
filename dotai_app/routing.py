@@ -250,6 +250,7 @@ def configure_omp_routing(
     available = available_omp_models(runner)
     if available is None:
         print(f"{terminal.badge('FAIL')} OMP routing: unable to read OMP model catalog")
+        print("  Next step: open OMP, authenticate a supported provider, and retry with --verbose.")
         return 1
 
     providers = detected_routing_providers(recommendations, available)
@@ -259,7 +260,8 @@ def configure_omp_routing(
         recommendations, providers, primary, available
     )
     if unavailable:
-        print(f"{terminal.badge('FAIL')} OMP routing: unavailable managed roles: {', '.join(unavailable)}")
+        print(terminal.redact(f"{terminal.badge('FAIL')} OMP routing: unavailable managed roles: {', '.join(unavailable)}"))
+        print("  Next step: authenticate a provider with models for these roles before applying routing.")
         return 1
 
     intent = build_omp_routing_intent(
@@ -281,6 +283,7 @@ def configure_omp_routing(
         for key in record_keys
     ) or any(current[key] is None for key in scalar_values):
         print(f"{terminal.badge('FAIL')} OMP routing: unable to read required OMP configuration")
+        print("  Next step: check OMP configuration access and retry with --verbose; nothing was changed.")
         return 1
 
     updated = dict(manifest)
@@ -306,23 +309,21 @@ def configure_omp_routing(
             writes.append((key, serialized))
 
     print(f"{terminal.heading('OMP routing:')}")
-    print(f"  discovered providers: {', '.join(providers)}")
-    print(f"  interactive primary: {primary}")
-    print(
-        "  resolved role primaries: "
-        + json.dumps(primaries, separators=(",", ":"))
-    )
-    print(
-        "  fallback chains: "
-        + json.dumps(fallbacks, separators=(",", ":"))
-    )
+    print(terminal.redact(f"  discovered providers: {', '.join(providers)}"))
+    print(terminal.redact(f"  interactive primary: {primary}"))
+    print("  resolved role primaries:")
+    for role, model in primaries.items():
+        print(terminal.redact(f"    {role}: {model}"))
+    print("  fallback chains:")
+    for role, models in fallbacks.items():
+        print(terminal.redact(f"    {role}: {' -> '.join(models) or 'none'}"))
     print("  manifest changes:")
-    diff = manifests.manifest_diff(manifest, updated, path)
+    diff = terminal.describe_changes(manifest, updated, path)
     print(diff or "    none")
-    print("  pending OMP commands:")
+    print("  proposed OMP configuration changes (unmanaged settings preserved):")
     if writes:
-        for key, value in writes:
-            print(f"    omp config set {key} {value}")
+        for key, _ in writes:
+            print(terminal.redact(f"    Would set {key} to the resolved routing policy."))
     else:
         print("    none")
 
@@ -333,7 +334,7 @@ def configure_omp_routing(
     manifest_changed = manifest != updated
     if manifest_changed:
         backup = manifests.write_manifest(path, updated, backup=True)
-        print(f"{terminal.badge('OK')} Manifest backup written to {backup}")
+        print(terminal.redact(f"{terminal.badge('OK')} Manifest backup written to {backup}"))
 
     failures_before = len(runner.failures)
     for key, value in writes:
