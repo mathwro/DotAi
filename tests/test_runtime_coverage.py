@@ -303,16 +303,22 @@ class RuntimeCoverageTests(unittest.TestCase):
         self.assertEqual(runner.failures, [])
 
     def test_package_version_unicode_read_error_is_unhealthy(self) -> None:
-        command = self.python("import sys; sys.stdout.buffer.write(b'\\xff')")
-        runner = runtime.Runner(self.platform)
-        # Pin the decoding boundary only; the child and invalid bytes are real.
-        real_run = subprocess.run
-
-        def decode_as_utf8(*args, **kwargs):
-            return real_run(*args, **kwargs, encoding="utf-8")
-
-        with mock.patch.object(packages.subprocess, "run", side_effect=decode_as_utf8):
-            self.assertEqual(packages.package_version_check({"minimumVersion": "2.0"}, runner, command), (False, "not found"))
+        for stream in ("stdout", "stderr"):
+            with self.subTest(stream=stream):
+                command = self.python(f"import sys; sys.{stream}.buffer.write(b'tool 2.0.0\\xff')")
+                script = (
+                    "import json\n"
+                    "from dotai_app import packages, runtime\n"
+                    f"runner = runtime.Runner({self.platform!r})\n"
+                    f"result = packages.package_version_check({{'minimumVersion': '2.0'}}, runner, {command!r})\n"
+                    "print(json.dumps(result))\n"
+                )
+                # A fresh process captures Windows subprocess reader-thread errors
+                # that cannot be caught by the probe's caller or redirect_stderr.
+                result = subprocess.run(self.python(script), cwd=ROOT, capture_output=True, text=True, check=False)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(result.stderr, "")
+                self.assertIs(json.loads(result.stdout)[0], False)
 
     def test_reconciliation_failure_never_overwrites_previous_success_state(self) -> None:
         for failure in ("nonzero", "missing", "verification", "unsupported"):
