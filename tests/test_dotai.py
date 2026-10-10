@@ -149,14 +149,12 @@ lock = json.loads(lock_path.read_text()) if lock_path.exists() else {"version": 
 for row in rows:
     folder = pathlib.Path(row["path"])
     folder.mkdir(parents=True, exist_ok=True)
-    (folder / "SKILL.md").write_text(row["content"])
+    (folder / "SKILL.md").write_bytes(row["content"].encode("utf-8"))
     lock["skills"][row["name"]] = row["owner"]
 lock_path.parent.mkdir(parents=True, exist_ok=True)
 lock_path.write_text(json.dumps(lock))
-pathlib.Path(sys.argv[3]).write_text(sys.argv[4])
 """
-        return [sys.executable, "-c", script, json.dumps(payload), str(owner_path),
-                str(runtime.home_dir() / "fixture-installed-command.json"), json.dumps(command)]
+        return [sys.executable, "-c", script, json.dumps(payload), str(owner_path)]
 
     def adopt_mcp_fixture(self, manifest: dict, target: Path) -> None:
         previous = copy.deepcopy(manifest)
@@ -191,7 +189,7 @@ pathlib.Path(sys.argv[3]).write_text(sys.argv[4])
         lock["skills"][folder.name] = self.github_skill_lock_entry(source, digest, folder.name)
         lock_path.parent.mkdir(parents=True, exist_ok=True)
         lock_path.write_text(json.dumps(lock), encoding="utf-8")
-        self.resolve_skill_fixture(source, {folder.name: (folder / "SKILL.md").read_text()})
+        self.resolve_skill_fixture(source, {folder.name: (folder / "SKILL.md").read_bytes().decode("utf-8")})
         self.fixture_records.append({"name": folder.name, "path": str(folder.resolve()), "scope": "global",
                                      "agents": ["Universal"], "source": source, "sourceType": "github",
                                      "sourceUrl": "https://github.com/" + source})
@@ -2137,7 +2135,7 @@ pathlib.Path(sys.argv[3]).write_text(sys.argv[4])
             home = Path(directory)
             target = home / ".agents" / "skills" / "alpha" / "SKILL.md"
             target.parent.mkdir(parents=True)
-            target.write_text("# Alpha\n", encoding="utf-8")
+            target.write_bytes(b"# Alpha\n")
             cases = [
                 ("owner/skills", {
                     "source": "owner/skills", "sourceType": "gitlab",
@@ -2244,7 +2242,7 @@ pathlib.Path(sys.argv[3]).write_text(sys.argv[4])
             home = Path(directory).resolve()
             target = home / ".agents" / "skills" / "alpha" / "SKILL.md"
             target.parent.mkdir(parents=True)
-            target.write_text("# Alpha\n", encoding="utf-8")
+            target.write_bytes(b"# Alpha\n")
             manifest_path = home / "stack.json"
             manifest = self.minimal_manifest(str(home / "mcp.json"))
             manifest["mcp"]["servers"] = {}
@@ -2259,7 +2257,7 @@ pathlib.Path(sys.argv[3]).write_text(sys.argv[4])
                 self.assertEqual(reconciliation.reconcile(
                     manifest, manifest_path, runtime.Runner("ubuntu"), "install", force=True,
                 ), 0, plan.getvalue())
-            self.assertEqual(target.read_text(), "# Refreshed Alpha\n")
+            self.assertEqual(target.read_bytes(), b"# Refreshed Alpha\n")
 
     def test_sync_installs_skills_when_any_required_skill_is_missing(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -2273,15 +2271,15 @@ pathlib.Path(sys.argv[3]).write_text(sys.argv[4])
             (home / "stack.json").write_text(json.dumps(manifest))
             target = home / ".agents" / "skills" / "alpha" / "SKILL.md"
             target.parent.mkdir(parents=True)
-            target.write_text("# alpha\n")
+            target.write_bytes(b"# alpha\n")
             with mock.patch.dict(os.environ, {"DOTAI_HOME": str(home), "XDG_STATE_HOME": str(home / "xdg")}):
                 self.own_skill_fixture(target.parent, "owner/skills")
                 self.resolve_skill_fixture("owner/skills", {"alpha": "# alpha\n", "beta": "# beta\n"})
                 with contextlib.redirect_stdout(io.StringIO()):
                     result = reconciliation.reconcile(manifest, home / "stack.json", runtime.Runner("linux"), "sync")
             self.assertEqual(result, 0)
-            self.assertEqual(target.read_text(), "# alpha\n")
-            self.assertEqual((target.parent.parent / "beta/SKILL.md").read_text(), "# beta\n")
+            self.assertEqual(target.read_bytes(), b"# alpha\n")
+            self.assertEqual((target.parent.parent / "beta/SKILL.md").read_bytes(), b"# beta\n")
             self.assertEqual(json.loads((home / "stack.lock.json").read_text())["skills"]["owner/skills|universal"]["installerVersion"], "1.7.1")
 
 
@@ -2291,7 +2289,7 @@ pathlib.Path(sys.argv[3]).write_text(sys.argv[4])
             home = Path(directory)
             target = home / ".agents" / "skills" / "alpha" / "SKILL.md"
             target.parent.mkdir(parents=True)
-            target.write_text("# alpha\n", encoding="utf-8")
+            target.write_bytes(b"# alpha\n")
             (home / ".agents" / ".skill-lock.json").write_text(json.dumps({
                 "version": 3, "skills": {"alpha": self.github_skill_lock_entry(
                     "owner/skills", "51937797c336f38c66ecfb342d9cc37ac2c56a74",
@@ -2319,7 +2317,7 @@ pathlib.Path(sys.argv[3]).write_text(sys.argv[4])
                     except SystemExit as exc:
                         result = exc.code
                 self.assertEqual(result, 0)
-            self.assertEqual(target.read_text(), "# refreshed alpha\n")
+            self.assertEqual(target.read_bytes(), b"# refreshed alpha\n")
             self.assertEqual(json.loads(path.read_text()), manifest)
 
 
