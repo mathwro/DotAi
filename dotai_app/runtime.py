@@ -91,6 +91,7 @@ class Runner:
         self.verbose = verbose
         self.failures: list[str] = []
         self.env = os.environ.copy()
+        self.secrets: set[str] = set()
         candidates = [
             home_dir() / ".local" / "bin",
             home_dir() / ".cargo" / "bin",
@@ -112,11 +113,46 @@ class Runner:
             return ["/bin/sh", "-c", text]
         return [self._format(str(part)) for part in command]
 
-    def display_command(self, command: str | list[str]) -> str:
-        return command if isinstance(command, str) else " ".join(str(part) for part in command)
+    def say(self, text: str) -> None:
+        terminal.say(text, secrets=self.secrets | set(terminal.credential_values(self.env)))
 
-    def run(self, command: str | list[str], label: str, *, capture: bool = False, required: bool = True) -> subprocess.CompletedProcess[str] | None:
-        print(f"{terminal.badge('RUN')} {label}: {self.display_command(command)}")
+    def display_command(self, command: str | list[str]) -> str:
+        values = terminal.credential_values(self.env) + terminal.credential_values(command)
+        if isinstance(command, str):
+            return terminal.diagnostic(command, values)
+        return terminal.diagnostic(" ".join(terminal.omit_structured(str(part)) for part in command), values)
+
+    def _diagnostics(self, result: subprocess.CompletedProcess[str]) -> None:
+        for stream in ("stdout", "stderr"):
+            detail = terminal.diagnostic(getattr(result, stream) or "", self.secrets)
+            if detail:
+                self.say(f"  {stream}: {detail}")
+
+    def _failure(self, label: str, detail: str, required: bool) -> None:
+        detail = terminal.redact(detail, self.secrets)
+        failure = terminal.redact(f"{label}: {detail}", self.secrets)
+        if required:
+            self.failures.append(failure)
+        self.say(f"{terminal.badge('FAIL')} {failure}")
+        lowered = detail.lower()
+        if "permission" in lowered or "access denied" in lowered:
+            hint = "Check the target's permissions and the tool's required privileges, then retry."
+        elif "not found" in lowered or "no such file" in lowered:
+            hint = "Check that the tool is installed and available on PATH, then retry."
+        elif any(word in lowered for word in ("unauthorized", "authentication", "forbidden")):
+            hint = "Authenticate with the upstream tool, then retry."
+        else:
+            hint = "Review the cause above and retry with --verbose for sanitized diagnostics."
+        self.say(f"  Next step: {hint}")
+
+    def run(self, command: str | list[str], label: str, *, capture: bool = False, required: bool = True, interactive: bool = False) -> subprocess.CompletedProcess[str] | None:
+        if interactive and capture:
+            raise ValueError("Interactive commands cannot capture protocol output")
+        self.secrets.update(terminal.credential_values(self.env))
+        self.secrets.update(terminal.credential_values(command))
+        self.say(f"{terminal.badge('RUN')} {label}" + (" (dry run)" if self.dry_run else ""))
+        if self.verbose:
+            self.say(f"  command: {self.display_command(command)}")
         if self.dry_run:
             return None
         try:
@@ -124,24 +160,20 @@ class Runner:
                 self.argv(command),
                 env=self.env,
                 text=True,
-                stdout=subprocess.PIPE if capture else None,
-                stderr=subprocess.STDOUT if capture else None,
+                stdin=None if interactive else subprocess.DEVNULL,
+                stdout=None if interactive else subprocess.PIPE,
+                stderr=None if interactive else subprocess.PIPE,
                 check=False,
             )
         except OSError as exc:
-            if required:
-                self.failures.append(f"{label}: {exc}")
-            print(f"{terminal.badge('FAIL')} {label}: {exc}")
+            self._failure(label, str(exc), required)
             return None
         if result.returncode != 0:
-            detail = f" (exit {result.returncode})"
-            if capture and result.stdout:
-                detail += f": {result.stdout.strip()}"
-            if required:
-                self.failures.append(label + detail)
-            print(f"{terminal.badge('FAIL')} {label}{detail}")
-        elif self.verbose and capture and result.stdout:
-            print(result.stdout.rstrip())
+            raw_cause = (result.stderr or "").strip() or (result.stdout or "").strip() or "No diagnostic output was captured."
+            cause = terminal.diagnostic(raw_cause, self.secrets, limit=400, lines=3)
+            self._failure(label, f"exit {result.returncode}: {cause}", required)
+        if self.verbose and not interactive:
+            self._diagnostics(result)
         if self.platform == "windows":
             self._refresh_windows_path()
         return result
@@ -175,12 +207,19 @@ class Runner:
             return False
 
     def output(self, command: str | list[str]) -> str:
+        self.secrets.update(terminal.credential_values(self.env))
+        self.secrets.update(terminal.credential_values(command))
         try:
             result = subprocess.run(
-                self.argv(command), env=self.env, text=True, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, check=False
+                self.argv(command), env=self.env, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False
             )
+            if self.verbose:
+                self.say(f"  probe: {self.display_command(command)} (exit {result.returncode})")
+                self._diagnostics(result)
             return result.stdout.strip() if result.returncode == 0 else ""
-        except OSError:
+        except OSError as exc:
+            if self.verbose:
+                self.say(f"  probe: {self.display_command(command)}: {terminal.diagnostic(str(exc), self.secrets)}")
             return ""
 
 

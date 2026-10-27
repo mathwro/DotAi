@@ -66,17 +66,17 @@ def reconcile_packages(
             and package.get("updateGroup", "core") == "dependency"
             and not include_dependencies
         ):
-            print(f"{terminal.badge('OK')} {name}: dependency update skipped (use --include-dependencies)")
+            runner.say(f"{terminal.badge('OK')} {name}: dependency update skipped (use --include-dependencies)")
         elif mode == "install" and installed and not force:
-            print(f"{terminal.badge('OK')} {name}: already installed")
+            runner.say(f"{terminal.badge('OK')} {name}: already installed")
         else:
             operation = "update" if present and (mode == "update" or not installed) else "install"
             steps = runtime.selected(package.get(operation, package.get("install", {})), runner.platform)
             if not steps and operation == "update" and installed:
-                print(f"{terminal.badge('OK')} {name}: no managed update required")
+                runner.say(f"{terminal.badge('OK')} {name}: no managed update required")
             elif not steps:
                 runner.failures.append(f"{name}: no {operation} commands for {runner.platform}")
-                print(f"{terminal.badge('FAIL')} {name}: unsupported platform {runner.platform}")
+                runner.say(f"{terminal.badge('FAIL')} {name}: unsupported platform {runner.platform}")
                 continue
             else:
                 label = f"Check/update {name}" if operation == "update" else f"Install {name}"
@@ -85,4 +85,4 @@ def reconcile_packages(
             runtime.run_steps(runtime.selected(package["configure"], runner.platform), runner, f"Configure {name}")
         if not runner.dry_run and not package_check(package, runner):
             runner.failures.append(f"{name}: verification command failed after reconciliation")
-            print(f"{terminal.badge('FAIL')} {name}: verification failed")
+            runner.say(f"{terminal.badge('FAIL')} {name}: verification failed")

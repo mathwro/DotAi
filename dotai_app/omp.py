@@ -52,19 +52,19 @@ def reconcile_omp_extensions(manifest: dict[str, Any], runner: runtime.Runner) -
     current = configured_omp_extensions(runner)
     if current is None:
         if runner.dry_run:
-            print(f"{terminal.badge('RUN')} OMP extensions: configure {', '.join(desired)}")
+            runner.say(f"{terminal.badge('RUN')} OMP extensions: configure {', '.join(desired)}")
             return
         runner.failures.append("OMP extensions: unable to read global OMP configuration")
-        print(f"{terminal.badge('FAIL')} OMP extensions: unable to read global OMP configuration")
+        runner.say(f"{terminal.badge('FAIL')} OMP extensions: unable to read global OMP configuration")
         return
     known = {extension_identity(item) for item in current}
     additions = [item for item in desired if extension_identity(item) not in known]
     if not additions:
-        print(f"{terminal.badge('OK')} OMP extensions: all managed extensions are configured")
+        runner.say(f"{terminal.badge('OK')} OMP extensions: all managed extensions are configured")
         return
     merged = [*current, *additions]
     if runner.dry_run:
-        print(f"{terminal.badge('RUN')} OMP extensions: add {', '.join(additions)}")
+        runner.say(f"{terminal.badge('RUN')} OMP extensions: add {', '.join(additions)}")
         return
     runner.run(
         ["omp", "config", "set", "extensions", json.dumps(merged, separators=(",", ":"))],

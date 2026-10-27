@@ -74,7 +74,7 @@ Routing is never enabled automatically by `install`, `update`, or `sync`. Until 
 1. Run `./dotai.py install` (or `python dotai.py install` on Windows).
 2. Run `omp` to open OMP for the first time.
 3. Inside OMP, use `/login` to authenticate GitHub Copilot, OpenAI Codex, Anthropic, or any combination of them, then return to your shell. See [OMP's provider authentication guide](https://github.com/can1357/oh-my-pi/blob/main/packages/ai/README.md#oauth-providers) for supported login flows. Authentication belongs to OMP, not to `stack.json`.
-4. Only after those prerequisites, preview the detected providers, resolved roles, manifest diff, and pending OMP commands:
+4. Only after those prerequisites, preview the detected providers, resolved roles, changed routing-intent fields, and pending OMP setting names (without dumping configuration values):
 
    ```sh
    ./dotai.py configure omp-routing --dry-run

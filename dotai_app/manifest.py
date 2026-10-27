@@ -6,7 +6,6 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 import datetime as dt
-import difflib
 import json
 import os
 import re
@@ -63,7 +62,7 @@ def initialize_manifest(path: Path, *, allow_custom: bool = False) -> bool:
     except Exception:
         path.unlink(missing_ok=True)
         raise
-    print(f"{terminal.badge('OK')} Initialized {path} from {EXAMPLE_MANIFEST.name}")
+    terminal.say(f"{terminal.badge('OK')} Initialized {path} from {EXAMPLE_MANIFEST.name}")
     return True
 
 
@@ -337,20 +336,6 @@ def load_json_object(path: Path) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise runtime.DotAiError(f"Refusing to modify non-object JSON at {path}")
     return value
-
-
-def manifest_diff(before: dict[str, Any], after: dict[str, Any], path: Path) -> str:
-    old = json.dumps(before, indent=2).splitlines()
-    new = json.dumps(after, indent=2).splitlines()
-    return "\n".join(
-        difflib.unified_diff(
-            old,
-            new,
-            fromfile=str(path),
-            tofile=f"{path} (proposed)",
-            lineterm="",
-        )
-    )
 
 
 def backup_manifest(path: Path) -> Path:

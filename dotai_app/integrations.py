@@ -108,5 +108,5 @@ def add_integration(args: argparse.Namespace, manifest: dict[str, Any], path: Pa
     else:
         raise runtime.DotAiError(f"Unsupported integration kind: {kind}")
     manifests.write_manifest(path, manifest)
-    print(f"{terminal.badge('OK')} Added {kind} to {path}. Run 'dotai sync' or 'dotai install' to apply it.")
+    terminal.say(f"{terminal.badge('OK')} Added {kind} to {path}. Run 'dotai sync' or 'dotai install' to apply it.")
     return 0

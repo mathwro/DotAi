@@ -192,10 +192,10 @@ def sync_mcp(manifest: dict[str, Any], runner: runtime.Runner) -> bool:
     if conflicts:
         detail = f"MCP servers unavailable or disabled: {', '.join(conflicts)}; resolve the provider configuration manually"
         runner.failures.append(detail)
-        print(f"{terminal.badge('DRIFT')} {detail}")
+        runner.say(f"{terminal.badge('DRIFT')} {detail}")
         return False
     if changes == 0:
-        print(f"{terminal.badge('OK')} MCP: all managed servers are available through discovered provider configs")
+        runner.say(f"{terminal.badge('OK')} MCP: all managed servers are available through discovered provider configs")
         return False
     merged = dict(existing)
     merged.setdefault(
@@ -203,18 +203,18 @@ def sync_mcp(manifest: dict[str, Any], runner: runtime.Runner) -> bool:
     )
     merged["mcpServers"] = servers
     if runner.dry_run:
-        print(f"{terminal.badge('RUN')} MCP: reconcile {changes} unavailable managed servers at {target}")
+        runner.say(f"{terminal.badge('RUN')} MCP: reconcile {changes} unavailable managed servers at {target}")
         return True
     target.parent.mkdir(parents=True, exist_ok=True)
     if target.exists():
         backup = manifests.backup_manifest(target)
-        print(f"{terminal.badge('OK')} MCP: backup written to {backup}")
+        runner.say(f"{terminal.badge('OK')} MCP: backup written to {backup}")
     payload = json.dumps(merged, indent=2, sort_keys=True) + "\n"
     with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=target.parent, delete=False) as handle:
         handle.write(payload)
         temp_path = Path(handle.name)
     os.replace(temp_path, target)
-    print(f"{terminal.badge('OK')} MCP: synchronized {target}")
+    runner.say(f"{terminal.badge('OK')} MCP: synchronized {target}")
     return True
 
 

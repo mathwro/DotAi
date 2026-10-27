@@ -249,7 +249,8 @@ def configure_omp_routing(
     recommendations = load_routing_recommendations()
     available = available_omp_models(runner)
     if available is None:
-        print(f"{terminal.badge('FAIL')} OMP routing: unable to read OMP model catalog")
+        runner.say(f"{terminal.badge('FAIL')} OMP routing: unable to read OMP model catalog")
+        runner.say("  Next step: open OMP, authenticate a supported provider, and retry with --verbose.")
         return 1
 
     providers = detected_routing_providers(recommendations, available)
@@ -259,7 +260,8 @@ def configure_omp_routing(
         recommendations, providers, primary, available
     )
     if unavailable:
-        print(f"{terminal.badge('FAIL')} OMP routing: unavailable managed roles: {', '.join(unavailable)}")
+        runner.say(f"{terminal.badge('FAIL')} OMP routing: unavailable managed roles: {', '.join(unavailable)}")
+        runner.say("  Next step: authenticate a provider with models for these roles before applying routing.")
         return 1
 
     intent = build_omp_routing_intent(
@@ -280,7 +282,8 @@ def configure_omp_routing(
         or any(not isinstance(name, str) for name in current[key])
         for key in record_keys
     ) or any(current[key] is None for key in scalar_values):
-        print(f"{terminal.badge('FAIL')} OMP routing: unable to read required OMP configuration")
+        runner.say(f"{terminal.badge('FAIL')} OMP routing: unable to read required OMP configuration")
+        runner.say("  Next step: check OMP configuration access and retry with --verbose; nothing was changed.")
         return 1
 
     updated = dict(manifest)
@@ -305,35 +308,36 @@ def configure_omp_routing(
             serialized = str(value).lower() if isinstance(value, bool) else str(value)
             writes.append((key, serialized))
 
-    print(f"{terminal.heading('OMP routing:')}")
-    print(f"  discovered providers: {', '.join(providers)}")
-    print(f"  interactive primary: {primary}")
-    print(
-        "  resolved role primaries: "
-        + json.dumps(primaries, separators=(",", ":"))
-    )
-    print(
-        "  fallback chains: "
-        + json.dumps(fallbacks, separators=(",", ":"))
-    )
-    print("  manifest changes:")
-    diff = manifests.manifest_diff(manifest, updated, path)
-    print(diff or "    none")
-    print("  pending OMP commands:")
-    if writes:
-        for key, value in writes:
-            print(f"    omp config set {key} {value}")
+    runner.say(f"{terminal.heading('OMP routing:')}")
+    runner.say(f"  discovered providers: {', '.join(providers)}")
+    runner.say(f"  interactive primary: {primary}")
+    runner.say("  resolved role primaries:")
+    for role, model in primaries.items():
+        runner.say(f"    {role}: {model}")
+    runner.say("  fallback chains:")
+    for role, models in fallbacks.items():
+        runner.say(f"    {role}: {' -> '.join(models) or 'none'}")
+    runner.say("  manifest changes:")
+    if manifest != updated:
+        fields = sorted(key for key in routing.keys() | intent.keys() if routing.get(key) != intent.get(key))
+        runner.say(f"    Update ompRouting in {path}: {', '.join(fields)}")
     else:
-        print("    none")
+        runner.say("    none")
+    runner.say("  proposed OMP configuration changes (unmanaged settings preserved):")
+    if writes:
+        for key, _ in writes:
+            runner.say(f"    Set {key} to the resolved routing policy")
+    else:
+        runner.say("    none")
 
     if runner.dry_run:
-        print(f"{terminal.badge('RUN')} Dry run: no manifest or OMP changes applied.")
+        runner.say(f"{terminal.badge('RUN')} Dry run: no manifest or OMP changes applied.")
         return 0
 
     manifest_changed = manifest != updated
     if manifest_changed:
         backup = manifests.write_manifest(path, updated, backup=True)
-        print(f"{terminal.badge('OK')} Manifest backup written to {backup}")
+        runner.say(f"{terminal.badge('OK')} Manifest backup written to {backup}")
 
     failures_before = len(runner.failures)
     for key, value in writes:
@@ -342,7 +346,7 @@ def configure_omp_routing(
             f"Configure OMP routing {key}",
         )
     if not manifest_changed and not writes:
-        print(f"{terminal.badge('OK')} OMP routing: already configured")
+        runner.say(f"{terminal.badge('OK')} OMP routing: already configured")
     return 1 if len(runner.failures) > failures_before else 0
 
 

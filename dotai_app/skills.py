@@ -122,11 +122,11 @@ def reconcile_skills(
     owners = owned if isinstance(owned, dict) else {}
     for skill in manifest["skills"]:
         if recommended_sources is not None and skill["source"] not in recommended_sources:
-            print(f"{terminal.badge('INACTIVE')} Skills from {skill['source']}: preserved; skipped during enforced sync")
+            terminal.say(f"{terminal.badge('INACTIVE')} Skills from {skill['source']}: preserved; skipped during enforced sync")
             continue
         refresh = update_skills or (refresh_sources is not None and skill["source"] in refresh_sources)
         if not refresh and skill_status(skill)[0] and skill_source_owned(skill, owners):
-            print(f"{terminal.badge('OK')} Skills from {skill['source']}: already installed")
+            terminal.say(f"{terminal.badge('OK')} Skills from {skill['source']}: already installed")
             continue
         runner.run(skill_command(skill), f"Reconcile skills from {skill['source']}")
 
@@ -223,16 +223,16 @@ def remove_retired_skills(changes: list[dict[str, Any]], runner: runtime.Runner)
             continue
         if runner.dry_run:
             if "*" in wanted_before:
-                print(f"{terminal.badge('RUN')} Remove retired skills from {before['source']}: installed directories resolved when applied")
+                terminal.say(f"{terminal.badge('RUN')} Remove retired skills from {before['source']}: installed directories resolved when applied")
                 continue
             for name in sorted(names_before - names_after if same_agent else names_before):
-                print(f"{terminal.badge('RUN')} Remove retired {agent} skill directory: {skill_root(before) / name}")
+                terminal.say(f"{terminal.badge('RUN')} Remove retired {agent} skill directory: {skill_root(before) / name}")
             continue
 
         installed = installed_skill_records(agent, runner, before["source"])
         if installed is None:
             runner.failures.append(f"Unable to list installed skills from {before['source']}")
-            print(f"{terminal.badge('FAIL')} Unable to identify installed skills from {before['source']}")
+            terminal.say(f"{terminal.badge('FAIL')} Unable to identify installed skills from {before['source']}")
             continue
         retired = {
             Path(record["path"]).name: record for record in installed
@@ -246,24 +246,24 @@ def remove_retired_skills(changes: list[dict[str, Any]], runner: runtime.Runner)
             # remove command can affect other agents even with an explicit scope.
             folders = [retirement_directory(before, record) for record in retired.values()]
             for folder in folders:
-                print(f"{terminal.badge('RUN')} Remove retired {agent} skill directory: {folder}")
+                terminal.say(f"{terminal.badge('RUN')} Remove retired {agent} skill directory: {folder}")
                 if folder.exists():
                     shutil.rmtree(folder)
         except (OSError, runtime.DotAiError) as exc:
             runner.failures.append(str(exc))
-            print(f"{terminal.badge('FAIL')} {exc}")
+            terminal.say(f"{terminal.badge('FAIL')} {exc}")
             continue
         remaining = installed_skill_records(agent, runner)
         if remaining is None:
             runner.failures.append(f"Unable to verify retired skills from {before['source']}")
-            print(f"{terminal.badge('FAIL')} Unable to verify retired skills from {before['source']}")
+            terminal.say(f"{terminal.badge('FAIL')} Unable to verify retired skills from {before['source']}")
             continue
         leftover = set(retired).intersection(Path(record["path"]).name for record in remaining)
         leftover.update(folder.name for folder in folders if folder.exists() or folder.is_symlink())
         if leftover:
             detail = f"Retired skills still installed for {agent}: {', '.join(sorted(leftover))}"
             runner.failures.append(detail)
-            print(f"{terminal.badge('FAIL')} {detail}")
+            terminal.say(f"{terminal.badge('FAIL')} {detail}")
 
 
 def legacy_skill_sources(manifest: dict[str, Any]) -> list[str]:
@@ -274,8 +274,8 @@ def print_legacy_skill_notice(manifest: dict[str, Any]) -> bool:
     sources = legacy_skill_sources(manifest)
     if not sources:
         return False
-    print(f"{terminal.badge('DRIFT')} Legacy Pi skill targets: {', '.join(sources)}")
-    print("  Run 'dotai fix' to review and migrate them to the OMP universal target.")
+    terminal.say(f"{terminal.badge('DRIFT')} Legacy Pi skill targets: {', '.join(sources)}")
+    terminal.say("  Run 'dotai fix' to review and migrate them to the OMP universal target.")
     return True
 
 
@@ -314,14 +314,14 @@ def legacy_skill_migration(manifest: dict[str, Any]) -> tuple[dict[str, Any], li
 def fix_legacy_skills(manifest: dict[str, Any], path: Path, runner: runtime.Runner) -> int:
     updated, migrated = legacy_skill_migration(manifest)
     if not migrated:
-        print(f"{terminal.badge('OK')} No legacy Pi-targeted skills found in {path}.")
+        terminal.say(f"{terminal.badge('OK')} No legacy Pi-targeted skills found in {path}.")
         return 0
 
-    print(f"{terminal.heading('Proposed skill migration:')}")
-    print(manifests.manifest_diff(manifest, updated, path))
-    print(f"\nMigrates {len(migrated)} skill source(s) from Pi to the OMP universal target.")
+    terminal.say(f"{terminal.heading('Proposed skill migration:')}")
+    runner.say(terminal.describe_skill_changes(manifest["skills"], updated["skills"]))
+    terminal.say(f"\nMigrates {len(migrated)} skill source(s) from Pi to the OMP universal target.")
     if runner.dry_run:
-        print(f"{terminal.badge('RUN')} Dry run: no manifest changes applied.")
+        terminal.say(f"{terminal.badge('RUN')} Dry run: no manifest changes applied.")
         reconcile_skills(updated, runner)
         return 1 if runner.failures else 0
     try:
@@ -329,18 +329,18 @@ def fix_legacy_skills(manifest: dict[str, Any], path: Path, runner: runtime.Runn
     except (EOFError, KeyboardInterrupt):
         answer = ""
     if answer.strip().lower() not in {"y", "yes"}:
-        print(f"{terminal.badge('OK')} No changes applied.")
+        terminal.say(f"{terminal.badge('OK')} No changes applied.")
         return 0
 
     backup = manifests.write_manifest(path, updated, backup=True)
-    print(f"{terminal.badge('OK')} Manifest backup written to {backup}")
+    terminal.say(f"{terminal.badge('OK')} Manifest backup written to {backup}")
     reconcile_skills(updated, runner)
     if runner.failures:
-        print(f"{terminal.styled('Skill migration failed:', 'red', 'bold')}")
+        terminal.say(f"{terminal.styled('Skill migration failed:', 'red', 'bold')}")
         for failure in runner.failures:
-            print(f"  - {failure}")
+            terminal.say(f"  - {failure}")
         return 1
-    print(f"{terminal.styled('Skill migration complete.', 'green', 'bold')}")
+    terminal.say(f"{terminal.styled('Skill migration complete.', 'green', 'bold')}")
     return 0
 
 

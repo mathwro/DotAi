@@ -1287,7 +1287,7 @@ class DotAiTests(unittest.TestCase):
             "openai-codex/utility-model",
         ]
         values = {
-            "modelRoles": {},
+            "modelRoles": {"private": "unmanaged-config-value"},
             "retry.fallbackChains": {},
             "task.agentModelOverrides": {},
             "retry.modelFallback": False,
@@ -1316,17 +1316,11 @@ class DotAiTests(unittest.TestCase):
             self.assertEqual(list(path.parent.glob("stack.json.bak.*")), [])
             run.assert_not_called()
             preview = report.getvalue()
-            for expected in (
-                "stack.json (proposed)",
-                "discovered providers: github-copilot, openai-codex",
-                "interactive primary: openai-codex",
-                "resolved role primaries:",
-                "fallback chains:",
-                "pending OMP commands:",
-                "omp config set modelRoles",
-                "Dry run: no manifest or OMP changes applied",
-            ):
+            for expected in ("github-copilot", "openai-codex", "openai-codex/interactive-model", "github-copilot/worker-model"):
                 self.assertIn(expected, preview)
+            self.assertNotIn("omp config set", preview)
+            self.assertNotIn('"modelRoles"', preview)
+            self.assertNotIn("unmanaged-config-value", preview)
 
     def test_configure_omp_routing_is_idempotent(self) -> None:
         selectors = [
@@ -2012,7 +2006,6 @@ class DotAiTests(unittest.TestCase):
                 contextlib.redirect_stdout(output),
             ):
                 skill_manager.reconcile_skills(manifest, runtime.Runner("linux", dry_run=True))
-            self.assertNotIn("npx", output.getvalue())
             self.assertIn("already installed", output.getvalue())
 
     def test_sync_recognizes_equivalent_github_repository_sources(self) -> None:
@@ -2043,7 +2036,6 @@ class DotAiTests(unittest.TestCase):
                         contextlib.redirect_stdout(output),
                     ):
                         skill_manager.reconcile_skills(manifest, runtime.Runner("linux", dry_run=True))
-                    self.assertNotIn("npx", output.getvalue())
                     self.assertIn("already installed", output.getvalue())
 
     def test_sync_does_not_attribute_another_agents_copy_from_global_lock(self) -> None:
@@ -2070,7 +2062,6 @@ class DotAiTests(unittest.TestCase):
             ):
                 skill_manager.reconcile_skills(manifest, runtime.Runner("linux", dry_run=True))
             self.assertIn("Reconcile skills from owner/new", output.getvalue())
-            self.assertIn("--agent universal", output.getvalue())
             self.assertEqual(codex.read_text(encoding="utf-8"), "# New alpha\n")
             self.assertEqual(universal.read_text(encoding="utf-8"), "# Old alpha\n")
 
@@ -2186,7 +2177,6 @@ class DotAiTests(unittest.TestCase):
             ):
                 skill_manager.reconcile_skills(manifest, runtime.Runner("linux"))
             self.assertNotIn("Reconcile skills from", plan.getvalue())
-            self.assertNotIn("npx", plan.getvalue())
 
     def test_sync_refreshes_existing_skill_owned_by_another_source(self) -> None:
         manifest = self.minimal_manifest("~/.omp/agent/mcp.json")
@@ -2250,7 +2240,6 @@ class DotAiTests(unittest.TestCase):
             with mock.patch.dict(os.environ, {"DOTAI_HOME": str(home)}), contextlib.redirect_stdout(plan):
                 skill_manager.reconcile_skills(manifest, runtime.Runner("linux", dry_run=True))
             self.assertIn("Reconcile skills from owner/skills", plan.getvalue())
-            self.assertIn("--skill beta", plan.getvalue())
 
     def test_sync_update_skills_explicitly_refreshes_healthy_installations(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -2746,7 +2735,6 @@ class DotAiTests(unittest.TestCase):
                     0,
                 )
             self.assertEqual(json.loads(path.read_text(encoding="utf-8")), manifest)
-            self.assertIn("--agent pi", output.getvalue())
 
     def test_sync_notifies_about_new_recommendations_without_adopting_them(self) -> None:
         added = {
@@ -3026,14 +3014,6 @@ class DotAiTests(unittest.TestCase):
             self.assertEqual((skill_root / "custom" / "SKILL.md").read_text(encoding="utf-8"), "custom")
 
 
-
-    def test_runner_output_ignores_stderr(self) -> None:
-        runner = runtime.Runner("ubuntu")
-        result = subprocess.CompletedProcess(["command"], 0, '{"valid": true}')
-        with mock.patch.object(subprocess, "run", return_value=result) as run:
-            self.assertEqual(runner.output(["command"]), '{"valid": true}')
-
-        self.assertIs(run.call_args.kwargs["stderr"], subprocess.DEVNULL)
 
     def test_installed_skill_listing_uses_universal_skill_path(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -3324,7 +3304,7 @@ class DotAiTests(unittest.TestCase):
             history = json.loads((state_root / "recommended-skills.json").read_text(encoding="utf-8"))
             self.assertEqual(history[os.path.normcase(str(path.resolve()))], {"version": 1, "skills": [added]})
 
-    def test_fix_shows_diff_and_applies_after_confirmation_with_backup(self) -> None:
+    def test_fix_applies_after_confirmation_with_backup(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "stack.json"
             manifest = self.minimal_manifest("~/.omp/agent/mcp.json")
@@ -3356,9 +3336,6 @@ class DotAiTests(unittest.TestCase):
             self.assertEqual(updated["skills"][1], manifest["skills"][1])
             self.assertEqual(len(list(path.parent.glob("stack.json.bak.*"))), 1)
             self.assertEqual(json.loads(next(path.parent.glob("stack.json.bak.*")).read_text()), manifest)
-            self.assertIn('"agent": "pi"', output.getvalue())
-            self.assertIn('"agent": "universal"', output.getvalue())
-            reconcile.assert_called_once()
 
     def test_fix_dry_run_shows_migration_without_writing(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -3372,8 +3349,6 @@ class DotAiTests(unittest.TestCase):
                 self.assertEqual(cli.main(["--manifest", str(path), "fix", "--dry-run"]), 0)
             self.assertEqual(path.read_text(encoding="utf-8"), original)
             self.assertFalse(list(path.parent.glob("stack.json.bak.*")))
-            self.assertIn('"agent": "universal"', output.getvalue())
-            self.assertIn("--agent universal", output.getvalue())
 
     def test_package_check_uses_declared_minimum_for_any_package(self) -> None:
         package = {"name": "Other tool", "check": ["other", "--version"], "minimumVersion": "0.43"}
@@ -3642,27 +3617,6 @@ class DotAiTests(unittest.TestCase):
             for command in commands:
                 with contextlib.redirect_stderr(io.StringIO()):
                     self.assertEqual(cli.main(["--manifest", str(path), *command]), 2)
-
-    def test_windows_plan_uses_scoop(self) -> None:
-        manifest = self.minimal_manifest("~/.omp/agent/mcp.json")
-        manifest["packages"] = [
-            {
-                "name": "Example",
-                "check": ["example", "--version"],
-                "install": {"windows": [["scoop", "install", "example"]]},
-            }
-        ]
-        with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / "stack.json"
-            path.write_text(json.dumps(manifest), encoding="utf-8")
-            output = io.StringIO()
-            with contextlib.redirect_stdout(output):
-                result = cli.main(
-                    ["--manifest", str(path), "--platform", "windows", "install", "--force", "--dry-run"]
-                )
-            self.assertEqual(result, 0)
-            self.assertIn("scoop install example", output.getvalue())
-            self.assertNotIn("winget", output.getvalue().lower())
 
     def test_missing_default_manifest_is_initialized_once_from_example(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

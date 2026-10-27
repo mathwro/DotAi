@@ -65,8 +65,8 @@ class RuntimeCoverageTests(unittest.TestCase):
                     result = runner.run(command, "failing tool", capture=True, required=required)
                 self.assertEqual(result.returncode, 7)
                 self.assertIn("stdout-detail", result.stdout)
-                self.assertIn("stderr-detail", result.stdout)
-                self.assertIn("stdout-detail", report.getvalue())
+                self.assertIn("stderr-detail", result.stderr)
+                self.assertNotIn("stderr-detail", result.stdout)
                 self.assertIn("stderr-detail", report.getvalue())
                 self.assertEqual(len(runner.failures), int(required))
                 if required:
