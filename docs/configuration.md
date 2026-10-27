@@ -91,15 +91,19 @@ In PowerShell, substitute `python dotai.py` for `./dotai.py`; `omp` is the same 
 
 The `default` and `slow` interactive roles prefer the selected premium primary, then the other available premium provider, then Copilot. The `task` and `smol` worker roles prefer Copilot, then Anthropic, then Codex. When no premium provider is available, Copilot serves as the primary.
 
-The tracked `routing-recommendations.json` selects the first available model in each role's ordered list. Recommendations refreshed on September 30, 2026:
+The tracked `routing-recommendations.json` selects the first available model in each role's ordered list. Recommendations refreshed on October 27, 2026:
 
 | Provider | `default` | `task` | `smol` | `slow` |
 | --- | --- | --- | --- | --- |
 | GitHub Copilot | GPT-6.1 Sol | GPT-6.1 Sol | GPT-6 Luna | GPT-6 Astra, high effort |
 | OpenAI Codex | GPT-6.1 Sol | GPT-6.1 Sol | GPT-6 Luna | GPT-6 Astra, high effort |
-| Anthropic | Claude Opus 5.5 | Claude Sonnet 5.5 | Claude Haiku 4.5 | Claude Opus 5.5, high effort |
+| Anthropic | Claude Opus 5.5 | Claude Sonnet 5.5 | Claude Haiku 5.5 | Claude Opus 5.5, high effort |
 
-[GPT-6.1 Sol](https://openai.com/index/introducing-gpt-6-1-sol/) offers near-Astra coding capability at lower API cost; Astra remains the recommendation for the most demanding reasoning. [Opus 5.5](https://www.anthropic.com/claude-opus-5-5) replaces Opus 5 for interactive work and precedes Fable 5.1 for `slow`; [Sonnet 5.5](https://www.anthropic.com/claude-sonnet-5-5) replaces Sonnet 5 for workers. Haiku 5.5 is not yet released, so the small Anthropic role remains on Haiku 4.5. These are curated role choices, not runtime price comparisons.
+[GPT-6.1 Sol](https://openai.com/index/introducing-gpt-6-1-sol/) offers near-Astra coding capability at lower API cost; Astra remains the recommendation for the most demanding reasoning. [Opus 5.5](https://www.anthropic.com/claude-opus-5-5) precedes Fable 5.1 for `slow`; [Sonnet 5.5](https://www.anthropic.com/claude-sonnet-5-5) remains the Anthropic worker recommendation. [Haiku 5.5, released October 7](https://www.anthropic.com/claude-haiku-5-5), now leads Anthropic `smol`, with Haiku 4.5 retained for restricted availability. These are curated role choices, not runtime price comparisons.
+
+Copilot `task` retains both Sol recommendations ahead of [GPT-6.1 Terra, released on Copilot October 26](https://github.blog/changelog/2026-10-26-gpt-6-1-terra-in-github-copilot/), which precedes GPT-5.6 Terra. Terra targets well-scoped coding at lower token rates; adding a fallback does not reduce normal costs while Sol is selected. Copilot `smol` adds `github-copilot/claude-haiku-5.5` immediately after GPT-6 Luna. Haiku's higher pricing tier begins above 100k input tokens, versus Luna's 272k threshold, so Luna remains first pending workload-specific comparisons. See [Copilot pricing](https://docs.github.com/en/copilot/reference/copilot-billing/models-and-pricing).
+
+Codex no longer recommends `gpt-5.4-mini`, which [retired for ChatGPT-sign-in Codex on August 31](https://learn.chatgpt.com/docs/models#deprecated-codex-models); API-key access is unaffected. Although official Codex supports GPT-6.1 Terra, its OMP provider selector was not confirmed in the bundled catalog during this review, so adding it remains deferred until OMP discovery establishes availability.
 
 Older recommendations remain fallbacks for staged rollouts or restricted subscriptions; unavailable models are omitted. Exact IDs follow OMP's [model catalog](https://github.com/can1357/oh-my-pi/blob/main/packages/catalog/src/models.json) and live `omp models --json` output, not display names (Anthropic uses `claude-opus-5-5` and `claude-sonnet-5-5`). After pulling recommendation updates, preview and rerun `./dotai.py configure omp-routing` to apply them; pulling alone does not change your manifest or OMP settings.
 
