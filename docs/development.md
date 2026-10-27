@@ -109,6 +109,8 @@ Release-notice tests use explicit synthetic current and available versions, incl
 
 For package-presence or minimum-version tests, use isolated commands that report known versions and exit codes. Mocking only `package_check` as false does not simulate a missing binary: reconciliation can separately probe command success to distinguish missing from outdated packages.
 
+Package-version probes capture bytes and strictly decode both stdout and stderr as UTF-8 in the caller's exception handler. Malformed bytes in either stream make the probe unhealthy, even when the other stream contains a valid version, without leaking Windows subprocess reader-thread tracebacks. Probe regressions capture an outer Python process's stderr; run them on native Windows to exercise its reader threads, since a platform override on Unix does not do so.
+
 Healthy-skill refresh fixtures need complete skills.sh v3 source metadata and an independently verified Git tree hash for the configured agent's entire installed folder, including supporting files and executable modes. Isolate `XDG_STATE_HOME` and `GH_HOST`; the authoritative lock path and source host affect ownership. Source-only locks or a matching `SKILL.md` do not prove ownership of an independent agent copy.
 
 Exercise documented mutation commands against an initialized, explicit temporary manifest. Isolate `HOME`, `DOTAI_HOME`, `DOTAI_STATE_DIR`, and `XDG_STATE_HOME` when testing external tools or configuration writes; preserve personal manifests, credentials, and OMP settings. Follow additions with `validate` and the appropriate preview: `sync --dry-run` for skills/MCP/plugins, or `install --dry-run` for packages.

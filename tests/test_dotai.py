@@ -3355,7 +3355,7 @@ class DotAiTests(unittest.TestCase):
         runner = runtime.Runner("ubuntu")
         for version, expected in (("other 0.42.99", False), ("other 0.43.0", True), ("other 0.50.0", True)):
             with self.subTest(version=version):
-                result = subprocess.CompletedProcess(["other", "--version"], 0, version)
+                result = subprocess.CompletedProcess(["other", "--version"], 0, version.encode("utf-8"))
                 with mock.patch.object(subprocess, "run", return_value=result):
                     self.assertEqual(package_manager.package_check(package, runner), expected)
 
@@ -3386,7 +3386,7 @@ class DotAiTests(unittest.TestCase):
             for version, expected in (("rtk 0.42.9", False), ("rtk 0.43.0", True), ("rtk 0.50.0", True)):
                 with self.subTest(platform=platform, version=version):
                     runner = runtime.Runner(platform)
-                    result = subprocess.CompletedProcess(["rtk", "--version"], 0, version)
+                    result = subprocess.CompletedProcess(["rtk", "--version"], 0, version.encode("utf-8"))
                     output = io.StringIO()
                     with (
                         mock.patch.object(subprocess, "run", return_value=result),
@@ -3408,7 +3408,7 @@ class DotAiTests(unittest.TestCase):
             ):
                 with self.subTest(platform=platform, version=version, returncode=returncode):
                     runner = runtime.Runner(platform, dry_run=True)
-                    result = subprocess.CompletedProcess(["rtk", "--version"], returncode, version)
+                    result = subprocess.CompletedProcess(["rtk", "--version"], returncode, version.encode("utf-8"))
                     output = io.StringIO()
                     with (
                         mock.patch.object(subprocess, "run", return_value=result),
@@ -3423,7 +3423,7 @@ class DotAiTests(unittest.TestCase):
         for platform in ("windows", "macos", "ubuntu", "wsl", "arch"):
             with self.subTest(platform=platform):
                 runner = runtime.Runner(platform, dry_run=True)
-                result = subprocess.CompletedProcess(["rtk", "--version"], 0, "rtk 0.42.9")
+                result = subprocess.CompletedProcess(["rtk", "--version"], 0, b"rtk 0.42.9")
                 output = io.StringIO()
                 with mock.patch.object(subprocess, "run", return_value=result), contextlib.redirect_stdout(output):
                     package_manager.reconcile_packages(manifest, runner, "install")
