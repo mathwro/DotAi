@@ -545,6 +545,53 @@ class SkillCoverageTests(unittest.TestCase):
         self.assertTrue(old_files.exists())
         self.assertFalse((self.home / ".agents" / "skills" / "alpha").exists())
 
+    def prepare_healthy_skill(self):
+        target = self.installed("alpha") / "SKILL.md"
+        target.write_text("# Alpha\n", encoding="utf-8", newline="\n")
+        lock = self.home / "xdg" / "skills" / ".skill-lock.json"
+        lock.parent.mkdir(parents=True)
+        lock.write_text(json.dumps({"version": 3, "skills": {"alpha": {
+            "source": "owner/repo", "sourceType": "github",
+            "sourceUrl": "https://github.com/owner/repo.git",
+            "skillPath": "skills/alpha/SKILL.md",
+            "skillFolderHash": "0ae35bdd602b22221c7503baa29f72fd9f115298",
+            "installedAt": "2026-01-01T00:00:00Z", "updatedAt": "2026-01-01T00:00:00Z",
+        }}}), encoding="utf-8")
+        selected = source(["alpha"], checks=["alpha"])
+        self.prepare([selected], [selected])
+        self.configure(refresh_files=True)
+        return target
+
+    def test_update_refreshes_healthy_skills_without_changing_selection(self):
+        target = self.prepare_healthy_skill()
+        independent = self.installed("alpha", agent="pi") / "SKILL.md"
+        undeclared = self.installed("personal", repo="user/other") / "SKILL.md"
+        preserved = {path: path.read_bytes() for path in (self.path, independent, undeclared)}
+        command = ["--manifest", str(self.path)]
+
+        for mode in ("install", "sync"):
+            with self.subTest(mode=mode):
+                self.assertEqual(cli.main([*command, mode]), 0)
+                self.assertEqual(target.read_text(), "# Alpha\n")
+        before_preview = {path: path.read_bytes() for path in self.home.rglob("*") if path.is_file()}
+        self.assertEqual(cli.main([*command, "update", "--dry-run"]), 0)
+        self.assertEqual({path: path.read_bytes() for path in self.home.rglob("*") if path.is_file()}, before_preview)
+
+        self.assertEqual(cli.main([*command, "update"]), 0)
+        self.assertEqual(target.read_text(), "refreshed by installer")
+        for path, content in preserved.items():
+            self.assertEqual(path.read_bytes(), content)
+
+    def test_update_reports_failed_refresh_of_healthy_skills(self):
+        target = self.prepare_healthy_skill()
+        manifest_before = self.path.read_bytes()
+        self.configure(add_fail=True)
+
+        self.assertEqual(cli.main(["--manifest", str(self.path), "update"]), 1)
+        self.assertEqual(target.read_text(), "# Alpha\n")
+        self.assertEqual(self.path.read_bytes(), manifest_before)
+        self.assertFalse((self.home / "state" / "state.json").exists())
+
     def owned_tree(self):
         folder = self.installed("alpha")
         (folder / "run.sh").write_bytes(b"#!/bin/sh\nprintf fixture\\n\n")

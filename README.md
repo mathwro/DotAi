@@ -61,7 +61,7 @@ Use `./dotai.py` on Linux, WSL, and macOS, or `python dotai.py` in PowerShell. T
 
 ```sh
 ./dotai.py install          # Install missing components and synchronize configuration
-./dotai.py update           # Update core components and synchronize configuration
+./dotai.py update           # Update core components, refresh declared skills, and synchronize configuration
 ./dotai.py sync             # Reconcile skills, plugins, and MCP servers; no package operations
 ./dotai.py sync --update-skills  # Explicitly refresh already installed skill sources
 ./dotai.py sync --recommended-skills  # Review and apply repository skill recommendations
