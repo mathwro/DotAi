@@ -33,7 +33,7 @@ def build_parser() -> argparse.ArgumentParser:
     install = sub.add_parser("install", help="Install missing components and synchronize configuration")
     install.add_argument("--force", action="store_true", help="Reinstall components already present")
     install.add_argument("--dry-run", action="store_true", help="Print actions without changing the machine")
-    update = sub.add_parser("update", help="Update core components and synchronize configuration")
+    update = sub.add_parser("update", help="Update core components, refresh declared skills, and synchronize configuration")
     update.add_argument("--dry-run", action="store_true")
     update.add_argument(
         "--include-dependencies",
