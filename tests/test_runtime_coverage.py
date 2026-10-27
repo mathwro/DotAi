@@ -308,17 +308,46 @@ class RuntimeCoverageTests(unittest.TestCase):
                 self.assertFalse(packages.package_check(package, runner))
         self.assertEqual(runner.failures, [])
 
-    def test_package_version_unicode_read_error_is_unhealthy(self) -> None:
-        command = self.python("import sys; sys.stdout.buffer.write(b'\\xff')")
-        runner = runtime.Runner(self.platform)
-        # Pin the decoding boundary only; the child and invalid bytes are real.
-        real_run = subprocess.run
-
-        def decode_as_utf8(*args, **kwargs):
-            return real_run(*args, **kwargs, encoding="utf-8")
-
-        with mock.patch.object(packages.subprocess, "run", side_effect=decode_as_utf8):
-            self.assertEqual(packages.package_version_check({"minimumVersion": "2.0"}, runner, command), (False, "not found"))
+    def test_package_version_probes_decode_both_streams_without_tracebacks(self) -> None:
+        cases = [
+            (b"tool \xc3\xa9 2.1.0\n", b"", True, "tool é 2.1.0"),
+            (b"", b"tool \xc3\xa9 2.1.0\n", True, "tool é 2.1.0"),
+            (b"checking installation\n", b"tool 2.1.0\n", True, "tool 2.1.0"),
+            (b"\xff", b"tool 2.1.0\n", False, None),
+            (b"tool 2.1.0\n", b"\xff", False, None),
+            (b"tool 2.1.0\xff", b"", False, None),
+            (b"", b"tool 2.1.0\xff", False, None),
+        ]
+        # Capture outside the probing process: Windows reader-thread failures
+        # can escape the caller's exception handler onto inherited stderr.
+        probe = (
+            "import json, sys; from dotai_app import packages, runtime; "
+            "command = [sys.executable, '-c', sys.argv[1]]; "
+            "package = dict(check=command, minimumVersion='2.0'); "
+            "runner = runtime.Runner(sys.argv[2]); "
+            "print(json.dumps(packages.package_version_check(package, runner, command)))"
+        )
+        for utf8_mode in ("0", "1"):
+            environment = dict(
+                os.environ, PYTHONUTF8=utf8_mode, PYTHONCOERCECLOCALE="0", LC_ALL="C",
+                PYTHONDONTWRITEBYTECODE="1",
+            )
+            for stdout, stderr, healthy, report in cases:
+                with self.subTest(utf8_mode=utf8_mode, stdout=stdout, stderr=stderr):
+                    command = (
+                        f"import sys; sys.stdout.buffer.write({stdout!r}); "
+                        f"sys.stderr.buffer.write({stderr!r})"
+                    )
+                    result = subprocess.run(
+                        self.python(probe) + [command, self.platform], cwd=ROOT,
+                        env=environment, capture_output=True, timeout=30,
+                    )
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertEqual(result.stderr, b"")
+                    actual_healthy, actual_report = json.loads(result.stdout)
+                    self.assertEqual(actual_healthy, healthy, actual_report)
+                    if report is not None:
+                        self.assertEqual(actual_report, report)
 
     def test_reconciliation_failure_never_overwrites_previous_success_state(self) -> None:
         for failure in ("nonzero", "missing", "verification", "unsupported"):
