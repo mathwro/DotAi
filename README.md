@@ -93,6 +93,8 @@ Preview commands still initialize a missing default `stack.json` on first use. R
 
 Linux RTK installs and updates use the reviewed v0.50.0 release archives with pinned SHA-256 digests rather than executing an installer from a moving branch. To adopt this change on an existing installation, update the RTK commands in your personal `stack.json` from `stack.example.json`; DotAi does not overwrite that file.
 
+Normal operations show flushed DotAi progress rather than raw command arguments or installer chatter. Failures retain the exit code, a sanitized cause, and a next step. Use `./dotai.py --verbose install` (or another command) for bounded, sanitized diagnostics; JSON configuration/protocol payloads are not dumped. Dry-run output describes planned work, not applied changes. Credential redaction recognizes known values and common credential syntax, but cannot identify every unlabeled secret—keep credentials out of command arguments and logs.
+
 ### Status output
 
 | Label | Color | Meaning |

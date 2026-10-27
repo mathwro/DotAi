@@ -37,12 +37,15 @@ def reconcile(
         mcp_config.sync_mcp(manifest, runner)
     except (OSError, runtime.DotAiError) as exc:
         runner.failures.append(str(exc))
-        print(f"{terminal.badge('FAIL')} MCP: {exc}")
+        runner.say(f"{terminal.badge('FAIL')} MCP: {exc}")
     app_state.save_state(manifest_path, runner, mode, managed_skills)
     if runner.failures:
-        print(f"\n{terminal.styled('Reconciliation failed:', 'red', 'bold')}")
+        runner.say(f"\n{terminal.styled('Reconciliation failed:', 'red', 'bold')}")
         for failure in runner.failures:
-            print(f"  - {failure}")
+            runner.say(f"  - {failure}")
         return 1
-    print(f"\n{terminal.styled(f'DotAi {mode} complete for {runner.platform}.', 'green', 'bold')}")
+    if runner.dry_run:
+        runner.say(f"\nDotAi {mode} preview complete for {runner.platform}; no changes applied.")
+    else:
+        runner.say(f"\n{terminal.styled(f'DotAi {mode} complete for {runner.platform}.', 'green', 'bold')}")
     return 0

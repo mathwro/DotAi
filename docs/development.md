@@ -23,10 +23,10 @@ The Python entry point, manifests, and schema stay at the repository root becaus
 | Module in `dotai_app/` | Responsibility |
 | --- | --- |
 | `cli.py` | Argument parsing and command dispatch |
-| `runtime.py` | Repository/home/state paths, platform selection, shared errors, and external command execution |
-| `terminal.py` | Color policy, headings, and status badges |
+| `runtime.py` | Repository/home/state paths, platform selection, shared errors, external command execution, and operation output |
+| `terminal.py` | Color policy, headings, status badges, credential redaction, and safe display formatting |
 | `releases.py` | Application version and best-effort release notices |
-| `manifest.py` | Manifest validation, initialization, diffs, backups, and safe JSON writes |
+| `manifest.py` | Manifest validation, initialization, backups, and safe JSON writes |
 | `integrations.py` | Parse and persist declared integrations from `add` commands |
 | `packages.py` | Package presence, minimum versions, and install/update decisions |
 | `skills.py` | Agent-scoped installation, ownership checks, health, retirement, and legacy migration |
@@ -41,6 +41,20 @@ The Python entry point, manifests, and schema stay at the repository root becaus
 Keep dependencies directed: CLI dispatch and orchestration call the domain modules; domain modules use manifest, runtime, and terminal helpers without importing the CLI or orchestration. Use explicit module imports rather than a package-wide re-export facade. Tests import and patch the module that owns a behavior, so the same patch applies to its callers.
 
 The current user-facing contracts live in [Configuration](configuration.md) and [Extending the stack](extending.md). Dated files under `docs/superpowers/specs/` are historical design records, not current defaults or active instructions. Completed implementation plans have been removed; their history remains in Git.
+
+## Command output conventions
+
+DotAi owns normal command output: report the operation rather than echoing command arguments or upstream installer chatter. `Runner.say` flushes progress and redacts known credential values at the display boundary. Standalone CLI messages use `terminal.say`. Do not put credentials in labels or logs; keep manifest credentials as environment or secret-command references.
+
+`Runner.run(command, label, *, capture=False, required=True, interactive=False)` captures separate stdout and stderr for every noninteractive command, including when `capture=False`, and closes stdin. Its returned `CompletedProcess` retains the original streams and exit code; protocol consumers must parse stdout, not concatenate stderr warnings into JSON. `capture` does not opt into displaying raw output. Explicit `interactive=True` inherits terminal input/output and cannot be combined with `capture=True`; upstream interactive output (including tools that access the controlling terminal directly) is outside DotAi's capture/redaction boundary.
+
+Normal failures include the operation, nonzero exit code, a bounded sanitized cause (stderr preferred), and a next step. Optional failures do not enter the required-failure list but are still reported as failures. `--verbose` adds sanitized command descriptions and the first 12 lines/2,000 characters of detail per diagnostic stream, with a truncation marker when needed; JSON responses and structured configuration arguments are omitted rather than dumped. Sanitization precedes truncation and never rewrites the returned protocol. Raw probe stdout remains internal; verbose probe diagnostics follow the same rules without recording a mutation or required failure.
+
+Redaction covers known secret-bearing environment values, credential flags/assignments, header/environment arguments, authorization/cookie headers, and URL passwords. It is protection for known credentials and recognizable syntax, not a guarantee to discover arbitrary unlabeled secrets. Tests generate synthetic credential values at runtime rather than storing credential-like fixtures.
+
+Routing previews name providers, model primaries and fallback chains, changed intent fields, and pending setting names without exposing unmanaged OMP values. Skill previews describe sources, old/new selections, agents, and other changed field names instead of whole-manifest diffs. Cleanup-dependent recommendations stay explicitly conditional on the separate cleanup approval. Dry-run completion means a preview, never applied changes; do not add changed/unchanged totals unless every domain outcome can be accounted for truthfully.
+
+Output regressions use real isolated Python children, including an outer subprocess to detect inherited file-descriptor leaks: `rtk python3 -m unittest discover -s tests -p test_output_contract.py -v`. Never run installers or authenticated personal tools just to test presentation.
 
 ## Verification
 
@@ -108,4 +122,4 @@ rtk python3 dotai.py configure omp-routing --help
 rtk python3 dotai.py --manifest path/to/test-stack.json configure omp-routing --dry-run
 ```
 
-The preview should show discovered providers, available role primaries, fallback chains, the manifest diff, and pending OMP commands without applying them. Missing providers or genuinely unhealthy components can produce nonzero exits; do not suppress those health failures.
+The preview should show discovered providers, available role primaries, fallback chains, changed manifest intent fields, and pending OMP setting names without dumping config JSON or applying changes. Missing providers or genuinely unhealthy components can produce nonzero exits; do not suppress those health failures.

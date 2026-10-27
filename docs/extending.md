@@ -38,7 +38,7 @@ To review and accept skill recommendations added, changed, or removed from `stac
 ./dotai.py sync --recommended-skills
 ```
 
-DotAi prints the proposed manifest diff, then lets you accept all changes, review each change, or cancel. Accepted removals also uninstall the retired skills so OMP no longer discovers them; rejected changes are offered again later. User-added sources and locally modified recommended entries are preserved. Use `./dotai.py sync --recommended-skills --dry-run` to print the diff and planned actions without changing files or machine state.
+DotAi describes proposed source changes, old/new skill selections, agents, and changed field names, then lets you accept all changes, review each change, or cancel. It does not dump the manifest or unrelated credential/configuration values. Accepted removals also uninstall the retired skills so OMP no longer discovers them; rejected changes are offered again later. User-added sources and locally modified recommended entries are preserved. Use `./dotai.py sync --recommended-skills --dry-run` to preview changes and planned actions without changing files or machine state.
 
 Named retirements and retained selections match installed-directory identities from the Skills CLI listing, not its original frontmatter names. Inferred selections use installer normalization; nonempty explicit `--check-skill` directories remain exact and authoritative. A wildcard retirement resolves every installed directory attributed to that source and configured agent, regardless of its health-check selection. Named dry runs preview directory paths without querying the installer; wildcard resolution is deferred until application.
 
@@ -52,7 +52,7 @@ The first run on an existing installation establishes recommendation ownership c
 
 Enforced sync starts by listing user-owned sources declared in the selected manifest but absent from the current recommendations, including old defaults whose recommendation ownership was never recorded. The cleanup list shows one `owner/repository/skill` per named selection, or just `owner/repository` for wildcard or unspecified selections, rather than a JSON diff. It asks whether to remove those entries and their source-verified installed copies. Answer `y` or `yes` to apply cleanup immediately with a manifest backup; answer anything else, press Enter, or leave input unavailable to preserve them. Preserved sources are skipped during this enforced sync, even with `--update-skills`; ordinary sync still manages them. Undeclared skills and other agents' independent copies remain untouched. Shared or ambiguous copies cannot be removed automatically.
 
-After that choice, DotAi continues to the existing recommendation diff and acceptance prompt. Cleanup consent and recommendation acceptance are separate: declining the recommendation changes does not undo previously confirmed cleanup. A cleanup failure restores the manifest, leaves ownership unchanged, and stops before recommendation installation; already removed directories are not restored. `--dry-run` does not prompt: it previews cleanup as conditional on confirmation and then previews recommendation changes without modifying the manifest, state, or installed skills.
+After that choice, DotAi continues to the recommendation preview and acceptance prompt. Cleanup consent and recommendation acceptance are separate: declining the recommendation changes does not undo previously confirmed cleanup. A cleanup failure restores the manifest, leaves ownership unchanged, and stops before recommendation installation; already removed directories are not restored. `--dry-run` does not prompt: cleanup and the following proposal remain explicitly conditional on cleanup confirmation, without modifying the manifest, state, or installed skills.
 
 Normal `sync` runs do not rewrite existing `stack.json` skill entries. To migrate all legacy skill entries that still target Pi, run:
 
@@ -60,7 +60,7 @@ Normal `sync` runs do not rewrite existing `stack.json` skill entries. To migrat
 ./dotai.py fix
 ```
 
-DotAi shows the exact manifest diff and skill installation commands, then waits for confirmation. Answer `y` to apply the changes. Use `./dotai.py fix --dry-run` to preview the diff and commands without modifying the manifest or machine. The command changes only `"agent": "pi"` skill entries to `"agent": "universal"`, creates a timestamped manifest backup, and leaves the old Pi-installed files in place.
+DotAi shows the affected sources, skill selections, and proposed agent changes, then waits for confirmation. Answer `y` to apply the changes. Use `./dotai.py fix --dry-run` to preview the migration and installation operations without modifying the manifest or machine. The command changes only `"agent": "pi"` skill entries to `"agent": "universal"`, creates a timestamped manifest backup, and leaves the old Pi-installed files in place.
 
 After the migration, future `./dotai.py sync` runs use `~/.agents/skills/`. `sync` alone intentionally does not change an existing manifest's agent selections.
 
