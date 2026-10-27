@@ -228,6 +228,92 @@ else:
             self.assertFalse((fixture.root / "downloaded-target").exists())
 
 
+@unittest.skipUnless(sys.platform.startswith("linux"), "GitHub CLI apt recipes require Linux tools")
+class GithubCliRecipeTests(unittest.TestCase):
+    def setUp(self) -> None:
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name)
+        self.bin = self.root / "bin"
+        self.bin.mkdir()
+        self.tmp = self.root / "tmp"
+        self.tmp.mkdir()
+        self.apt = self.root / "etc apt"
+        self.env = {"PATH": str(self.bin), "HOME": str(self.root), "TMPDIR": str(self.tmp),
+                    "FIXTURE_ROOT": str(self.root), "FIXTURE_UID": "0"}
+        for name in ("mktemp", "rm", "install", "dpkg"):
+            (self.bin / name).symlink_to(shutil.which(name))
+        self.script("id", "import os; print(os.environ['FIXTURE_UID'])")
+        self.script("curl", """import os, sys
+from pathlib import Path
+args = sys.argv[1:]
+Path(args[args.index('-o') + 1]).write_bytes(b'fixture keyring')
+sys.exit(int(os.environ.get('DOWNLOAD_EXIT', '0')))
+""")
+        self.script("apt-get", """import os, sys
+from pathlib import Path
+root = Path(os.environ['FIXTURE_ROOT'])
+if os.environ.get('APT_EXIT'):
+    sys.exit(int(os.environ['APT_EXIT']))
+if sys.argv[1:] == ['update']:
+    assert (root / 'etc apt/keyrings/githubcli-archive-keyring.gpg').read_bytes() == b'fixture keyring'
+    assert 'https://cli.github.com/packages stable main' in (root / 'etc apt/sources.list.d/github-cli.list').read_text()
+    (root / 'metadata-ready').touch()
+elif sys.argv[1:] == ['install', '-y', 'gh']:
+    assert (root / 'metadata-ready').exists()
+    (root / 'installed').write_text('new version')
+else:
+    sys.exit(90)
+""")
+
+    def script(self, name: str, body: str) -> None:
+        path = self.bin / name
+        path.write_text(f"#!{sys.executable}\n{body}\n", encoding="utf-8")
+        path.chmod(0o755)
+
+    def run_recipe(self, operation: str) -> subprocess.CompletedProcess:
+        # Relocate only system destinations; execute the actual recipe with real sh/coreutils.
+        manifest = json.loads((ROOT / "stack.example.json").read_text(encoding="utf-8"))
+        package = next((item for item in manifest["packages"] if item["name"] == "GitHub CLI"), None)
+        self.assertIsNotNone(package, "GitHub CLI recipe is missing")
+        command = package[operation]["ubuntu"][0]
+        command = command.replace("/etc/apt", str(self.apt))
+        return subprocess.run(["/bin/sh", "-c", command], env=self.env, capture_output=True, text=True, timeout=15)
+
+    def test_root_and_sudo_install_then_update_converge(self) -> None:
+        for uid in ("0", "1000"):
+            with self.subTest(uid=uid):
+                self.env["FIXTURE_UID"] = uid
+                if uid != "0":
+                    self.script("sudo", "import os, sys; os.execvp(sys.argv[1], sys.argv[1:])")
+                for operation in ("install", "update"):
+                    result = self.run_recipe(operation)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertEqual((self.root / "installed").read_text(), "new version")
+                    self.assertEqual(list(self.tmp.iterdir()), [])
+                key = self.apt / "keyrings/githubcli-archive-keyring.gpg"
+                self.assertEqual(key.stat().st_mode & 0o777, 0o644)
+
+    def test_failed_download_preserves_repository_and_installed_version(self) -> None:
+        self.assertEqual(self.run_recipe("install").returncode, 0)
+        before = {path: path.read_bytes() for path in self.apt.rglob("*") if path.is_file()}
+        (self.root / "installed").write_text("old version")
+        self.env["DOWNLOAD_EXIT"] = "22"
+        result = self.run_recipe("update")
+        self.assertEqual(result.returncode, 22, result.stderr)
+        self.assertEqual((self.root / "installed").read_text(), "old version")
+        self.assertEqual({path: path.read_bytes() for path in before}, before)
+        self.assertEqual(list(self.tmp.iterdir()), [])
+
+    def test_failed_metadata_refresh_stops_before_package_install(self) -> None:
+        (self.root / "installed").write_text("old version")
+        self.env["APT_EXIT"] = "100"
+        result = self.run_recipe("update")
+        self.assertEqual(result.returncode, 100, result.stderr)
+        self.assertEqual((self.root / "installed").read_text(), "old version")
+        self.assertEqual(list(self.tmp.iterdir()), [])
+
+
 class TerminalRenderingTests(unittest.TestCase):
     def setUp(self) -> None:
         previous = terminal._COLOR_ENABLED

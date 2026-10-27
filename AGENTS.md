@@ -12,6 +12,14 @@ Supported platforms:
 - Arch Linux
 - macOS
 
+## Repository guidance versus delivered stack
+
+This `AGENTS.md` governs development of DotAi itself. It is not automatically installed as guidance for users' other projects. Likewise, the assistant's current system instructions, locally installed skills, and development tools are not necessarily part of the stack DotAi delivers.
+
+When evaluating stack additions, removals, or replacements, compare the capabilities and instructions users actually receive through the manifests, installers, and managed configuration. Distinguish proposed defaults from existing user-owned manifests, which do not automatically adopt changed defaults. Identify any required harness behavior separately rather than assuming users have this session's environment.
+
+The skill-curation review previously treated this repository's simplification rules as a reason to remove the shipped `ponytail` skill. That comparison was invalid: repository-only rules do not replace guidance in users' installed stacks. Establish redundancy or conflicts between the delivered components themselves; do not recommend removing a capability merely because this repository or the reviewing assistant already supplies it.
+
 ## Repository map
 
 - `dotai.py` — executable Python CLI entry point; use `./dotai.py` on Unix or `python dotai.py` on Windows

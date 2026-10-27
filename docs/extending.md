@@ -143,3 +143,13 @@ For more complex entries, edit the local `stack.json` directly and run the runti
 ```sh
 ./dotai.py validate
 ```
+
+### Adopt GitHub CLI
+
+New manifests include GitHub CLI. To add it to an existing installation, copy only the `GitHub CLI` package object from [`stack.example.json`](../stack.example.json) into your `stack.json` packages array, preserving the other entries. Then run `./dotai.py validate`, preview `./dotai.py install --dry-run`, and apply with `./dotai.py install`. These commands operate on all declared packages, not only GitHub CLI. Skill recommendation synchronization does not adopt package changes.
+
+The [official Ubuntu installation method](https://github.com/cli/cli/blob/trunk/docs/install_linux.md) is adapted to use the already-declared `curl`, work as root without `sudo`, and clean up temporary downloads. Installation and updates provision `/etc/apt/keyrings/githubcli-archive-keyring.gpg` and `/etc/apt/sources.list.d/github-cli.list` before refreshing apt metadata and installing `gh`. A failed download stops before replacing those files. Updates establish the official repository even for an existing distribution-provided `gh`. Other apt sources are not changed.
+
+Windows uses Scoop and macOS uses Homebrew. Updates propagate package-manager failures rather than falling back to an installation that could hide the failure. Arch uses `pacman -S --needed` against the existing package database; keep normal full-system updates under your own control.
+
+The `gh --version` health check verifies binary availability, not authentication or repository permissions. Authenticate separately with `gh auth login` when needed; DotAi does not change GitHub credentials, run `gh auth setup-git`, or install `gh-stack` or other extensions.

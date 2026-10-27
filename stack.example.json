@@ -16,6 +16,22 @@
       }
     },
     {
+      "name": "GitHub CLI",
+      "check": ["gh", "--version"],
+      "install": {
+        "windows": [["scoop", "install", "gh"]],
+        "macos": [["brew", "install", "gh"]],
+        "ubuntu": ["set -eu; sudo_cmd=; if [ \"$(id -u)\" -ne 0 ]; then sudo_cmd=sudo; fi; tmp=$(mktemp -d); trap 'rm -rf \"$tmp\"' EXIT; curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg -o \"$tmp/keyring.gpg\"; arch=$(dpkg --print-architecture); printf 'deb [arch=%s signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main\\n' \"$arch\" > \"$tmp/github-cli.list\"; $sudo_cmd install -d -m 755 \"/etc/apt/keyrings\" \"/etc/apt/sources.list.d\"; $sudo_cmd install -m 644 \"$tmp/keyring.gpg\" \"/etc/apt/keyrings/githubcli-archive-keyring.gpg\"; $sudo_cmd install -m 644 \"$tmp/github-cli.list\" \"/etc/apt/sources.list.d/github-cli.list\"; $sudo_cmd apt-get update; $sudo_cmd apt-get install -y gh"],
+        "arch": ["if [ \"$(id -u)\" -eq 0 ]; then pacman -S --needed --noconfirm github-cli; else sudo pacman -S --needed --noconfirm github-cli; fi"]
+      },
+      "update": {
+        "windows": [["scoop", "update", "gh"]],
+        "macos": [["brew", "upgrade", "gh"]],
+        "ubuntu": ["set -eu; sudo_cmd=; if [ \"$(id -u)\" -ne 0 ]; then sudo_cmd=sudo; fi; tmp=$(mktemp -d); trap 'rm -rf \"$tmp\"' EXIT; curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg -o \"$tmp/keyring.gpg\"; arch=$(dpkg --print-architecture); printf 'deb [arch=%s signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main\\n' \"$arch\" > \"$tmp/github-cli.list\"; $sudo_cmd install -d -m 755 \"/etc/apt/keyrings\" \"/etc/apt/sources.list.d\"; $sudo_cmd install -m 644 \"$tmp/keyring.gpg\" \"/etc/apt/keyrings/githubcli-archive-keyring.gpg\"; $sudo_cmd install -m 644 \"$tmp/github-cli.list\" \"/etc/apt/sources.list.d/github-cli.list\"; $sudo_cmd apt-get update; $sudo_cmd apt-get install -y gh"],
+        "arch": ["if [ \"$(id -u)\" -eq 0 ]; then pacman -S --needed --noconfirm github-cli; else sudo pacman -S --needed --noconfirm github-cli; fi"]
+      }
+    },
+    {
       "name": "Node.js",
       "updateGroup": "dependency",
       "check": ["node", "--version"],
