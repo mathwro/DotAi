@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterable
 import json
 import os
 import re
@@ -34,14 +34,48 @@ def extension_identity(value: str) -> str:
     return value
 
 
-def configured_omp_extensions(runner: runtime.Runner) -> list[str] | None:
-    raw = runner.output(["omp", "config", "get", "extensions", "--json"])
-    if not raw:
-        return None
+def _omp_config_catalog(runner: runtime.Runner) -> dict[str, dict[str, Any]]:
+    if runner._omp_config_cache is not None:
+        return runner._omp_config_cache
+    if type(runner).output is not runtime.Runner.output or "output" in runner.__dict__:
+        return {}
+    raw = runner.output(["omp", "config", "list", "--json"])
     try:
-        value = json.loads(raw).get("value")
-    except (AttributeError, json.JSONDecodeError):
+        parsed = json.loads(raw)
+    except (TypeError, json.JSONDecodeError):
+        parsed = None
+    if (
+        isinstance(parsed, dict)
+        and parsed
+        and all(isinstance(key, str) and isinstance(entry, dict) for key, entry in parsed.items())
+    ):
+        runner._omp_config_cache = parsed
+    else:
+        runner._omp_config_cache = {}
+    return runner._omp_config_cache
+
+
+def configured_omp_value(runner: runtime.Runner, key: str) -> Any | None:
+    catalog = _omp_config_catalog(runner)
+    if catalog:
+        entry = catalog.get(key)
+        return entry.get("value") if isinstance(entry, dict) else None
+    raw = runner.output(["omp", "config", "get", key, "--json"])
+    try:
+        configured = json.loads(raw)
+    except (TypeError, json.JSONDecodeError):
         return None
+    if not isinstance(configured, dict) or "value" not in configured:
+        return None
+    return configured["value"]
+
+
+def configured_omp_values(runner: runtime.Runner, keys: Iterable[str]) -> dict[str, Any | None]:
+    return {key: configured_omp_value(runner, key) for key in keys}
+
+
+def configured_omp_extensions(runner: runtime.Runner) -> list[str] | None:
+    value = configured_omp_value(runner, "extensions")
     if not isinstance(value, list) or any(not isinstance(item, str) for item in value):
         return None
     return value

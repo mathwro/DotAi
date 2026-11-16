@@ -4,6 +4,7 @@ import contextlib
 import io
 import json
 import os
+import secrets
 import subprocess
 import sys
 import tempfile
@@ -15,7 +16,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if __name__ == "__main__":
     sys.path.insert(0, str(ROOT))
 
-from dotai_app import health, omp, runtime, terminal
+from dotai_app import health, manifest as manifests, omp, runtime, terminal
 
 
 # Only the external OMP boundary is synthetic. Its registrations persist across
@@ -94,7 +95,7 @@ sys.exit(64)
 def route_external_commands(real_run, fixture_bin: Path):
     """Run only synthetic OMP/managers as Python processes on every OS."""
     def run(command, *args, **kwargs):
-        if isinstance(command, list) and command[0] in ("omp", "scoop", "brew", "apt-get", "pacman"):
+        if isinstance(command, list) and command[0] in ("omp", "scoop", "brew", "apt-get", "pacman", "node"):
             fixture = fixture_bin / (command[0] + ".py")
             if not fixture.is_file():
                 raise FileNotFoundError(command[0])
@@ -162,6 +163,7 @@ class OmpHealthCoverageTests(unittest.TestCase):
     def write_command(self, name: str, body: str) -> None:
         path = self.bin / (name + ".py")
         path.write_text(body, encoding="utf-8")
+        path.chmod(0o755)
 
     def write_json(self, path: Path, value: object) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -441,6 +443,168 @@ class OmpHealthCoverageTests(unittest.TestCase):
         self.assertFalse(self.user_plugins.exists())
         self.assertFalse(self.config_path.exists())
 
+    def test_doctor_warns_when_populated_local_bin_is_missing_from_shell_path_on_unix(self) -> None:
+        other_bin = self.directory / "other-bin"
+        other_bin.mkdir()
+        with mock.patch.dict(os.environ, {"PATH": str(other_bin)}):
+            report = io.StringIO()
+            with contextlib.redirect_stdout(report):
+                self.assertFalse(health.doctor(self.manifest, runtime.Runner("linux")))
+            self.assertIn("Shell PATH:", report.getvalue())
+            self.assertIn("[DRIFT]", report.getvalue())
+            self.assertIn(str(self.bin), report.getvalue())
+
+            # Non-executable files alone in ~/.local/bin do not trigger a false PATH warning.
+            (self.bin / "omp.py").chmod(0o644)
+            (self.bin / ".keep").write_text("", encoding="utf-8")
+            quiet_report = io.StringIO()
+            with contextlib.redirect_stdout(quiet_report):
+                self.assertTrue(health.doctor(self.manifest, runtime.Runner("linux")))
+            self.assertNotIn("Shell PATH:", quiet_report.getvalue())
+            (self.bin / "omp.py").chmod(0o755)
+            win_report = io.StringIO()
+            with contextlib.redirect_stdout(win_report):
+                self.write_command("scoop", "import sys\nsys.exit(0)\n")
+                self.assertTrue(health.doctor(self.manifest, runtime.Runner("windows")))
+            self.assertNotIn("Shell PATH:", win_report.getvalue())
+
+    def test_doctor_checks_modern_web_guidance_node_version_requirement(self) -> None:
+        skill_dir = self.home / ".agents" / "skills" / "modern-web-guidance"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text("# Modern Web Guidance\n", encoding="utf-8")
+        self.manifest["skills"] = [{
+            "source": "GoogleChrome/modern-web-guidance",
+            "agent": "universal",
+            "skills": ["modern-web-guidance"],
+            "checkSkills": ["modern-web-guidance"],
+        }]
+        for node_script, expected_healthy, expected_badge in (
+            (None, False, "[FAIL]"),
+            ("import sys\nprint('v20.11.1')\n", False, "[FAIL]"),
+            ("import sys\nprint('v22.0.0')\n", True, "[OK]"),
+            ("import sys\nprint('v24.1.0')\n", True, "[OK]"),
+        ):
+            with self.subTest(node_script=node_script):
+                node_path = self.bin / "node.py"
+                if node_script is None:
+                    node_path.unlink(missing_ok=True)
+                else:
+                    self.write_command("node", node_script)
+                report = io.StringIO()
+                with contextlib.redirect_stdout(report):
+                    self.assertEqual(health.doctor(self.manifest, runtime.Runner("linux")), expected_healthy)
+                self.assertIn("Skill runtime:", report.getvalue())
+                self.assertIn(expected_badge, report.getvalue())
+                self.assertIn("Modern Web Guidance", report.getvalue())
+
+    def test_doctor_detects_conflicting_inherited_skill_env_without_leaking_values(self) -> None:
+        skill_dir = self.home / ".agents" / "skills" / "modern-web-guidance"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text("# Modern Web Guidance\n", encoding="utf-8")
+        self.write_command("node", "import sys\nprint('v22.3.0')\n")
+        with contextlib.redirect_stdout(io.StringIO()):
+            omp.reconcile_skill_environment({"DISABLE_TELEMETRY": "1"}, runtime.Runner("linux"))
+        self.manifest["skills"] = [{
+            "source": "GoogleChrome/modern-web-guidance",
+            "agent": "universal",
+            "skills": ["modern-web-guidance"],
+            "checkSkills": ["modern-web-guidance"],
+            "ompEnvironment": {"DISABLE_TELEMETRY": "1"},
+        }]
+        secret_override = "override-" + secrets.token_urlsafe(18)
+        with mock.patch.dict(os.environ, {"DISABLE_TELEMETRY": secret_override}):
+            report = io.StringIO()
+            with contextlib.redirect_stdout(report):
+                self.assertFalse(health.doctor(self.manifest, runtime.Runner("linux")))
+        output = report.getvalue()
+        self.assertIn("Skill environment:", output)
+        self.assertIn("[DRIFT]", output)
+        self.assertIn("DISABLE_TELEMETRY", output)
+        self.assertNotIn(secret_override, output)
+
+        # Empty or matching inherited env values do not override OMP's dotenv defaults.
+        for benign in ("", "1"):
+            with self.subTest(benign=benign), mock.patch.dict(os.environ, {"DISABLE_TELEMETRY": benign}):
+                report = io.StringIO()
+                with contextlib.redirect_stdout(report):
+                    self.assertTrue(health.doctor(self.manifest, runtime.Runner("linux")))
+                self.assertNotIn("[DRIFT]", report.getvalue())
+
+    def test_doctor_reports_unset_mcp_env_references_without_flagging_literals_or_printing_secrets(self) -> None:
+        self.manifest["mcp"]["servers"] = {
+            "context7": {
+                "type": "http",
+                "url": "https://mcp.context7.com/mcp",
+                "headers": {"CONTEXT7_API_KEY": "CONTEXT7_API_KEY", "X-Client-Mode": "readonly"},
+            },
+            "local-tools": {
+                "type": "stdio",
+                "command": "npx",
+                "args": ["-y", "@scope/server"],
+                "env": {"API_TOKEN": "LOCAL_API_TOKEN", "LOG_LEVEL": "warning", "APP_ENV": "PROD"},
+            },
+        }
+        mcp_target = self.home / ".omp" / "agent" / "mcp.json"
+        self.write_json(mcp_target, {"mcpServers": self.manifest["mcp"]["servers"]})
+
+        report = io.StringIO()
+        with contextlib.redirect_stdout(report):
+            self.assertTrue(health.doctor(self.manifest, runtime.Runner("linux")))
+        unset_output = report.getvalue()
+        self.assertIn("MCP environment:", unset_output)
+        self.assertIn("[INACTIVE]", unset_output)
+        self.assertIn("context7 (CONTEXT7_API_KEY)", unset_output)
+        self.assertIn("local-tools (LOCAL_API_TOKEN)", unset_output)
+        self.assertNotIn("LOG_LEVEL", unset_output)
+        self.assertNotIn("warning", unset_output)
+        self.assertNotIn("APP_ENV", unset_output)
+        self.assertNotIn("readonly", unset_output)
+
+        secret_a = "secA-" + secrets.token_urlsafe(24)
+        secret_b = "secB-" + secrets.token_urlsafe(24)
+        with mock.patch.dict(os.environ, {"CONTEXT7_API_KEY": secret_a, "LOCAL_API_TOKEN": secret_b}):
+            set_report = io.StringIO()
+            with contextlib.redirect_stdout(set_report):
+                self.assertTrue(health.doctor(self.manifest, runtime.Runner("linux")))
+        ready_output = set_report.getvalue()
+        self.assertIn("MCP environment:", ready_output)
+        self.assertNotIn("context7 (CONTEXT7_API_KEY)", ready_output)
+        self.assertNotIn(secret_a, ready_output)
+        self.assertNotIn(secret_b, ready_output)
+
+    def test_doctor_reports_accumulated_backup_files_without_failing_health(self) -> None:
+        mcp_dir = self.home / ".omp" / "agent"
+        mcp_dir.mkdir(parents=True, exist_ok=True)
+        (mcp_dir / "mcp.json.bak.20261116T000001Z").write_text("{}", encoding="utf-8")
+        (mcp_dir / ".env.bak.20261116T000002Z").write_text("", encoding="utf-8")
+        default_manifest = self.project / "stack.json"
+        (self.project / "stack.json.bak.20261116T000003Z").write_text("{}", encoding="utf-8")
+        report = io.StringIO()
+        with mock.patch.object(manifests, "DEFAULT_MANIFEST", default_manifest), contextlib.redirect_stdout(report):
+            self.assertTrue(health.doctor(self.manifest, runtime.Runner("linux")))
+        output = report.getvalue()
+        self.assertIn("Backups:", output)
+        self.assertIn("[INACTIVE]", output)
+        self.assertIn("3 backup file(s)", output)
+
+
+    def test_verbose_status_emits_sanitized_package_probe_diagnostics(self) -> None:
+        secret_val = "probe-secret-" + secrets.token_urlsafe(16)
+        self.manifest["packages"] = [{
+            "name": "failing-tool",
+            "check": [sys.executable, "-c", f"import sys; sys.stderr.write('auth token={secret_val}\\n'); sys.exit(3)"],
+            "install": {"linux": [["true"]]},
+        }]
+        mcp_target = self.home / ".omp" / "agent" / "mcp.json"
+        self.write_json(mcp_target, {"mcpServers": {}})
+        report = io.StringIO()
+        with contextlib.redirect_stdout(report):
+            self.assertFalse(health.print_status(self.manifest, runtime.Runner("linux", verbose=True)))
+        output = report.getvalue()
+        self.assertIn("probe:", output)
+        self.assertIn("(exit 3)", output)
+        self.assertIn("stderr:", output)
+        self.assertNotIn(secret_val, output)
 
 if __name__ == "__main__":
     unittest.main()

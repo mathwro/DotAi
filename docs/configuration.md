@@ -41,7 +41,7 @@ DotAi updates configuration conservatively:
 - Release checks run for `install`, `sync`, `status`, and `version`; an available newer release is shown as a warning, while network and cache I/O failures are ignored. Successful lookups are cached in `$DOTAI_STATE_DIR/release-check.json` (or the platform default state directory) for 24 hours during normal `install`, `sync`, and `status` runs; `version` always checks fresh upstream, dry runs do not write cache files, and setting `DOTAI_NO_UPDATE_CHECK=1` (or `true`) skips release checks and warnings entirely.
 - After manifest initialization, dry runs do not modify existing files or managed machine state.
 
-Backups retain the previous complete file, including any literal credentials already present. Newly created backups are private to the current user on POSIX, but DotAi does not delete historical backups: after rotating a credential, review and remove old `mcp.json.bak.*` and `stack.json.bak.*` copies yourself. Custom manifest names and backup paths inside other Git repositories need their own ignore rules; keep credentials as environment or secret-manager references rather than literals.
+Backups retain the previous complete file, including any literal credentials already present. Newly created backups are private to the current user on POSIX, but DotAi does not delete historical backups: after rotating a credential, review and remove old `mcp.json.bak.*`, `.env.bak.*`, and `stack.json.bak.*` copies yourself (`./dotai.py doctor` shows a non-failing `INACTIVE` count when backup files accumulate alongside those targets). Custom manifest names and backup paths inside other Git repositories need their own ignore rules; keep credentials as environment or secret-manager references rather than literals.
 
 Manifest and reconciliation-state writes use temporary files before replacement. A failed copy, write, or replacement preserves the original file and removes newly created incomplete backup or temporary files; a completed backup remains available. An existing backup with the same timestamp is never overwritten. State files are updated individually, not as a multi-file transaction.
 
@@ -78,6 +78,15 @@ When enforced recommendation sync skips preserved user-owned sources, it leaves 
 Keep the generated DotAi block last in the file. Reconciliation refuses malformed, duplicated, nonterminal, or symlinked managed files instead of rewriting ambiguous user content; resolve the reported conflict before retrying.
 
 Modern Web Guidance requires Node.js 22 or newer and invokes its npm CLI at runtime; the skill installation alone does not establish that runtime requirement. Update an older Node installation explicitly using the platform's supported installation method; normal DotAi updates skip present dependency tools unless `--include-dependencies` is supplied. No experimental API opt-ins or Chrome Extensions skill are enabled by this recommendation.
+
+## Doctor diagnostics
+
+`./dotai.py doctor` runs every read-only `status` check and adds secret-safe prerequisite diagnostics:
+
+- **Config target and package manager:** verifies the nearest existing ancestor of `mcp.target` is writable and checks the platform package manager (`scoop`, `brew`, `apt-get`, or `pacman` when applicable).
+- **Interactive shell `PATH`:** on Linux, WSL, and macOS, reports `DRIFT` when `~/.local/bin` contains installed binaries (such as `rtk` or `uv`) while absent from the caller's shell `PATH`, warning that tools installed there are invisible outside DotAi.
+- **Skill runtime and inherited environment conflicts:** checks `node --version` is 22.0 or newer when `modern-web-guidance` is declared (`FAIL` if missing or older), and reports `DRIFT` naming any declared `ompEnvironment` variable whose non-empty inherited shell value overrides `~/.omp/agent/.env` (without displaying environment values).
+- **MCP environment readiness and backup hygiene:** checks boolean presence in the caller's environment for uppercase environment-variable references declared in MCP `headers` or `env` (without inspecting or logging secret values, and ignoring non-sensitive literals such as `LOG_LEVEL=warning`), and notes retained `*.bak.*` counts alongside `mcp.target`, `~/.omp/agent/.env`, and `stack.json` as non-failing `INACTIVE` reminders.
 
 ## Configure OMP provider routing
 
