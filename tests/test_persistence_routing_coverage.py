@@ -16,7 +16,7 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import test_dotai as existing
-from dotai_app import cli, manifest as manifests, routing, runtime, state, terminal
+from dotai_app import cli, health, manifest as manifests, omp, routing, runtime, state, terminal
 
 
 def minimal_manifest() -> dict:
@@ -474,6 +474,68 @@ class PersistenceRoutingCoverageTests(unittest.TestCase):
         self.assertIs(type(repaired["retry.usageReservePct"]), int)
         self.assertEqual(self.path.read_bytes(), original)
         self.assertEqual(list(self.root.glob("stack.json.bak.*")), [])
+
+    def test_omp_config_list_batches_routing_and_status_queries_in_one_read_and_invalidates_on_set(self) -> None:
+        manifest, selectors, values = existing.DotAiTests.compact_status_case(existing.DotAiTests())
+        extension = self.root / ".pi" / "agent" / "extensions" / "rtk.ts"
+        extension.parent.mkdir(parents=True, exist_ok=True)
+        extension.write_text("// extension\n", encoding="utf-8")
+        manifest["ompExtensions"] = ["~/.pi/agent/extensions/rtk.ts"]
+        (self.root / ".omp" / "agent").mkdir(parents=True, exist_ok=True)
+        (self.root / ".omp" / "agent" / "mcp.json").write_text(
+            json.dumps({"mcpServers": manifest["mcp"]["servers"]}), encoding="utf-8"
+        )
+        list_payload = {
+            "extensions": {"value": ["~/.pi/agent/extensions/rtk.ts"], "type": "array"},
+            **{key: {"value": value} for key, value in values.items()},
+            "unset.key": {"type": "string", "description": ""},
+        }
+        boundary = (
+            "import json, os, pathlib, sys\n"
+            "root = pathlib.Path(os.environ['DOTAI_HOME'])\n"
+            "args = sys.argv[1:]\n"
+            "with (root / 'omp-calls.jsonl').open('a', encoding='utf-8') as log:\n"
+            "    log.write(json.dumps(args) + '\\n')\n"
+            "if args == ['models', '--json']:\n"
+            "    print((root / 'omp-models.json').read_text(encoding='utf-8'))\n"
+            "elif args == ['config', 'list', '--json']:\n"
+            "    print((root / 'omp-list.json').read_text(encoding='utf-8'))\n"
+            "elif args[:2] == ['config', 'set'] and len(args) == 4:\n"
+            "    data = json.loads((root / 'omp-list.json').read_text(encoding='utf-8'))\n"
+            "    try:\n"
+            "        parsed = json.loads(args[3])\n"
+            "    except json.JSONDecodeError:\n"
+            "        parsed = args[3]\n"
+            "    data[args[2]] = {'value': parsed}\n"
+            "    (root / 'omp-list.json').write_text(json.dumps(data), encoding='utf-8')\n"
+            "else:\n"
+            "    sys.exit(64)\n"
+        )
+        (self.root / "omp-boundary.py").write_text(boundary, encoding="utf-8")
+        (self.root / "omp-models.json").write_text(
+            json.dumps({"models": [{"selector": selector} for selector in selectors]}), encoding="utf-8"
+        )
+        (self.root / "omp-list.json").write_text(json.dumps(list_payload), encoding="utf-8")
+
+        runner = runtime.Runner("ubuntu")
+        with mock.patch.object(routing, "load_routing_recommendations", return_value=existing.DotAiTests.routing_recommendations(None)):
+            self.assertTrue(health.print_status(manifest, runner))
+            self.assertIsNone(omp.configured_omp_value(runner, "unset.key"))
+        calls = [json.loads(line) for line in (self.root / "omp-calls.jsonl").read_text(encoding="utf-8").splitlines()]
+        self.assertEqual(calls, [["config", "list", "--json"], ["models", "--json"]])
+
+        # Setting an OMP config value through Runner.run invalidates cached read-only config.
+        runner.run(["omp", "config", "set", "extensions", json.dumps(["~/.pi/agent/extensions/rtk.ts", "~/extra.ts"])], "Set extensions")
+        self.assertEqual(omp.configured_omp_extensions(runner), ["~/.pi/agent/extensions/rtk.ts", "~/extra.ts"])
+        calls_after = [json.loads(line) for line in (self.root / "omp-calls.jsonl").read_text(encoding="utf-8").splitlines()]
+        self.assertEqual(calls_after.count(["config", "list", "--json"]), 2)
+
+    def test_omp_config_batch_falls_back_cleanly_to_per_key_get_when_list_unsupported(self) -> None:
+        manifest, selectors, values = existing.DotAiTests.compact_status_case(existing.DotAiTests())
+        install_omp_boundary(self.root, selectors, values)
+        runner = runtime.Runner("ubuntu")
+        with mock.patch.object(routing, "load_routing_recommendations", return_value=existing.DotAiTests.routing_recommendations(None)):
+            self.assertEqual(routing.omp_routing_status(manifest, runner), ("OK", "configured roles match"))
 
 
 if __name__ == "__main__":

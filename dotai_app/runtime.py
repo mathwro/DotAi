@@ -92,6 +92,7 @@ class Runner:
         self.failures: list[str] = []
         self.env = os.environ.copy()
         self.secrets: set[str] = set()
+        self._omp_config_cache: dict[str, dict[str, Any]] | None = None
         candidates = [
             home_dir() / ".local" / "bin",
             home_dir() / ".cargo" / "bin",
@@ -155,6 +156,7 @@ class Runner:
             self.say(f"  command: {self.display_command(command)}")
         if self.dry_run:
             return None
+        self._omp_config_cache = None
         try:
             result = subprocess.run(
                 self.argv(command),

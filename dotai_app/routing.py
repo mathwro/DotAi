@@ -7,6 +7,7 @@ from typing import Any
 import json
 import sys
 from . import manifest as manifests
+from . import omp as omp_config
 from . import runtime
 from . import terminal
 
@@ -199,14 +200,7 @@ def resolve_omp_routing(
 
 
 def configured_omp_value(runner: runtime.Runner, key: str) -> Any | None:
-    raw = runner.output(["omp", "config", "get", key, "--json"])
-    try:
-        configured = json.loads(raw)
-    except (TypeError, json.JSONDecodeError):
-        return None
-    if not isinstance(configured, dict) or "value" not in configured:
-        return None
-    return configured["value"]
+    return omp_config.configured_omp_value(runner, key)
 
 
 def build_omp_routing_intent(
@@ -273,10 +267,9 @@ def configure_omp_routing(
         "task.agentModelOverrides",
     )
     scalar_values = omp_routing_scalar_values(intent)
-    current = {
-        key: configured_omp_value(runner, key)
-        for key in (*record_keys, *scalar_values)
-    }
+    current = omp_config.configured_omp_values(
+        runner, (*record_keys, *scalar_values)
+    )
     if any(
         not isinstance(current[key], dict)
         or any(not isinstance(name, str) for name in current[key])
@@ -388,7 +381,7 @@ def omp_routing_status(manifest: dict[str, Any], runner: runtime.Runner) -> tupl
 
     record_keys = ("modelRoles", "retry.fallbackChains", "task.agentModelOverrides")
     scalar_values = omp_routing_scalar_values(routing)
-    current = {key: configured_omp_value(runner, key) for key in (*record_keys, *scalar_values)}
+    current = omp_config.configured_omp_values(runner, (*record_keys, *scalar_values))
     if any(
         not isinstance(current[key], dict) or any(not isinstance(name, str) for name in current[key])
         for key in record_keys

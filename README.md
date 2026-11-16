@@ -109,7 +109,7 @@ Normal operations show flushed DotAi progress rather than raw command arguments 
 
 Color can be controlled with `--color auto|always|never`. Automatic mode respects `NO_COLOR`, `FORCE_COLOR`, and `TERM=dumb`; `FORCE_COLOR=0` disables it even on a terminal. Explicit `always` or `never` takes precedence over the environment. `status` and `doctor` return a nonzero exit code when the declared stack is unhealthy.
 
-The `INACTIVE` hint for unconfigured optional routing is informational and does not make the stack unhealthy.
+The `INACTIVE` hints for unconfigured optional routing, unset MCP environment-variable references, and retained `*.bak.*` backup files are informational and do not make the stack unhealthy. `doctor` extends `status` with read-only checks for writable MCP target ancestors, platform package managers, `~/.local/bin` visibility on Unix shell `PATH`, Node.js 22+ when Modern Web Guidance is declared, inherited shell variables overriding `ompEnvironment` defaults, MCP environment-variable presence, and retained backup hygiene.
 
 ## Extending the stack
 

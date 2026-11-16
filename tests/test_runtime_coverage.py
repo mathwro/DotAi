@@ -17,7 +17,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if __name__ == "__main__":
     sys.path.insert(0, str(ROOT))
 
-from dotai_app import packages, reconcile, runtime, terminal
+from dotai_app import health, packages, reconcile, runtime, terminal
 
 
 class RuntimeCoverageTests(unittest.TestCase):
@@ -429,6 +429,60 @@ class RuntimeCoverageTests(unittest.TestCase):
         self.assertFalse(marker.exists())
         self.assertFalse((self.home / "state").exists())
         self.assertEqual(json.loads(path.read_text(encoding="utf-8")), manifest)
+
+    def test_status_probes_each_package_once_and_rejects_malformed_utf8_streams(self) -> None:
+        counter = self.home / "status-probes"
+        counter.write_text("0", encoding="utf-8")
+        probe_script = (
+            "from pathlib import Path; "
+            f"path = Path({str(counter)!r}); "
+            "count = int(path.read_text(encoding='utf-8')) + 1; "
+            "path.write_text(str(count), encoding='utf-8'); "
+            "print(f'plain-tool 1.2.{count}')"
+        )
+        manifest = {
+            "version": 1,
+            "packages": [{"name": "PlainTool", "check": self.python(probe_script), "install": {}}],
+            "skills": [], "marketplaces": [], "plugins": [], "ompExtensions": [],
+            "mcp": {"target": str(self.home / "mcp.json"), "servers": {}},
+        }
+        report = io.StringIO()
+        with contextlib.redirect_stdout(report):
+            self.assertTrue(health.print_status(manifest, runtime.Runner(self.platform)))
+        self.assertEqual(counter.read_text(encoding="utf-8"), "1")
+        self.assertIn("[OK] PlainTool: plain-tool 1.2.1", report.getvalue())
+
+        for stdout, stderr in ((b"\xff", b"plain 1.0\n"), (b"plain 1.0\n", b"\xff")):
+            with self.subTest(stdout=stdout, stderr=stderr):
+                bad_check = self.python(
+                    f"import sys; sys.stdout.buffer.write({stdout!r}); sys.stderr.buffer.write({stderr!r})"
+                )
+                bad_package = {"name": "BadUtf8", "check": bad_check, "install": {}}
+                self.assertEqual(packages.probe_package(bad_package, runtime.Runner(self.platform)), (False, False, "not found"))
+
+    def test_reconcile_probes_outdated_versioned_package_once_before_update(self) -> None:
+        counter = self.home / "reconcile-probes"
+        counter.write_text("0", encoding="utf-8")
+        probe_script = (
+            "from pathlib import Path; "
+            f"path = Path({str(counter)!r}); "
+            "count = int(path.read_text(encoding='utf-8')) + 1; "
+            "path.write_text(str(count), encoding='utf-8'); "
+            "print('versioned-tool 1.0.0')"
+        )
+        package = {
+            "name": "VersionedTool",
+            "minimumVersion": "2.0",
+            "check": self.python(probe_script),
+            "install": {"default": [self.python("pass")]},
+            "update": {"default": [self.python("pass")]},
+        }
+        runner = runtime.Runner(self.platform, dry_run=True)
+        report = io.StringIO()
+        with contextlib.redirect_stdout(report):
+            packages.reconcile_packages(self.manifest(package), runner, "install")
+        self.assertEqual(counter.read_text(encoding="utf-8"), "1")
+        self.assertIn("Check/update VersionedTool", report.getvalue())
 
 
 if __name__ == "__main__":

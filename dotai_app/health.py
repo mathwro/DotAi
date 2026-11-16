@@ -5,6 +5,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 import os
+import re
+from . import manifest as manifests
 from . import mcp as mcp_config
 from . import omp as omp_config
 from . import packages as package_manager
@@ -19,11 +21,7 @@ def print_status(manifest: dict[str, Any], runner: runtime.Runner) -> bool:
     runner.say(f"{terminal.heading('Platform:')} {runner.platform}")
     runner.say(terminal.heading("Packages:"))
     for package in manifest["packages"]:
-        if "minimumVersion" in package:
-            installed, version = package_manager.package_version_check(package, runner, runtime.selected(package.get("check", []), runner.platform))
-        else:
-            installed = package_manager.package_check(package, runner)
-            version = runner.output(runtime.selected(package.get("check", []), runner.platform)) if installed else "not found"
+        installed, _, version = package_manager.probe_package(package, runner)
         healthy &= installed
         label = "OK" if installed else "MISSING"
         runner.say(f"  {terminal.badge(label)} {package['name']}: {version.splitlines()[0] if version else 'installed'}")
@@ -90,6 +88,68 @@ def writable_parent(path: Path) -> bool:
     return os.access(parent, os.W_OK)
 
 
+_UPPER_ENV_REF = re.compile(r"^[A-Z_][A-Z0-9_]*$")
+
+
+def _path_entries(raw_path: str) -> set[str]:
+    entries: set[str] = set()
+    for entry in raw_path.split(os.pathsep):
+        if entry:
+            try:
+                entries.add(os.path.normcase(str(Path(entry).expanduser().resolve())))
+            except OSError:
+                entries.add(os.path.normcase(entry))
+    return entries
+
+
+def _declares_modern_web_guidance(manifest: dict[str, Any]) -> bool:
+    for skill in manifest.get("skills", []):
+        source = skill_manager.github_repository_source(skill.get("source")) or str(skill.get("source", "")).lower()
+        selected = skill.get("skills", [])
+        checks = skill.get("checkSkills", [])
+        if (
+            source == "googlechrome/modern-web-guidance"
+            or "modern-web-guidance" in selected
+            or "modern-web-guidance" in checks
+        ):
+            return True
+    return False
+
+
+def _mcp_env_references(manifest: dict[str, Any]) -> list[tuple[str, str]]:
+    refs: list[tuple[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    servers = manifest.get("mcp", {}).get("servers", {})
+    for server_name, server in servers.items():
+        if not isinstance(server, dict):
+            continue
+        for section in ("headers", "env"):
+            mapping = server.get(section)
+            if not isinstance(mapping, dict):
+                continue
+            for key, value in mapping.items():
+                if (
+                    isinstance(key, str)
+                    and isinstance(value, str)
+                    and _UPPER_ENV_REF.fullmatch(value)
+                    and (key == value or bool(terminal._SECRET_NAME.search(key)))
+                    and (server_name, value) not in seen
+                ):
+                    seen.add((server_name, value))
+                    refs.append((server_name, value))
+    return refs
+
+
+def _backup_files_for(target: Path) -> set[Path]:
+    parent = target.parent
+    if not parent.is_dir():
+        return set()
+    try:
+        return {path.resolve() for path in parent.glob(f"{target.name}.bak.*") if path.is_file()}
+    except OSError:
+        return set()
+
+
 def doctor(manifest: dict[str, Any], runner: runtime.Runner) -> bool:
     healthy = print_status(manifest, runner)
     target, _ = mcp_config.desired_mcp(manifest)
@@ -108,4 +168,62 @@ def doctor(manifest: dict[str, Any], runner: runtime.Runner) -> bool:
         available = runner.succeeds(manager)
         healthy &= available
         runner.say(f"{terminal.heading('Package manager:')}\n  {terminal.badge('OK' if available else 'FAIL')} {manager[0]}")
+    if runner.platform != "windows":
+        local_bin = runtime.home_dir() / ".local" / "bin"
+        try:
+            has_entries = local_bin.is_dir() and any(entry.is_file() for entry in local_bin.iterdir())
+        except OSError:
+            has_entries = False
+        if has_entries:
+            normalized_local = os.path.normcase(str(local_bin.resolve()))
+            if normalized_local not in _path_entries(os.environ.get("PATH", "")):
+                healthy = False
+                runner.say(
+                    f"{terminal.heading('Shell PATH:')}\n  {terminal.badge('DRIFT')} {local_bin} is missing from your shell PATH; tools installed there will not be found outside DotAi"
+                )
+    if _declares_modern_web_guidance(manifest):
+        node_ok, node_detail = package_manager.package_version_check(
+            {"minimumVersion": "22.0"}, runner, ["node", "--version"]
+        )
+        healthy &= node_ok
+        first_line = node_detail.splitlines()[0] if node_detail else "not found"
+        if node_ok:
+            runner.say(
+                f"{terminal.heading('Skill runtime:')}\n  {terminal.badge('OK')} Modern Web Guidance Node.js 22+ requirement satisfied ({first_line})"
+            )
+        else:
+            runner.say(
+                f"{terminal.heading('Skill runtime:')}\n  {terminal.badge('FAIL')} Modern Web Guidance requires Node.js 22+ (found: {first_line})"
+            )
+    conflicting_skill_env: list[str] = []
+    seen_skill_env: set[str] = set()
+    for skill in manifest.get("skills", []):
+        for key, declared in skill.get("ompEnvironment", {}).items():
+            inherited = os.environ.get(key)
+            if inherited and inherited != declared and key not in seen_skill_env:
+                seen_skill_env.add(key)
+                conflicting_skill_env.append(key)
+    if conflicting_skill_env:
+        healthy = False
+        runner.say(
+            f"{terminal.heading('Skill environment:')}\n  {terminal.badge('DRIFT')} inherited shell environment overrides managed OMP defaults: {', '.join(sorted(conflicting_skill_env))}"
+        )
+    mcp_refs = _mcp_env_references(manifest)
+    if mcp_refs:
+        unset_refs = [f"{server} ({var})" for server, var in mcp_refs if not (var in os.environ and bool(os.environ[var]))]
+        if unset_refs:
+            runner.say(
+                f"{terminal.heading('MCP environment:')}\n  {terminal.badge('INACTIVE')} unset environment variable reference(s): {', '.join(unset_refs)}"
+            )
+        else:
+            runner.say(
+                f"{terminal.heading('MCP environment:')}\n  {terminal.badge('OK')} {len(mcp_refs)} referenced environment variable(s) set in shell"
+            )
+    backups: set[Path] = set()
+    for watched in (target, runtime.home_dir() / ".omp" / "agent" / ".env", manifests.DEFAULT_MANIFEST):
+        backups.update(_backup_files_for(watched))
+    if backups:
+        runner.say(
+            f"{terminal.heading('Backups:')}\n  {terminal.badge('INACTIVE')} {len(backups)} backup file(s) retained (*.bak.*); review and prune old copies after rotating credentials"
+        )
     return healthy
