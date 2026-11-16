@@ -1,0 +1,25 @@
+name: Upstream Drift Check
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 7 * * 1"
+
+permissions:
+  contents: read
+
+jobs:
+  upstream-drift:
+    name: Check OMP routing catalog and RTK release pin
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.14"
+      - name: Verify upstream OMP routing catalog and pinned Linux RTK release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python scripts/check_upstream.py --fail-on-outdated
