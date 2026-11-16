@@ -32,7 +32,7 @@ The Python entry point, manifests, and schema stay at the repository root becaus
 | `skills.py` | Agent-scoped installation, ownership checks, health, retirement, and legacy migration |
 | `recommendations.py` | Plan, review, and apply recommended skill changes |
 | `state.py` | Reconciliation history and recommended-skill ownership persistence |
-| `omp.py` | OMP marketplaces, plugins, extension registration, and registry checks |
+| `omp.py` | OMP marketplaces, plugins, extension registration, skill environment defaults, and registry checks |
 | `routing.py` | Provider/model policy, availability, explicit routing configuration, and routing health |
 | `mcp.py` | Provider discovery, semantic server matching, health, and reconciliation |
 | `health.py` | Aggregate read-only status and doctor diagnostics |

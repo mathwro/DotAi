@@ -86,6 +86,10 @@ def build_parser() -> argparse.ArgumentParser:
     add_skill.add_argument("--agent", default="universal")
     add_skill.add_argument("--skill", dest="skills", action="append")
     add_skill.add_argument("--check-skill", dest="check_skills", action="append")
+    add_skill.add_argument(
+        "--omp-env", dest="omp_environment", action="append", metavar="NAME=VALUE",
+        help="Persistent OMP child-command environment default (simple literals only); repeatable",
+    )
 
     add_marketplace = add_sub.add_parser("marketplace", help="Add or replace an OMP marketplace")
     add_marketplace.add_argument("name")

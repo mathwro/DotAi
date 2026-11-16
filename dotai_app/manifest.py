@@ -286,6 +286,19 @@ def validate_manifest(data: Any, *, allow_legacy_routing: bool = False) -> dict[
                 or any(not isinstance(item, str) for item in skill[field])
             ):
                 raise runtime.DotAiError(f"Manifest '{path_name}.{field}' must be an array of strings")
+        if "ompEnvironment" in skill:
+            environment = skill["ompEnvironment"]
+            if not isinstance(environment, dict):
+                raise runtime.DotAiError(f"Manifest '{path_name}.ompEnvironment' must be an object")
+            for name, value in environment.items():
+                if not isinstance(name, str) or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name):
+                    raise runtime.DotAiError(
+                        f"Manifest '{path_name}.ompEnvironment' keys must match [A-Za-z_][A-Za-z0-9_]*"
+                    )
+                if not isinstance(value, str) or not re.fullmatch(r"[A-Za-z0-9_./:-]+", value):
+                    raise runtime.DotAiError(
+                        f"Manifest '{path_name}.ompEnvironment.{name}' must be a non-empty literal matching [A-Za-z0-9_./:-]+"
+                    )
     for index, marketplace in enumerate(data["marketplaces"]):
         path_name = f"marketplaces[{index}]"
         if not isinstance(marketplace, dict):

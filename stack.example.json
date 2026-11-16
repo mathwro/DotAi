@@ -146,6 +146,13 @@
       "agent": "universal",
       "skills": ["web-design-guidelines"],
       "checkSkills": ["web-design-guidelines"]
+    },
+    {
+      "source": "GoogleChrome/modern-web-guidance",
+      "agent": "universal",
+      "skills": ["modern-web-guidance"],
+      "checkSkills": ["modern-web-guidance"],
+      "ompEnvironment": {"DISABLE_TELEMETRY": "1"}
     }
   ],
   "marketplaces": [],

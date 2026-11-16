@@ -65,6 +65,20 @@ The recommended stack installs the Graphify CLI, but does not install its Pi ski
 
 Existing `stack.json` files are user-owned and are not updated from `stack.example.json` by `sync` or `sync --recommended-skills`. If your Graphify package still has a `configure` command that runs `graphify install --platform pi`, remove that command from your local manifest before your next `install` or `update`. To retire the previously installed broad Pi skill, run `graphify pi uninstall` yourself. These steps leave the CLI available for explicit use.
 
+## Skill environment defaults
+
+Skill entries may declare `ompEnvironment`, an object of environment defaults for OMP child commands. Names must match `[A-Za-z_][A-Za-z0-9_]*`; values must be nonempty strings containing only letters, digits, `_`, `.`, `/`, `:`, or `-`. These are literal, non-secret settings, not shell expressions or credential storage.
+
+During `install`, `update`, and `sync`, DotAi reconciles these defaults before installing skills, including when an installed skill needs no refresh. It also supplies them to the installer process. The persistent defaults live in a DotAi-managed block in `~/.omp/agent/.env`; unrelated content is preserved, existing files receive private timestamped backups before changes, and unchanged runs create no backup. Dry runs preview without writing. Conflicting declarations fail rather than choosing a source silently.
+
+The recommended `modern-web-guidance` entry sets `DISABLE_TELEMETRY=1`. This disables its default-on search-query and usage telemetry for commands launched by a restarted OMP session. OMP preserves nonempty inherited environment variables: remove a contrary shell export such as `DISABLE_TELEMETRY=0` rather than expecting this default to override it. Direct CLI use outside OMP requires the same opt-out in that process's environment. The managed block is rebuilt from the active manifest; removing a declaration removes it from that block on the next reconciliation, without changing unrelated dotenv content.
+
+When enforced recommendation sync skips preserved user-owned sources, it leaves their existing managed defaults intact and applies only active declarations. A later ordinary full sync rebuilds the block exactly from the manifest.
+
+Keep the generated DotAi block last in the file. Reconciliation refuses malformed, duplicated, nonterminal, or symlinked managed files instead of rewriting ambiguous user content; resolve the reported conflict before retrying.
+
+Modern Web Guidance requires Node.js 22 or newer and invokes its npm CLI at runtime; the skill installation alone does not establish that runtime requirement. Update an older Node installation explicitly using the platform's supported installation method; normal DotAi updates skip present dependency tools unless `--include-dependencies` is supplied. No experimental API opt-ins or Chrome Extensions skill are enabled by this recommendation.
+
 ## Configure OMP provider routing
 
 **Optional, post-authentication setup:** run the routing commands only after installing the stack, opening OMP for the first time, and authenticating at least one supported provider. DotAi does not perform provider login.

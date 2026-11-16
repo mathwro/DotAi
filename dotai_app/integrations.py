@@ -67,6 +67,9 @@ def add_integration(args: argparse.Namespace, manifest: dict[str, Any], path: Pa
             "skills": skills,
             "checkSkills": check_skills,
         }
+        environment = parse_assignments(getattr(args, "omp_environment", None), "--omp-env", ENV_NAME)
+        if environment:
+            value["ompEnvironment"] = environment
         upsert(manifest["skills"], "source", value)
     elif kind == "marketplace":
         upsert(manifest["marketplaces"], "name", {"name": args.name, "source": args.source})
