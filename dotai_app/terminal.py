@@ -184,3 +184,61 @@ def describe_skill_changes(before: list[dict[str, Any]], after: list[dict[str, A
             fields = sorted(key for key in previous.keys() | current.keys() if previous.get(key) != current.get(key))
             rows.append(f"    changed fields: {', '.join(fields)}")
     return redact("\n".join(rows))
+
+
+def describe_package_changes(before: list[dict[str, Any]], after: list[dict[str, Any]]) -> str:
+    """Describe package additions, updates, and removals without dumping commands."""
+    old = {package["name"]: package for package in before}
+    new = {package["name"]: package for package in after}
+    rows: list[str] = []
+    for name in dict.fromkeys([*old, *new]):
+        previous, current = old.get(name), new.get(name)
+        if previous == current:
+            continue
+        action = "Add" if previous is None else "Remove" if current is None else "Update"
+        rows.append(f"  {action} package {name}")
+        if previous is not None and current is not None:
+            fields = sorted(key for key in previous.keys() | current.keys() if previous.get(key) != current.get(key))
+            rows.append(f"    changed fields: {', '.join(fields)}")
+    return redact("\n".join(rows))
+
+
+def describe_mcp_changes(before: dict[str, dict[str, Any]], after: dict[str, dict[str, Any]]) -> str:
+    """Describe MCP server additions, updates, and removals without header/env values."""
+    rows: list[str] = []
+    for name in dict.fromkeys([*before, *after]):
+        previous, current = before.get(name), after.get(name)
+        if previous == current:
+            continue
+        action = "Add" if previous is None else "Remove" if current is None else "Update"
+        active = current if current is not None else previous
+        transport = active.get("type", "stdio") if active is not None else "stdio"
+        rows.append(f"  {action} MCP server {name} ({transport})")
+        if previous is not None and current is not None:
+            fields = sorted(key for key in previous.keys() | current.keys() if previous.get(key) != current.get(key))
+            rows.append(f"    changed fields: {', '.join(fields)}")
+    return redact("\n".join(rows))
+
+
+def describe_extension_changes(before: list[str], after: list[str]) -> str:
+    """Describe OMP extension path additions and removals."""
+    old_set = set(before)
+    new_set = set(after)
+    rows: list[str] = []
+    for item in dict.fromkeys([*before, *after]):
+        if item in old_set and item not in new_set:
+            rows.append(f"  Remove OMP extension {item}")
+        elif item in new_set and item not in old_set:
+            rows.append(f"  Add OMP extension {item}")
+    return redact("\n".join(rows))
+
+
+def describe_stack_changes(before: dict[str, Any], after: dict[str, Any]) -> str:
+    """Describe baseline stack changes across packages, skills, MCP, and OMP extensions."""
+    sections = [
+        describe_package_changes(before["packages"], after["packages"]),
+        describe_skill_changes(before["skills"], after["skills"]),
+        describe_mcp_changes(before["mcp"]["servers"], after["mcp"]["servers"]),
+        describe_extension_changes(before.get("ompExtensions", []), after.get("ompExtensions", [])),
+    ]
+    return "\n".join(section for section in sections if section)

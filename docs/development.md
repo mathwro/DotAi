@@ -30,8 +30,8 @@ The Python entry point, manifests, and schema stay at the repository root becaus
 | `integrations.py` | Parse and persist declared integrations from `add` commands |
 | `packages.py` | Package presence, minimum versions, and install/update decisions |
 | `skills.py` | Agent-scoped installation, ownership checks, health, retirement, and legacy migration |
-| `recommendations.py` | Plan, review, and apply recommended skill changes |
-| `state.py` | Reconciliation history and recommended-skill ownership persistence |
+| `recommendations.py` | Plan, review, and apply recommended skill and baseline stack changes |
+| `state.py` | Reconciliation history and baseline recommendation ownership persistence |
 | `omp.py` | OMP marketplaces, plugins, extension registration, skill environment defaults, and registry checks |
 | `routing.py` | Provider/model policy, availability, explicit routing configuration, and routing health |
 | `mcp.py` | Provider discovery, semantic server matching, health, and reconciliation |
@@ -52,7 +52,7 @@ Normal failures include the operation, nonzero exit code, a bounded sanitized ca
 
 Redaction covers known secret-bearing environment values, credential flags/assignments, header/environment arguments, authorization/cookie headers, and URL passwords. It is protection for known credentials and recognizable syntax, not a guarantee to discover arbitrary unlabeled secrets. Tests generate synthetic credential values at runtime rather than storing credential-like fixtures.
 
-Routing previews name providers, model primaries and fallback chains, changed intent fields, and pending setting names without exposing unmanaged OMP values. Skill previews describe sources, old/new selections, agents, and other changed field names instead of whole-manifest diffs. Cleanup-dependent recommendations stay explicitly conditional on the separate cleanup approval. Dry-run completion means a preview, never applied changes; do not add changed/unchanged totals unless every domain outcome can be accounted for truthfully.
+Routing previews name providers, model primaries and fallback chains, changed intent fields, and pending setting names without exposing unmanaged OMP values. Skill and baseline stack previews describe package names, skill sources and selections, MCP server names and transports, changed field names, and extension paths instead of whole-manifest diffs or header/environment values. Cleanup-dependent recommendations stay explicitly conditional on the separate cleanup approval. Dry-run completion means a preview, never applied changes; do not add changed/unchanged totals unless every domain outcome can be accounted for truthfully.
 
 Output regressions use real isolated Python children, including an outer subprocess to detect inherited file-descriptor leaks: `rtk python3 -m unittest discover -s tests -p test_output_contract.py -v`. Never run installers or authenticated personal tools just to test presentation.
 

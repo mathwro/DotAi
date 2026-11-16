@@ -348,7 +348,7 @@ class PersistenceRoutingCoverageTests(unittest.TestCase):
         def history_temporary_file(*args, **kwargs):
             nonlocal temporary_writes
             temporary_writes += 1
-            if temporary_writes == 1:
+            if temporary_writes <= 2:
                 return REAL_TEMPORARY_FILE(*args, **kwargs)
             return partial_temporary_write(*args, **kwargs)
 
@@ -360,7 +360,10 @@ class PersistenceRoutingCoverageTests(unittest.TestCase):
                 state.save_state(self.path, runtime.Runner("ubuntu"), "update", [{"source": "owner/current"}])
         self.assertEqual(history.read_bytes(), original)
         self.assertEqual(state.managed_recommendations(self.path), [{"source": "owner/current"}])
-        self.assertEqual(set(self.state_dir.iterdir()), {history, self.state_dir / "recommended-skills.json"})
+        self.assertEqual(
+            set(self.state_dir.iterdir()),
+            {history, self.state_dir / "recommended-skills.json", self.state_dir / "recommended-baseline.json"},
+        )
 
     def test_history_replace_failure_preserves_previous_success_and_cleans_temp(self) -> None:
         history = self.state_file("state.json", b'{"manifest":"old","lastSuccess":"old success"}')
@@ -378,7 +381,10 @@ class PersistenceRoutingCoverageTests(unittest.TestCase):
                 state.save_state(self.path, runtime.Runner("ubuntu"), "update", [{"source": "owner/current"}])
         self.assertEqual(history.read_bytes(), original)
         self.assertEqual(state.managed_recommendations(self.path), [{"source": "owner/current"}])
-        self.assertEqual(set(self.state_dir.iterdir()), {history, self.state_dir / "recommended-skills.json"})
+        self.assertEqual(
+            set(self.state_dir.iterdir()),
+            {history, self.state_dir / "recommended-skills.json", self.state_dir / "recommended-baseline.json"},
+        )
 
     def test_recommendation_read_and_decode_failures_are_domain_errors(self) -> None:
         target = self.root / "recommendations.json"
