@@ -163,6 +163,7 @@ class OmpHealthCoverageTests(unittest.TestCase):
     def write_command(self, name: str, body: str) -> None:
         path = self.bin / (name + ".py")
         path.write_text(body, encoding="utf-8")
+        path.chmod(0o755)
 
     def write_json(self, path: Path, value: object) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -453,6 +454,14 @@ class OmpHealthCoverageTests(unittest.TestCase):
             self.assertIn("[DRIFT]", report.getvalue())
             self.assertIn(str(self.bin), report.getvalue())
 
+            # Non-executable files alone in ~/.local/bin do not trigger a false PATH warning.
+            (self.bin / "omp.py").chmod(0o644)
+            (self.bin / ".keep").write_text("", encoding="utf-8")
+            quiet_report = io.StringIO()
+            with contextlib.redirect_stdout(quiet_report):
+                self.assertTrue(health.doctor(self.manifest, runtime.Runner("linux")))
+            self.assertNotIn("Shell PATH:", quiet_report.getvalue())
+            (self.bin / "omp.py").chmod(0o755)
             win_report = io.StringIO()
             with contextlib.redirect_stdout(win_report):
                 self.write_command("scoop", "import sys\nsys.exit(0)\n")
@@ -578,6 +587,24 @@ class OmpHealthCoverageTests(unittest.TestCase):
         self.assertIn("[INACTIVE]", output)
         self.assertIn("3 backup file(s)", output)
 
+
+    def test_verbose_status_emits_sanitized_package_probe_diagnostics(self) -> None:
+        secret_val = "probe-secret-" + secrets.token_urlsafe(16)
+        self.manifest["packages"] = [{
+            "name": "failing-tool",
+            "check": [sys.executable, "-c", f"import sys; sys.stderr.write('auth token={secret_val}\\n'); sys.exit(3)"],
+            "install": {"linux": [["true"]]},
+        }]
+        mcp_target = self.home / ".omp" / "agent" / "mcp.json"
+        self.write_json(mcp_target, {"mcpServers": {}})
+        report = io.StringIO()
+        with contextlib.redirect_stdout(report):
+            self.assertFalse(health.print_status(self.manifest, runtime.Runner("linux", verbose=True)))
+        output = report.getvalue()
+        self.assertIn("probe:", output)
+        self.assertIn("(exit 3)", output)
+        self.assertIn("stderr:", output)
+        self.assertNotIn(secret_val, output)
 
 if __name__ == "__main__":
     unittest.main()

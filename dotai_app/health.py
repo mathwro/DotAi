@@ -171,7 +171,9 @@ def doctor(manifest: dict[str, Any], runner: runtime.Runner) -> bool:
     if runner.platform != "windows":
         local_bin = runtime.home_dir() / ".local" / "bin"
         try:
-            has_entries = local_bin.is_dir() and any(entry.is_file() for entry in local_bin.iterdir())
+            has_entries = local_bin.is_dir() and any(
+                entry.is_file() and os.access(entry, os.X_OK) for entry in local_bin.iterdir()
+            )
         except OSError:
             has_entries = False
         if has_entries:

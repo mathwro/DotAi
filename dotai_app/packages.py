@@ -16,16 +16,25 @@ PACKAGE_VERSION_PATTERN = re.compile(r"(?<![\w.])v?(\d+)\.(\d+)(?:\.(\d+))?(?![\
 def _run_probe(runner: runtime.Runner, command: Any) -> tuple[bool, str, str]:
     if not command:
         return False, "", ""
+    runner.secrets.update(terminal.credential_values(runner.env))
+    runner.secrets.update(terminal.credential_values(command))
     try:
         result = subprocess.run(
             runner.argv(command), env=runner.env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False
         )
         stdout = (result.stdout or b"").decode("utf-8").strip()
         stderr = (result.stderr or b"").decode("utf-8").strip()
-    except (OSError, UnicodeError):
+    except (OSError, UnicodeError) as exc:
+        if runner.verbose:
+            runner.say(f"  probe: {runner.display_command(command)}: {terminal.diagnostic(str(exc), runner.secrets)}")
         return False, "", ""
+    if runner.verbose:
+        runner.say(f"  probe: {runner.display_command(command)} (exit {result.returncode})")
+        for name, text in (("stdout", stdout), ("stderr", stderr)):
+            detail = terminal.diagnostic(text, runner.secrets)
+            if detail:
+                runner.say(f"  {name}: {detail}")
     return result.returncode == 0, stdout, stderr
-
 
 def _evaluate_minimum_version(
     minimum_value: Any, succeeded: bool, stdout: str, stderr: str
