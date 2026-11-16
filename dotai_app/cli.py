@@ -224,14 +224,32 @@ def main(argv: list[str] | None = None) -> int:
     managed_skills = None
     managed_baseline = None
     refresh_sources: set[str] = set()
-    if args.command == "sync":
-        if not args.recommended and not args.recommended_skills:
+    if args.command == "update":
+        skill_manager.print_legacy_skill_notice(manifest)
+    if getattr(args, "recommended", False):
+        try:
+            old_skills = manifest["skills"]
+            manifest, managed_skills, managed_baseline = skill_recommendations.review_recommended_stack(
+                manifest, args.manifest, runner, args.enforce, mode=args.command
+            )
+            if runner.failures:
+                return 1
+            previous = {skill["source"]: skill for skill in old_skills}
+            refresh_sources = {
+                skill["source"] for skill in manifest["skills"]
+                if previous.get(skill["source"]) != skill
+            }
+        except (OSError, runtime.DotAiError) as exc:
+            terminal.say(f"{terminal.styled('dotai:', 'red', 'bold')} {exc}", file=sys.stderr)
+            return 2
+    elif args.command == "sync":
+        if not args.recommended_skills:
             try:
                 skill_recommendations.print_recommended_skill_notice(manifest, args.manifest)
             except (OSError, runtime.DotAiError) as exc:
                 terminal.say(f"{terminal.styled('dotai:', 'red', 'bold')} {exc}", file=sys.stderr)
                 return 2
-        elif args.recommended_skills:
+        else:
             try:
                 old_skills = manifest["skills"]
                 manifest, managed_skills = skill_recommendations.review_recommended_skills(
@@ -247,55 +265,21 @@ def main(argv: list[str] | None = None) -> int:
             except (OSError, runtime.DotAiError) as exc:
                 terminal.say(f"{terminal.styled('dotai:', 'red', 'bold')} {exc}", file=sys.stderr)
                 return 2
-        elif args.recommended:
-            try:
-                old_skills = manifest["skills"]
-                manifest, managed_skills, managed_baseline = skill_recommendations.review_recommended_stack(
-                    manifest, args.manifest, runner, args.enforce, mode="sync"
-                )
-                if runner.failures:
-                    return 1
-                previous = {skill["source"]: skill for skill in old_skills}
-                refresh_sources = {
-                    skill["source"] for skill in manifest["skills"]
-                    if previous.get(skill["source"]) != skill
-                }
-            except (OSError, runtime.DotAiError) as exc:
-                terminal.say(f"{terminal.styled('dotai:', 'red', 'bold')} {exc}", file=sys.stderr)
-                return 2
+    elif args.command in {"install", "update"}:
+        try:
+            skill_recommendations.print_recommended_stack_notice(
+                manifest, args.manifest, args.command
+            )
+        except (OSError, runtime.DotAiError) as exc:
+            terminal.say(f"{terminal.styled('dotai:', 'red', 'bold')} {exc}", file=sys.stderr)
+            return 2
+    if args.command == "sync":
         return reconciliation.reconcile(
             manifest, args.manifest, runner, "sync", managed_skills=managed_skills,
             update_skills=args.update_skills, refresh_sources=refresh_sources,
             recommended_only=args.recommended_skills and args.enforce,
             managed_baseline=managed_baseline,
         )
-    if args.command == "update":
-        skill_manager.print_legacy_skill_notice(manifest)
-    if args.command in {"install", "update"}:
-        if args.recommended:
-            try:
-                old_skills = manifest["skills"]
-                manifest, managed_skills, managed_baseline = skill_recommendations.review_recommended_stack(
-                    manifest, args.manifest, runner, args.enforce, mode=args.command
-                )
-                if runner.failures:
-                    return 1
-                previous = {skill["source"]: skill for skill in old_skills}
-                refresh_sources = {
-                    skill["source"] for skill in manifest["skills"]
-                    if previous.get(skill["source"]) != skill
-                }
-            except (OSError, runtime.DotAiError) as exc:
-                terminal.say(f"{terminal.styled('dotai:', 'red', 'bold')} {exc}", file=sys.stderr)
-                return 2
-        else:
-            try:
-                skill_recommendations.print_recommended_stack_notice(
-                    manifest, args.manifest, args.command
-                )
-            except (OSError, runtime.DotAiError) as exc:
-                terminal.say(f"{terminal.styled('dotai:', 'red', 'bold')} {exc}", file=sys.stderr)
-                return 2
     return reconciliation.reconcile(
         manifest,
         args.manifest,

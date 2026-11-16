@@ -9,6 +9,7 @@ import json
 import os
 import tempfile
 from . import manifest as manifests
+from . import omp as omp_config
 from . import runtime
 
 
@@ -161,7 +162,7 @@ def save_state(
                 example_manifest = manifests.load_manifest(manifests.EXAMPLE_MANIFEST)
             local_packages = local_manifest["packages"]
             local_servers = local_manifest["mcp"]["servers"]
-            local_extensions = set(local_manifest.get("ompExtensions", []))
+            local_ext_ids = {omp_config.extension_identity(ext) for ext in local_manifest.get("ompExtensions", [])}
             managed_baseline = {
                 "packages": [pkg for pkg in example_manifest["packages"] if pkg in local_packages],
                 "mcpServers": {
@@ -170,7 +171,8 @@ def save_state(
                     if local_servers.get(name) == server
                 },
                 "ompExtensions": [
-                    ext for ext in example_manifest.get("ompExtensions", []) if ext in local_extensions
+                    ext for ext in example_manifest.get("ompExtensions", [])
+                    if omp_config.extension_identity(ext) in local_ext_ids
                 ],
             }
     save_managed_recommendations(manifest_path, managed_skills)

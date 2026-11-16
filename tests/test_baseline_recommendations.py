@@ -495,6 +495,19 @@ class BaselineRecommendationTests(unittest.TestCase):
             {"packages": [], "mcpServers": {}, "ompExtensions": []},
         )
 
+    def test_omp_extensions_match_semantic_expanded_or_backslash_paths_without_duplicates(self) -> None:
+        expanded_rtk = str((self.root / ".pi" / "agent" / "extensions" / "rtk.ts").resolve())
+        local = minimal_manifest(str(self.mcp_target))
+        local["ompExtensions"] = [expanded_rtk]
+        example = minimal_manifest(str(self.mcp_target))
+        example["ompExtensions"] = ["~/.pi/agent/extensions/rtk.ts"]
+        self.write_manifests(local, example)
+
+        baseline, changes, conflicts = recommendations.recommended_stack_plan(local, self.path)
+        self.assertEqual(changes, [])
+        self.assertEqual(conflicts, [])
+        self.assertEqual(baseline["ompExtensions"], ["~/.pi/agent/extensions/rtk.ts"])
+
 
 if __name__ == "__main__":
     unittest.main()

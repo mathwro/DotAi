@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 import shutil
 from . import manifest as manifests
+from . import omp as omp_config
 from . import runtime
 from . import skills as skill_manager
 from . import state as app_state
@@ -38,86 +39,34 @@ def replace_package(packages: list[dict[str, Any]], name: str, value: dict[str, 
 
 
 def replace_extension(extensions: list[str], item: str, present: bool) -> None:
+    identity = omp_config.extension_identity(item)
     for index, existing in enumerate(extensions):
-        if existing == item:
+        if omp_config.extension_identity(existing) == identity:
             if not present:
                 extensions.pop(index)
             return
     if present:
         extensions.append(item)
 
+
 def recommended_skill_plan(
     manifest: dict[str, Any], manifest_path: Path, enforce: bool = False
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[str]]:
     desired = manifests.load_manifest(manifests.EXAMPLE_MANIFEST)["skills"]
     stored = app_state.managed_recommendations(manifest_path)
-    if stored is not None:
-        managed = stored
-    else:
-        managed = [skill for skill in desired if skill in manifest["skills"]]
-
-    local = {skill["source"]: skill for skill in manifest["skills"]}
-    wanted = {skill["source"]: skill for skill in desired}
-    accepted_baseline = list(managed)
-    changes: list[dict[str, Any]] = []
-    conflicts: list[str] = []
-
-    for before in managed:
-        source = before["source"]
-        after = wanted.get(source)
-        current = local.get(source)
-        if after is None:
-            if current is None or current == before:
-                changes.append({"kind": "remove", "source": source, "before": before, "after": None})
-            elif enforce:
-                changes.append({"kind": "remove", "source": source, "before": current, "after": None})
-            else:
-                conflicts.append(source)
-        elif after != before:
-            if current == before:
-                changes.append({"kind": "update", "source": source, "before": before, "after": after})
-            elif current == after:
-                replace_skill(accepted_baseline, source, after)
-            elif enforce:
-                changes.append(
-                    {
-                        "kind": "add" if current is None else "update",
-                        "source": source,
-                        "before": current,
-                        "after": after,
-                    }
-                )
-            else:
-                conflicts.append(source)
-        elif current != before:
-            if enforce:
-                changes.append(
-                    {
-                        "kind": "add" if current is None else "update",
-                        "source": source,
-                        "before": current,
-                        "after": after,
-                    }
-                )
-            else:
-                conflicts.append(source)
-
-    managed_sources = {skill["source"] for skill in managed}
-    for after in desired:
-        source = after["source"]
-        if source in managed_sources:
-            continue
-        current = local.get(source)
-        if current is None:
-            changes.append({"kind": "add", "source": source, "before": None, "after": after})
-        elif current == after:
-            replace_skill(accepted_baseline, source, after)
-        elif enforce:
-            changes.append({"kind": "update", "source": source, "before": current, "after": after})
-        else:
-            conflicts.append(source)
-
-    return accepted_baseline, changes, conflicts
+    managed = stored if stored is not None else [skill for skill in desired if skill in manifest["skills"]]
+    accepted_map, raw_changes, raw_conflicts = _plan_keyed_section(
+        "skills",
+        {skill["source"]: skill for skill in manifest["skills"]},
+        {skill["source"]: skill for skill in desired},
+        {skill["source"]: skill for skill in managed},
+        enforce,
+    )
+    changes = [
+        {"kind": item["kind"], "source": item["id"], "before": item["before"], "after": item["after"]}
+        for item in raw_changes
+    ]
+    return list(accepted_map.values()), changes, [source for _, source in raw_conflicts]
 
 
 def apply_recommended_skill_changes(
@@ -337,8 +286,8 @@ def recommended_stack_plan(
         managed_servers = {
             name: server for name, server in desired_servers.items() if local_servers.get(name) == server
         }
-        local_ext_set = set(local_extensions)
-        managed_extensions = [ext for ext in desired_extensions if ext in local_ext_set]
+        local_ext_ids = {omp_config.extension_identity(ext) for ext in local_extensions}
+        managed_extensions = [ext for ext in desired_extensions if omp_config.extension_identity(ext) in local_ext_ids]
 
     accepted_pkg_map, pkg_changes, pkg_conflicts = _plan_keyed_section(
         "packages",
@@ -374,25 +323,26 @@ def recommended_stack_plan(
     accepted_extensions = list(managed_extensions)
     ext_changes: list[dict[str, Any]] = []
     ext_conflicts: list[tuple[str, str]] = []
-    local_ext_set = set(local_extensions)
-    wanted_ext_set = set(desired_extensions)
-    managed_ext_set = set(managed_extensions)
+    local_ext_ids = {omp_config.extension_identity(ext) for ext in local_extensions}
+    wanted_ext_ids = {omp_config.extension_identity(ext) for ext in desired_extensions}
+    managed_ext_ids = {omp_config.extension_identity(ext) for ext in managed_extensions}
     for ext in managed_extensions:
-        if ext not in wanted_ext_set:
+        ext_id = omp_config.extension_identity(ext)
+        if ext_id not in wanted_ext_ids:
             ext_changes.append({"section": "ompExtensions", "kind": "remove", "id": ext, "before": ext, "after": None})
-        elif ext not in local_ext_set:
+        elif ext_id not in local_ext_ids:
             if enforce:
                 ext_changes.append({"section": "ompExtensions", "kind": "add", "id": ext, "before": None, "after": ext})
             else:
                 ext_conflicts.append(("ompExtensions", ext))
     for ext in desired_extensions:
-        if ext in managed_ext_set:
+        ext_id = omp_config.extension_identity(ext)
+        if ext_id in managed_ext_ids:
             continue
-        if ext in local_ext_set:
+        if ext_id in local_ext_ids:
             replace_extension(accepted_extensions, ext, True)
         else:
             ext_changes.append({"section": "ompExtensions", "kind": "add", "id": ext, "before": None, "after": ext})
-
     baseline = {
         "packages": list(accepted_pkg_map.values()),
         "skills": accepted_skills,
