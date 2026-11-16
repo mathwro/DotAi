@@ -3656,29 +3656,34 @@ class DotAiTests(unittest.TestCase):
             self.assertEqual(output.getvalue().count("Initialized"), 2)
 
     def test_release_notice_warns_only_for_newer_numeric_versions(self) -> None:
-        for current, tag, warns in (
-            ("1.9.0", "v1.10.0", True),
-            ("1.2.3", "v1.2.3", False),
-            ("1.2.3", "1.2.3", False),
-            ("1.2.3", "v1.2.2", False),
-        ):
-            with self.subTest(current=current, tag=tag):
-                response = mock.MagicMock()
-                response.__enter__.return_value = response
-                response.read.return_value = json.dumps({"tag_name": tag}).encode("utf-8")
-                output = io.StringIO()
-                with (
-                    mock.patch.object(releases, "VERSION", current),
-                    mock.patch("urllib.request.urlopen", return_value=response),
-                    contextlib.redirect_stdout(output),
-                ):
-                    self.assertEqual(cli.main(["--color", "never", "version"]), 0)
-                if warns:
-                    self.assertIn("[UPDATE]", output.getvalue())
-                    self.assertIn("1.10.0", output.getvalue())
-                    self.assertIn("1.9.0", output.getvalue())
-                else:
-                    self.assertNotIn("[UPDATE]", output.getvalue())
+        with tempfile.TemporaryDirectory() as directory:
+            for idx, (current, tag, warns) in enumerate((
+                ("1.9.0", "v1.10.0", True),
+                ("1.2.3", "v1.2.3", False),
+                ("1.2.3", "1.2.3", False),
+                ("1.2.3", "v1.2.2", False),
+            )):
+                with self.subTest(current=current, tag=tag):
+                    response = mock.MagicMock()
+                    response.__enter__.return_value = response
+                    response.read.return_value = json.dumps({"tag_name": tag}).encode("utf-8")
+                    output = io.StringIO()
+                    with (
+                        mock.patch.dict(
+                            os.environ,
+                            {"DOTAI_STATE_DIR": str(Path(directory) / f"state-{idx}"), "DOTAI_NO_UPDATE_CHECK": ""},
+                        ),
+                        mock.patch.object(releases, "VERSION", current),
+                        mock.patch("urllib.request.urlopen", return_value=response),
+                        contextlib.redirect_stdout(output),
+                    ):
+                        self.assertEqual(cli.main(["--color", "never", "version"]), 0)
+                    if warns:
+                        self.assertIn("[UPDATE]", output.getvalue())
+                        self.assertIn("1.10.0", output.getvalue())
+                        self.assertIn("1.9.0", output.getvalue())
+                    else:
+                        self.assertNotIn("[UPDATE]", output.getvalue())
 
     def test_release_warning_is_checked_by_status_sync_and_install(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -3696,7 +3701,14 @@ class DotAiTests(unittest.TestCase):
                     argv.append("--dry-run")
                 with (
                     mock.patch.object(releases, "VERSION", "1.2.3"),
-                    mock.patch.dict(os.environ, {"DOTAI_HOME": directory, "DOTAI_STATE_DIR": str(Path(directory) / "state")}),
+                    mock.patch.dict(
+                        os.environ,
+                        {
+                            "DOTAI_HOME": directory,
+                            "DOTAI_STATE_DIR": str(Path(directory) / f"state-{command}"),
+                            "DOTAI_NO_UPDATE_CHECK": "",
+                        },
+                    ),
                     mock.patch("urllib.request.urlopen", return_value=response),
                     contextlib.redirect_stdout(output),
                 ):
@@ -3707,12 +3719,17 @@ class DotAiTests(unittest.TestCase):
 
     def test_release_check_failure_keeps_version_command_available(self) -> None:
         output = io.StringIO()
-        with (
-            mock.patch.object(releases, "VERSION", "1.2.3"),
-            mock.patch("urllib.request.urlopen", side_effect=OSError("offline")),
-            contextlib.redirect_stdout(output),
-        ):
-            self.assertEqual(cli.main(["--color", "never", "version"]), 0)
+        with tempfile.TemporaryDirectory() as directory:
+            with (
+                mock.patch.dict(
+                    os.environ,
+                    {"DOTAI_STATE_DIR": str(Path(directory) / "state"), "DOTAI_NO_UPDATE_CHECK": ""},
+                ),
+                mock.patch.object(releases, "VERSION", "1.2.3"),
+                mock.patch("urllib.request.urlopen", side_effect=OSError("offline")),
+                contextlib.redirect_stdout(output),
+            ):
+                self.assertEqual(cli.main(["--color", "never", "version"]), 0)
         self.assertIn("1.2.3", output.getvalue())
         self.assertNotIn("[UPDATE]", output.getvalue())
 
