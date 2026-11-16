@@ -400,6 +400,12 @@ class ConsistencyAndCachingTests(unittest.TestCase):
         self.assertEqual(cache_path.read_bytes(), original_cache)
         self.assertEqual(set(self.state_dir.iterdir()), {cache_path})
 
+    def test_cli_platform_override_accepts_unix(self) -> None:
+        with contextlib.redirect_stdout(io.StringIO()) as out:
+            code = cli.main(["--platform", "unix", "platform"])
+        self.assertEqual(code, 0)
+        self.assertEqual(out.getvalue().strip(), "unix")
+
 
 if __name__ == "__main__":
     unittest.main()

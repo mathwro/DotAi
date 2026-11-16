@@ -21,7 +21,7 @@ from . import terminal
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="dotai", description="Install and reconcile a portable AI development stack.")
     parser.add_argument("--manifest", type=Path, default=manifests.DEFAULT_MANIFEST, help="Stack manifest (default: stack.json)")
-    parser.add_argument("--platform", choices=["windows", "wsl", "ubuntu", "arch", "macos", "linux"], help=argparse.SUPPRESS)
+    parser.add_argument("--platform", choices=["windows", "wsl", "ubuntu", "arch", "macos", "linux", "unix"], help=argparse.SUPPRESS)
     parser.add_argument("--verbose", action="store_true", help="Show sanitized commands and bounded diagnostic output")
     parser.add_argument(
         "--color",
