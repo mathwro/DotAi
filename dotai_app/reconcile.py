@@ -24,6 +24,7 @@ def reconcile(
     update_skills: bool = False,
     refresh_sources: set[str] | None = None,
     recommended_only: bool = False,
+    managed_baseline: dict[str, Any] | None = None,
 ) -> int:
     if mode != "sync":
         package_manager.reconcile_packages(manifest, runner, mode, force, include_dependencies)
@@ -39,7 +40,7 @@ def reconcile(
     except (OSError, runtime.DotAiError) as exc:
         runner.failures.append(str(exc))
         runner.say(f"{terminal.badge('FAIL')} MCP: {exc}")
-    app_state.save_state(manifest_path, runner, mode, managed_skills)
+    app_state.save_state(manifest_path, runner, mode, managed_skills, managed_baseline)
     if runner.failures:
         runner.say(f"\n{terminal.styled('Reconciliation failed:', 'red', 'bold')}")
         for failure in runner.failures:

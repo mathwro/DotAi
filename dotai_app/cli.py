@@ -33,6 +33,16 @@ def build_parser() -> argparse.ArgumentParser:
     install = sub.add_parser("install", help="Install missing components and synchronize configuration")
     install.add_argument("--force", action="store_true", help="Reinstall components already present")
     install.add_argument("--dry-run", action="store_true", help="Print actions without changing the machine")
+    install.add_argument(
+        "--recommended",
+        action="store_true",
+        help="Review repository-recommended baseline additions, updates, and removals",
+    )
+    install.add_argument(
+        "--enforce",
+        action="store_true",
+        help="Propose exact baseline entries for locally differing recommended items",
+    )
     update = sub.add_parser("update", help="Update core components, refresh declared skills, and synchronize configuration")
     update.add_argument("--dry-run", action="store_true")
     update.add_argument(
@@ -40,9 +50,24 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Also update installed packages marked as dependencies",
     )
+    update.add_argument(
+        "--recommended",
+        action="store_true",
+        help="Review repository-recommended baseline additions, updates, and removals",
+    )
+    update.add_argument(
+        "--enforce",
+        action="store_true",
+        help="Propose exact baseline entries for locally differing recommended items",
+    )
     sync = sub.add_parser("sync", help="Synchronize skills, plugins, and MCP configuration")
     sync.add_argument("--dry-run", action="store_true")
     sync.add_argument("--update-skills", action="store_true", help="Refresh already installed skills")
+    sync.add_argument(
+        "--recommended",
+        action="store_true",
+        help="Review repository-recommended baseline additions, updates, and removals",
+    )
     sync.add_argument(
         "--recommended-skills",
         action="store_true",
@@ -51,7 +76,7 @@ def build_parser() -> argparse.ArgumentParser:
     sync.add_argument(
         "--enforce",
         action="store_true",
-        help="Offer user-owned skill cleanup, then enforce recommendations; skip preserved user-owned skills",
+        help="Enforce exact recommendations (and offer user-skill cleanup with --recommended-skills)",
     )
     configure = sub.add_parser("configure", help="Configure explicit post-authentication integrations")
     configure_sub = configure.add_subparsers(dest="configure_target", required=True)
@@ -162,8 +187,12 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
-    if args.command == "sync" and args.enforce and not args.recommended_skills:
-        parser.error("--enforce requires --recommended-skills")
+    if args.command == "sync" and args.recommended and args.recommended_skills:
+        parser.error("--recommended and --recommended-skills cannot be combined")
+    if args.command == "sync" and args.enforce and not (args.recommended or args.recommended_skills):
+        parser.error("--enforce requires --recommended or --recommended-skills")
+    if args.command in {"install", "update"} and args.enforce and not args.recommended:
+        parser.error("--enforce requires --recommended")
     terminal.configure_color(args.color)
     if args.platform:
         os.environ["DOTAI_PLATFORM"] = args.platform
@@ -233,16 +262,35 @@ def main(argv: list[str] | None = None) -> int:
         return 0 if health.print_status(manifest, runner) else 1
     if args.command == "doctor":
         return 0 if health.doctor(manifest, runner) else 1
-    if args.command == "sync":
-        managed_skills = None
-        refresh_sources: set[str] = set()
+    managed_skills = None
+    managed_baseline = None
+    refresh_sources: set[str] = set()
+    if args.command == "update":
+        skill_manager.print_legacy_skill_notice(manifest)
+    if getattr(args, "recommended", False):
+        try:
+            old_skills = manifest["skills"]
+            manifest, managed_skills, managed_baseline = skill_recommendations.review_recommended_stack(
+                manifest, args.manifest, runner, args.enforce, mode=args.command
+            )
+            if runner.failures:
+                return 1
+            previous = {skill["source"]: skill for skill in old_skills}
+            refresh_sources = {
+                skill["source"] for skill in manifest["skills"]
+                if previous.get(skill["source"]) != skill
+            }
+        except (OSError, runtime.DotAiError) as exc:
+            terminal.say(f"{terminal.styled('dotai:', 'red', 'bold')} {exc}", file=sys.stderr)
+            return 2
+    elif args.command == "sync":
         if not args.recommended_skills:
             try:
                 skill_recommendations.print_recommended_skill_notice(manifest, args.manifest)
             except (OSError, runtime.DotAiError) as exc:
                 terminal.say(f"{terminal.styled('dotai:', 'red', 'bold')} {exc}", file=sys.stderr)
                 return 2
-        if args.recommended_skills:
+        else:
             try:
                 old_skills = manifest["skills"]
                 manifest, managed_skills = skill_recommendations.review_recommended_skills(
@@ -258,13 +306,21 @@ def main(argv: list[str] | None = None) -> int:
             except (OSError, runtime.DotAiError) as exc:
                 terminal.say(f"{terminal.styled('dotai:', 'red', 'bold')} {exc}", file=sys.stderr)
                 return 2
+    elif args.command in {"install", "update"}:
+        try:
+            skill_recommendations.print_recommended_stack_notice(
+                manifest, args.manifest, args.command
+            )
+        except (OSError, runtime.DotAiError) as exc:
+            terminal.say(f"{terminal.styled('dotai:', 'red', 'bold')} {exc}", file=sys.stderr)
+            return 2
+    if args.command == "sync":
         return reconciliation.reconcile(
             manifest, args.manifest, runner, "sync", managed_skills=managed_skills,
             update_skills=args.update_skills, refresh_sources=refresh_sources,
-            recommended_only=args.enforce,
+            recommended_only=args.recommended_skills and args.enforce,
+            managed_baseline=managed_baseline,
         )
-    if args.command == "update":
-        skill_manager.print_legacy_skill_notice(manifest)
     return reconciliation.reconcile(
         manifest,
         args.manifest,
@@ -272,4 +328,7 @@ def main(argv: list[str] | None = None) -> int:
         args.command,
         getattr(args, "force", False),
         getattr(args, "include_dependencies", False),
+        managed_skills=managed_skills,
+        refresh_sources=refresh_sources,
+        managed_baseline=managed_baseline,
     )

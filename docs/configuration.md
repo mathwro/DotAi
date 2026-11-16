@@ -4,7 +4,7 @@
 
 `stack.example.json` is the version-controlled baseline for new users. Any command that needs the default manifest initializes a missing `stack.json` once from that example; `version`, `platform`, and help do not need a manifest. This initialization also occurs before a first-use dry run. Run `./dotai.py validate` first to initialize and check the manifest separately from previewing changes.
 
-The generated `stack.json` is ignored by Git. Pulling repository updates therefore cannot replace personal tools, skills, plugins, MCP servers, or credential references. Changes to `stack.example.json` affect new configurations automatically; existing users can opt into recommended skill changes with `./dotai.py sync --recommended-skills`.
+The generated `stack.json` is ignored by Git. Pulling repository updates therefore cannot replace personal tools, skills, plugins, MCP servers, or credential references. Changes to `stack.example.json` affect new configurations automatically; existing users can opt into full baseline changes (`packages`, `skills`, `mcp.servers`, and `ompExtensions`) with `./dotai.py install --recommended`, `./dotai.py update --recommended`, or `./dotai.py sync --recommended`, or review skills alone with `./dotai.py sync --recommended-skills`.
 
 To recreate the defaults, first back up your local `stack.json`, then remove it and run:
 
@@ -37,7 +37,7 @@ DotAi updates configuration conservatively:
 - Skill health is agent-scoped. A skill found only in a Codex plugin cache is reported as `INACTIVE` until installed for the configured OMP skill target.
 - Normal `install` and `sync` avoid skill fetches only with matching source metadata and a matching GitHub folder tree hash for the configured agent's installed files; the name-only global lock cannot establish ownership of another agent's independent copy. Missing or uncertain provenance triggers a refresh, not a silent skip. `update` always refreshes declared skill sources: a local lock match does not prove upstream freshness.
 - The skills.sh lock is read from `$XDG_STATE_HOME/skills/.skill-lock.json` when set, otherwise from `~/.agents/.skill-lock.json`. Installed universal skills remain in `~/.agents/skills/`; DotAi adds no separate ownership database. See [skill refresh behavior and limits](extending.md#add-a-skill-source).
-- Recommended skill synchronization preserves user-added and locally modified sources by default, backs up `stack.json`, and removes installed files only for accepted retirements. With `--enforce`, an initial cleanup prompt can explicitly remove user-owned sources outside the recommendations; declining preserves them and skips their installation for that run before recommendation review continues.
+- Baseline recommendation synchronization (`--recommended` on `install`, `update`, or `sync`) tracks accepted baseline snapshots in `recommended-baseline.json` and `recommended-skills.json`, preserves user-added custom tools, custom MCP servers, custom extensions, and locally modified entries by default, backs up `stack.json` with private `0600` permissions on POSIX, and removes installed skill files only for accepted retirements. With `--recommended --enforce`, locally differing baseline entries are proposed for update to the exact `stack.example.json` recipes while custom user entries remain preserved. On `sync --recommended-skills --enforce`, an initial cleanup prompt can explicitly remove user-owned skill sources outside the recommendations; declining preserves them and skips their installation for that run before recommendation review continues.
 - Release checks run for `install`, `sync`, `status`, and `version`; an available newer release is shown as a warning, while network and cache I/O failures are ignored. Successful lookups are cached in `$DOTAI_STATE_DIR/release-check.json` (or the platform default state directory) for 24 hours during normal `install`, `sync`, and `status` runs; `version` always checks fresh upstream, dry runs do not write cache files, and setting `DOTAI_NO_UPDATE_CHECK=1` (or `true`) skips release checks and warnings entirely.
 - After manifest initialization, dry runs do not modify existing files or managed machine state.
 
@@ -49,7 +49,7 @@ Manifest and reconciliation-state writes use temporary files before replacement.
 
 RTK 0.43 or newer is configured through `rtk init -g --agent pi`. This creates `~/.pi/agent/extensions/rtk.ts`, which DotAi appends to OMP's global extensions without removing user-configured entries. Restart OMP after the first installation; `./dotai.py status` verifies both registration and source availability.
 
-The Linux RTK commands in `stack.example.json` use the reviewed v0.50.0 binary archives and architecture-specific SHA-256 digests. Updating the pinned release requires updating its version and archive digests together; existing user-owned `stack.json` files never receive such baseline changes automatically. Windows and macOS continue to use Scoop and Homebrew.
+The Linux RTK commands in `stack.example.json` use the reviewed v0.50.0 binary archives and architecture-specific SHA-256 digests. Updating the pinned release requires updating its version and archive digests together; existing user-owned `stack.json` files never receive such baseline changes automatically, and can review and adopt them explicitly with `./dotai.py update --recommended --enforce`. Windows and macOS continue to use Scoop and Homebrew.
 
 The manifest declares RTK's `minimumVersion` as `0.43`. Package checks compare the command's reported `major.minor[.patch]` version from stdout or stderr; an older installed binary is upgraded, while a missing binary is installed. Status does not silently accept an unsupported or unparseable RTK. Other packages may declare the same optional constraint.
 
@@ -63,7 +63,7 @@ The Pi extension is independent of RTK's optional Codex integration. DotAi also 
 
 The recommended stack installs the Graphify CLI, but does not install its Pi skill or generate project graphs automatically. Invoke `graphify extract . --code-only` in a project only when you want a graph; it writes `graphify-out/` there.
 
-Existing `stack.json` files are user-owned and are not updated from `stack.example.json` by `sync` or `sync --recommended-skills`. If your Graphify package still has a `configure` command that runs `graphify install --platform pi`, remove that command from your local manifest before your next `install` or `update`. To retire the previously installed broad Pi skill, run `graphify pi uninstall` yourself. These steps leave the CLI available for explicit use.
+Existing `stack.json` files are user-owned and are not updated automatically. If your Graphify package still has a `configure` command that runs `graphify install --platform pi`, adopt the updated baseline recipe with `./dotai.py update --recommended --enforce` (preview first with `--dry-run`) before your next `install` or `update`. To retire the previously installed broad Pi skill, run `graphify pi uninstall` yourself. These steps leave the CLI available for explicit use.
 
 ## Skill environment defaults
 

@@ -61,11 +61,14 @@ Use `./dotai.py` on Linux, WSL, and macOS, or `python dotai.py` in PowerShell. T
 
 ```sh
 ./dotai.py install          # Install missing components and synchronize configuration
+./dotai.py install --recommended  # Review and apply full baseline recommendations, then install
 ./dotai.py update           # Update core components, refresh declared skills, and synchronize configuration
+./dotai.py update --recommended --enforce  # Review exact baseline recipes (including local drift), then update
 ./dotai.py sync             # Reconcile skills, plugins, and MCP servers; no package operations
 ./dotai.py sync --update-skills  # Explicitly refresh already installed skill sources
-./dotai.py sync --recommended-skills  # Review and apply repository skill recommendations
-./dotai.py sync --recommended-skills --enforce  # Offer user-skill cleanup, then review exact recommendations
+./dotai.py sync --recommended    # Review and apply baseline recommendations (prints package reminder if changed)
+./dotai.py sync --recommended-skills  # Review and apply repository skill recommendations only
+./dotai.py sync --recommended-skills --enforce  # Offer user-skill cleanup, then review exact skill recommendations
 ./dotai.py status           # Show installed, missing, inactive, or drifting components
 ./dotai.py doctor           # Check the stack plus platform prerequisites
 ./dotai.py validate         # Initialize when absent, then validate stack.json
@@ -73,9 +76,9 @@ Use `./dotai.py` on Linux, WSL, and macOS, or `python dotai.py` in PowerShell. T
 ./dotai.py platform         # Print the detected platform
 ```
 
-`sync`, including `sync --dry-run`, lists pending recommended skill changes by `owner/repository` and selected skill names without changing your manifest. Use `sync --recommended-skills` to review and accept them; locally differing sources remain preserved unless explicitly adopted with `--enforce`.
+`install` and `update` (including `--dry-run`) list pending baseline changes across `packages`, `skills`, `mcp.servers`, and `ompExtensions` without changing your manifest; `sync` lists pending skill changes. Use `--recommended` on `install`, `update`, or `sync` to review and accept full baseline changes (`[a]ll`, `[e]ach`, or `[n]one`), or `sync --recommended-skills` for skills only. User-added custom tools and custom MCP servers are preserved, and locally differing baseline entries remain preserved unless explicitly proposed with `--enforce`. When `sync --recommended` updates package entries, `sync` still skips package commands and prints a reminder to run `dotai install` or `dotai update`.
 
-`--enforce` first lists user-owned sources declared in your manifest but absent from the current recommendations as `owner/repository/skill` (or `owner/repository` for wildcard or unspecified selections), without a JSON diff, and asks whether to remove them. **Yes** removes their manifest entries and source-verified installed copies; **No** (the default) preserves them and skips their installation for this run. It then continues to the recommendation review, including exact selections for locally differing recommended sources. Old defaults without recorded recommendation ownership appear in the cleanup list too. Skills outside the manifest and other agents' independent copies are not removed. Add `--dry-run` to preview optional cleanup and recommendation changes without prompts or mutations.
+On `sync --recommended-skills --enforce`, DotAi first lists user-owned skill sources declared in your manifest but absent from the current recommendations as `owner/repository/skill` (or `owner/repository` for wildcard or unspecified selections), without a JSON diff, and asks whether to remove them. **Yes** removes their manifest entries and source-verified installed copies; **No** (the default) preserves them and skips their installation for this run. It then continues to the recommendation review, including exact selections for locally differing recommended sources. Old defaults without recorded recommendation ownership appear in the cleanup list too. Skills outside the manifest and other agents' independent copies are not removed. On `--recommended --enforce` (`install`, `update`, or `sync`), `--enforce` scopes proposals to adopting exact `stack.example.json` entries for locally differing baseline items while preserving custom user tools, custom MCP servers, and custom extensions. Add `--dry-run` to preview without prompts or mutations.
 
 Common options:
 
@@ -91,7 +94,7 @@ Common options:
 
 Preview commands still initialize a missing default `stack.json` on first use. Run `./dotai.py validate` first if you want to separate manifest initialization from a dry-run preview.
 
-Linux RTK installs and updates use the reviewed v0.50.0 release archives with pinned SHA-256 digests rather than executing an installer from a moving branch. To adopt this change on an existing installation, update the RTK commands in your personal `stack.json` from `stack.example.json`; DotAi does not overwrite that file.
+Linux RTK installs and updates use the reviewed v0.50.0 release archives with pinned SHA-256 digests rather than executing an installer from a moving branch. Existing installations can preview and adopt this baseline recipe with `./dotai.py update --recommended --enforce --dry-run` and `./dotai.py update --recommended --enforce`; DotAi never overwrites `stack.json` without confirmation.
 
 Normal operations show flushed DotAi progress rather than raw command arguments or installer chatter. Failures retain the exit code, a sanitized cause, and a next step. Use `./dotai.py --verbose install` (or another command) for bounded, sanitized diagnostics; JSON configuration/protocol payloads are not dumped. Dry-run output describes planned work, not applied changes. Credential redaction recognizes known values and common credential syntax, but cannot identify every unlabeled secret—keep credentials out of command arguments and logs.
 
@@ -148,9 +151,9 @@ Use `remove` to delete a declared entry from `stack.json` (with a private timest
 
 RTK 0.43 or newer is configured for Pi and registered as an OMP global extension without replacing unrelated extensions. DotAi also enables OMP's **Hide Secrets** privacy setting during installation and updates.
 
-DotAi installs the Graphify CLI, but its Pi skill and project graph generation are opt-in. Run `graphify extract . --code-only` in a project when you want a graph. Existing local manifests retain their earlier Graphify configuration; see [Optional Graphify](docs/configuration.md#optional-graphify) before your next `install` or `update`.
+DotAi installs the Graphify CLI, but its Pi skill and project graph generation are opt-in. Run `graphify extract . --code-only` in a project when you want a graph. Existing local manifests retain their earlier Graphify configuration until adopted with `./dotai.py update --recommended --enforce`; see [Optional Graphify](docs/configuration.md#optional-graphify) before your next `install` or `update`.
 
-GitHub CLI (`gh`) is installed through Scoop on Windows, Homebrew on macOS, the official GitHub apt repository on Ubuntu/WSL, and `github-cli` on Arch. Authentication remains user-owned: installation and status do not log in or install extensions. Existing manifests are unchanged; see [Adopt GitHub CLI](docs/extending.md#adopt-github-cli) to add it explicitly.
+GitHub CLI (`gh`) is installed through Scoop on Windows, Homebrew on macOS, the official GitHub apt repository on Ubuntu/WSL, and `github-cli` on Arch. Authentication remains user-owned: installation and status do not log in or install extensions. Existing installations can adopt it with `./dotai.py install --recommended`; see [Adopt GitHub CLI](docs/extending.md#adopt-github-cli).
 
 Web interface coverage selects `emil-design-eng` for component and interaction polish, `web-design-guidelines` for interface-quality review, and `modern-web-guidance` for modern browser APIs, performance, security, and compatibility—not their repositories' full skill bundles. The Modern Web Guidance recommendation automatically configures `DISABLE_TELEMETRY=1` for OMP child commands; see [environment defaults and Node.js 22+ requirements](docs/configuration.md#skill-environment-defaults). Existing users can preview these additions with `./dotai.py sync --recommended-skills --dry-run`, then review and apply them with `./dotai.py sync --recommended-skills`. Restart OMP after synchronization. These skills complement, rather than replace, project-specific decisions and real browser verification.
 

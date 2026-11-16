@@ -48,6 +48,16 @@ To review and accept skill recommendations added, changed, or removed from `stac
 
 DotAi describes proposed source changes, old/new skill selections, agents, and changed field names, then lets you accept all changes, review each change, or cancel. It does not dump the manifest or unrelated credential/configuration values. Accepted removals also uninstall the retired skills so OMP no longer discovers them; rejected changes are offered again later. User-added sources and locally modified recommended entries are preserved. Use `./dotai.py sync --recommended-skills --dry-run` to preview changes and planned actions without changing files or machine state.
 
+To review and apply baseline recommendations across the full stack (`packages`, `skills`, `mcp.servers`, and `ompExtensions`), use `--recommended` on `install`, `update`, or `sync`:
+
+```sh
+./dotai.py install --recommended --dry-run
+./dotai.py install --recommended
+./dotai.py update --recommended --enforce
+```
+
+Full-stack previews describe package names and changed fields (`install`, `update`, `configure`, `minimumVersion`, `updateGroup`), skill selections, MCP server names with transport and changed fields (redacting credential values without exposing headers or environment values), and `ompExtensions` path additions or removals—never raw JSON payloads. First-run ownership initializes conservatively from exact matches with `stack.example.json` and persists in `recommended-baseline.json` alongside `recommended-skills.json`. `--recommended --enforce` proposes adopting exact `stack.example.json` recipes for locally differing baseline items (such as older `RTK` or `Graphify` package entries) while preserving custom user-added tools, MCP servers, and extensions. When `sync --recommended` modifies package entries, `sync` still skips package installers and prints a reminder to run `dotai install` or `dotai update`.
+
 Named retirements and retained selections match installed-directory identities from the Skills CLI listing, not its original frontmatter names. Inferred selections use installer normalization; nonempty explicit `--check-skill` directories remain exact and authoritative. A wildcard retirement resolves every installed directory attributed to that source and configured agent, regardless of its health-check selection. Named dry runs preview directory paths without querying the installer; wildcard resolution is deferred until application.
 
 DotAi retires source-proven copies directly inside the configured agent's skill root instead of invoking the installer's removal command, which can affect other agents' canonical copies even with an explicit scope. Independent Pi and universal copies are preserved. Each source's complete deletion set is checked before removing any directory. Shared links, redirected roots, or canonical associations whose independent ownership cannot be proven fail conservatively and require manual resolution. The shared Skills CLI lock is left untouched so other agents' provenance is retained; an absent directory is not considered installed merely because its lock entry remains.
@@ -184,7 +194,7 @@ Add `--uninstall` on skills, MCP servers, plugins, or marketplaces to clean up t
 
 ### Adopt GitHub CLI
 
-New manifests include GitHub CLI. To add it to an existing installation, copy only the `GitHub CLI` package object from [`stack.example.json`](../stack.example.json) into your `stack.json` packages array, preserving the other entries. Then run `./dotai.py validate`, preview `./dotai.py install --dry-run`, and apply with `./dotai.py install`. These commands operate on all declared packages, not only GitHub CLI. Skill recommendation synchronization does not adopt package changes.
+New manifests include GitHub CLI. Existing installations can preview and adopt it directly from [`stack.example.json`](../stack.example.json) with `./dotai.py install --recommended --dry-run` and `./dotai.py install --recommended`, which backs up `stack.json`, preserves custom entries, and installs declared packages (`sync --recommended-skills` manages skills only and does not adopt package changes).
 
 The [official Ubuntu installation method](https://github.com/cli/cli/blob/trunk/docs/install_linux.md) is adapted to use the already-declared `curl`, work as root without `sudo`, and clean up temporary downloads. Installation and updates provision `/etc/apt/keyrings/githubcli-archive-keyring.gpg` and `/etc/apt/sources.list.d/github-cli.list` before refreshing apt metadata and installing `gh`. A failed download stops before replacing those files. Updates establish the official repository even for an existing distribution-provided `gh`. Other apt sources are not changed.
 
