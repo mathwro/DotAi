@@ -108,7 +108,7 @@ Release-notice tests use explicit synthetic current and available versions, incl
 
 ### Upstream drift check
 
-Verify `routing-recommendations.json` against the upstream Oh My Pi static model catalog and check the pinned Linux `RTK` release tag and per-architecture SHA-256 digests in `stack.example.json` against GitHub Releases:
+Verify `routing-recommendations.json` against the upstream Oh My Pi static model catalog and check the Linux `RTK` release recipe in `stack.example.json` against GitHub Releases:
 
 ```sh
 rtk python3 scripts/check_upstream.py
@@ -116,7 +116,7 @@ rtk python3 scripts/check_upstream.py --fail-on-outdated
 rtk python3 scripts/check_upstream.py --json
 ```
 
-The script keeps maintainer verification outside `dotai_app/`, reuses `dotai_app.routing` and `dotai_app.manifest` validation, and honors `GITHUB_TOKEN` or `GH_TOKEN` when calling the GitHub API. Missing static catalog models, roles left with zero valid models, `install.linux`/`update.linux` inconsistencies, or SHA-256 mismatches exit `1` (`FAIL`). Newer upstream RTK releases print a `[DRIFT]` notice with the new `x86_64` and `aarch64` digests and exit `0` unless `--fail-on-outdated` is passed. `.github/workflows/upstream-drift.yml` runs `python scripts/check_upstream.py --fail-on-outdated` weekly (`0 7 * * 1`) and via `workflow_dispatch`, publishing a step summary when `GITHUB_STEP_SUMMARY` is set.
+The script keeps maintainer verification outside `dotai_app/`, reuses `dotai_app.routing` and `dotai_app.manifest` validation, and honors `GITHUB_TOKEN` or `GH_TOKEN` when calling the GitHub API. Missing static catalog models, roles left with zero valid models, `install.linux`/`update.linux` inconsistencies, missing upstream Linux assets or `checksums.txt` entries, or SHA-256 mismatches exit `1` (`FAIL`). For manifests that pin a specific RTK release tag, newer upstream RTK releases print a `[DRIFT]` notice with the new `x86_64` and `aarch64` digests and exit `0` unless `--fail-on-outdated` is passed. `.github/workflows/upstream-drift.yml` runs `python scripts/check_upstream.py --fail-on-outdated` weekly (`0 7 * * 1`) and via `workflow_dispatch`, publishing a step summary when `GITHUB_STEP_SUMMARY` is set.
 
 ## Behavioral fixtures and CLI smoke checks
 

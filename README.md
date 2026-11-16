@@ -99,7 +99,7 @@ Repeatable `--only` (`packages`, `extensions`, `skills`, `plugins`, `mcp`; plus 
 
 Preview commands still initialize a missing default `stack.json` on first use. Run `./dotai.py validate` first if you want to separate manifest initialization from a dry-run preview.
 
-Linux RTK installs and updates use the reviewed v0.50.0 release archives with pinned SHA-256 digests rather than executing an installer from a moving branch. Existing installations can preview and adopt this baseline recipe with `./dotai.py update --recommended --enforce --dry-run` and `./dotai.py update --recommended --enforce`; DotAi never overwrites `stack.json` without confirmation.
+Linux RTK installs and updates fetch the latest GitHub release archive and verify its architecture-specific SHA-256 digest from the release's `checksums.txt` before extracting or installing the binary, rather than executing an installer script from a moving branch. Existing installations with an older pinned RTK entry can preview and adopt this baseline recipe with `./dotai.py update --recommended --enforce --dry-run` and `./dotai.py update --recommended --enforce`; DotAi never overwrites `stack.json` without confirmation.
 
 Normal operations show flushed DotAi progress rather than raw command arguments or installer chatter. Failures retain the exit code, a sanitized cause, and a next step. Use `./dotai.py --verbose install` (or another command) for bounded, sanitized diagnostics; JSON configuration/protocol payloads are not dumped. Dry-run output describes planned work, not applied changes. Credential redaction recognizes known values and common credential syntax, but cannot identify every unlabeled secret—keep credentials out of command arguments and logs.
 

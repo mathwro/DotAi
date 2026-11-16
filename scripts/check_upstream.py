@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Maintainer upstream drift checker for OMP routing catalog and pinned Linux RTK releases."""
+"""Maintainer upstream drift checker for OMP routing catalog and Linux RTK release recipes."""
 
 from __future__ import annotations
 
@@ -37,6 +37,12 @@ RTK_LINUX_TARGETS = ("x86_64-unknown-linux-musl", "aarch64-unknown-linux-gnu")
 
 _RTK_DOWNLOAD_URL_RE = re.compile(
     r"https://github\.com/rtk-ai/rtk/releases/download/(v\d+\.\d+\.\d+)/rtk-\$\{?target\}?\.tar\.gz"
+)
+_RTK_LATEST_CHECKSUMS_RE = re.compile(
+    r"https://github\.com/rtk-ai/rtk/releases/(?:latest/download|download/\$\{?latest_tag\}?)/checksums\.txt"
+)
+_RTK_LATEST_ARCHIVE_RE = re.compile(
+    r"https://github\.com/rtk-ai/rtk/releases/(?:latest/download|download/\$\{?latest_tag\}?)/(?:\$\{?asset\}?|rtk-\$\{?target\}?\.tar\.gz)"
 )
 _RTK_TARGET_DIGEST_RE = re.compile(
     r"target=([A-Za-z0-9_.-]+);\s*digest=([0-9a-fA-F]{64})"
@@ -299,13 +305,22 @@ def _extract_linux_shell_script(package: dict[str, Any], phase: str) -> str:
     return commands[0]
 
 
-def _parse_rtk_linux_script(script: str, phase: str) -> tuple[str, dict[str, str], list[str]]:
+def _parse_rtk_linux_script(script: str, phase: str) -> tuple[str | None, dict[str, str], list[str]]:
     tags = set(_RTK_DOWNLOAD_URL_RE.findall(script))
-    if not tags:
-        raise runtime.DotAiError(f"RTK '{phase}.linux' has no pinned GitHub release download URL")
     if len(tags) > 1:
         raise runtime.DotAiError(
             f"RTK '{phase}.linux' references multiple release tags: {', '.join(sorted(tags))}"
+        )
+    if not tags:
+        if (
+            _RTK_LATEST_CHECKSUMS_RE.search(script)
+            and _RTK_LATEST_ARCHIVE_RE.search(script)
+            and "sha256sum -c -" in script
+            and all(target in script for target in RTK_LINUX_TARGETS)
+        ):
+            return None, {}, []
+        raise runtime.DotAiError(
+            f"RTK '{phase}.linux' has neither a checksums.txt-verified releases/latest recipe nor a pinned release URL"
         )
     tag = next(iter(tags))
 
@@ -328,7 +343,7 @@ def _parse_rtk_linux_script(script: str, phase: str) -> tuple[str, dict[str, str
     return tag, digests, guard_versions
 
 
-def extract_pinned_rtk_spec(manifest: dict[str, Any]) -> tuple[str, dict[str, str], list[str]]:
+def extract_pinned_rtk_spec(manifest: dict[str, Any]) -> tuple[str | None, dict[str, str], list[str]]:
     rtk_pkg = next(
         (pkg for pkg in manifest.get("packages", []) if pkg.get("name") == "RTK"),
         None,
@@ -343,6 +358,14 @@ def extract_pinned_rtk_spec(manifest: dict[str, Any]) -> tuple[str, dict[str, st
     update_tag, update_digests, update_guards = _parse_rtk_linux_script(update_script, "update")
 
     errors: list[str] = []
+    if install_tag is None and update_tag is None:
+        return None, {}, errors
+    if install_tag is None or update_tag is None:
+        errors.append(
+            f"RTK install.linux ({install_tag or 'latest'}) disagrees with update.linux ({update_tag or 'latest'})"
+        )
+        return install_tag or update_tag, install_digests or update_digests, errors
+
     if install_tag != update_tag:
         errors.append(
             f"RTK install.linux tag ({install_tag}) disagrees with update.linux tag ({update_tag})"
@@ -367,7 +390,6 @@ def extract_pinned_rtk_spec(manifest: dict[str, Any]) -> tuple[str, dict[str, st
 
     return install_tag, {target: install_digests[target] for target in RTK_LINUX_TARGETS}, errors
 
-
 def _parse_checksums_text(text: str) -> dict[str, str]:
     parsed: dict[str, str] = {}
     for raw_line in text.splitlines():
@@ -387,6 +409,7 @@ def _parse_checksums_text(text: str) -> dict[str, str]:
 def extract_release_linux_digests(
     release_payload: Any,
     *,
+    require_checksums_asset: bool = False,
     verify_tarballs: bool = False,
     timeout: int = 20,
 ) -> tuple[str, dict[str, str], list[str]]:
@@ -408,6 +431,16 @@ def extract_release_linux_digests(
     digests: dict[str, str] = {}
     errors: list[str] = []
 
+    if require_checksums_asset:
+        checksum_asset = asset_by_name.get("checksums.txt")
+        download_url = checksum_asset.get("browser_download_url") if checksum_asset else None
+        if not isinstance(download_url, str) or not download_url:
+            errors.append(f"Upstream RTK release {tag} is missing checksums.txt asset")
+            checksums_map = {}
+        else:
+            raw_checksums = fetch_bytes(download_url, timeout=timeout).decode("utf-8", errors="replace")
+            checksums_map = _parse_checksums_text(raw_checksums)
+
     for target in RTK_LINUX_TARGETS:
         asset_name = f"rtk-{target}.tar.gz"
         asset = asset_by_name.get(asset_name)
@@ -416,13 +449,14 @@ def extract_release_linux_digests(
             continue
 
         digest_field = asset.get("digest")
-        resolved_digest: str | None = None
+        api_digest: str | None = None
         if isinstance(digest_field, str) and digest_field.lower().startswith("sha256:"):
             candidate = digest_field.split(":", 1)[1].lower()
             if _SHA256_HEX_RE.fullmatch(candidate):
-                resolved_digest = candidate
+                api_digest = candidate
 
-        if resolved_digest is None:
+        checksum_digest: str | None = None
+        if api_digest is None or require_checksums_asset:
             if checksums_map is None:
                 checksum_asset = asset_by_name.get("checksums.txt")
                 download_url = checksum_asset.get("browser_download_url") if checksum_asset else None
@@ -431,12 +465,22 @@ def extract_release_linux_digests(
                     checksums_map = _parse_checksums_text(raw_checksums)
                 else:
                     checksums_map = {}
-            resolved_digest = checksums_map.get(asset_name)
+            checksum_digest = checksums_map.get(asset_name)
 
+        if require_checksums_asset:
+            if checksum_digest is None:
+                errors.append(f"Upstream RTK release {tag} checksums.txt is missing entry for {asset_name}")
+                continue
+            if api_digest is not None and checksum_digest != api_digest:
+                errors.append(
+                    f"Upstream RTK release {tag} checksums.txt digest ({checksum_digest}) disagrees with asset digest ({api_digest}) for {asset_name}"
+                )
+                continue
+
+        resolved_digest = api_digest or checksum_digest
         if resolved_digest is None:
             errors.append(f"Upstream RTK release {tag} has no SHA-256 digest metadata for {asset_name}")
             continue
-
         if verify_tarballs:
             download_url = asset.get("browser_download_url")
             if not isinstance(download_url, str) or not download_url:
@@ -473,6 +517,37 @@ def check_rtk_release(
     manifest = manifests.load_manifest(manifest_path)
     pinned_tag, pinned_digests, errors = extract_pinned_rtk_spec(manifest)
 
+    if latest_release_file is not None:
+        latest_payload = load_json_file(latest_release_file)
+    else:
+        latest_payload = fetch_json(
+            f"{RTK_RELEASES_API_BASE}/latest",
+            timeout=timeout,
+            accept_github_json=True,
+        )
+
+    if pinned_tag is None:
+        latest_tag, latest_digests, latest_asset_errors = extract_release_linux_digests(
+            latest_payload,
+            require_checksums_asset=True,
+            verify_tarballs=verify_tarballs,
+            timeout=timeout,
+        )
+        errors.extend(latest_asset_errors)
+        status = "FAIL" if errors else "OK"
+        return {
+            "status": status,
+            "mode": "latest",
+            "pinnedTag": None,
+            "pinnedDigests": {},
+            "upstreamPinnedDigests": {},
+            "latestTag": latest_tag,
+            "latestDigests": latest_digests,
+            "outdated": False,
+            "verifiedTarballs": verify_tarballs,
+            "errors": errors,
+        }
+
     if pinned_release_file is not None:
         pinned_payload = load_json_file(pinned_release_file)
     else:
@@ -503,15 +578,6 @@ def check_rtk_release(
                 f"manifest has {expected}, upstream has {actual}"
             )
 
-    if latest_release_file is not None:
-        latest_payload = load_json_file(latest_release_file)
-    else:
-        latest_payload = fetch_json(
-            f"{RTK_RELEASES_API_BASE}/latest",
-            timeout=timeout,
-            accept_github_json=True,
-        )
-
     latest_tag, latest_digests, latest_asset_errors = extract_release_linux_digests(
         latest_payload,
         verify_tarballs=False,
@@ -537,6 +603,7 @@ def check_rtk_release(
 
     return {
         "status": status,
+        "mode": "pinned",
         "pinnedTag": pinned_tag,
         "pinnedDigests": pinned_digests,
         "upstreamPinnedDigests": upstream_pinned_digests,
@@ -587,10 +654,15 @@ def render_human_report(report: dict[str, Any]) -> None:
     if rtk_report is not None:
         if routing_report is not None:
             terminal.say("")
-        terminal.say(terminal.heading("Linux RTK Release Pin"))
+        terminal.say(terminal.heading("Linux RTK Release"))
         if rtk_report["errors"]:
             for err in rtk_report["errors"]:
                 terminal.say(f"  {terminal.badge('FAIL')} {err}")
+        elif rtk_report.get("mode") == "latest":
+            tarball_note = " (tarballs verified)" if rtk_report["verifiedTarballs"] else ""
+            terminal.say(
+                f"  {terminal.badge('OK')} Unpinned releases/latest recipe verified against upstream {rtk_report['latestTag']} checksums.txt and Linux assets{tarball_note}"
+            )
         else:
             tarball_note = " (tarballs verified)" if rtk_report["verifiedTarballs"] else ""
             terminal.say(
@@ -604,7 +676,6 @@ def render_human_report(report: dict[str, Any]) -> None:
                 for target in RTK_LINUX_TARGETS:
                     digest = rtk_report["latestDigests"].get(target, "<missing>")
                     terminal.say(f"    {target}: {digest}")
-
 
 def write_github_step_summary(summary_path: Path, report: dict[str, Any]) -> None:
     lines = [f"## Upstream Drift Check: `{report['status']}`", ""]
@@ -628,10 +699,13 @@ def write_github_step_summary(summary_path: Path, report: dict[str, Any]) -> Non
 
     rtk_report = report.get("rtk")
     if rtk_report is not None:
-        lines.append(f"### Linux RTK Release Pin (`{rtk_report['status']}`)")
-        lines.append(
-            f"- Pinned tag: `{rtk_report['pinnedTag']}` | Latest upstream tag: `{rtk_report['latestTag']}`"
-        )
+        lines.append(f"### Linux RTK Release (`{rtk_report['status']}`)")
+        if rtk_report.get("mode") == "latest":
+            lines.append(f"- Mode: `releases/latest` (`checksums.txt` verified) | Latest upstream tag: `{rtk_report['latestTag']}`")
+        else:
+            lines.append(
+                f"- Pinned tag: `{rtk_report['pinnedTag']}` | Latest upstream tag: `{rtk_report['latestTag']}`"
+            )
         if rtk_report["errors"]:
             for err in rtk_report["errors"]:
                 lines.append(f"- **FAIL**: {err}")
@@ -651,7 +725,7 @@ def write_github_step_summary(summary_path: Path, report: dict[str, Any]) -> Non
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Verify DotAi routing recommendations and pinned Linux RTK release digests against upstream."
+        description="Verify DotAi routing recommendations and Linux RTK release recipes against upstream."
     )
     parser.add_argument(
         "--check-routing",
@@ -661,7 +735,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--check-rtk",
         action="store_true",
-        help="Check stack.example.json Linux RTK version and SHA-256 digests against GitHub releases",
+        help="Check stack.example.json Linux RTK release recipe and SHA-256 digests against GitHub releases",
     )
     parser.add_argument(
         "--fail-on-outdated",
@@ -671,7 +745,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--verify-tarballs",
         action="store_true",
-        help="Download pinned Linux RTK release tarballs and verify their SHA-256 bytes directly",
+        help="Download Linux RTK release tarballs and verify their SHA-256 bytes directly",
     )
     parser.add_argument(
         "--json",
@@ -682,7 +756,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--manifest",
         type=Path,
         default=manifests.EXAMPLE_MANIFEST,
-        help="Stack manifest to inspect for pinned RTK release (default: stack.example.json)",
+        help="Stack manifest to inspect for Linux RTK release recipe (default: stack.example.json)",
     )
     parser.add_argument(
         "--routing",

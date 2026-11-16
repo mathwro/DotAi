@@ -211,6 +211,62 @@ class UpstreamDriftCheckTests(unittest.TestCase):
             code = check_upstream.main(["--color", "never", *args])
         return code, stdout.getvalue(), stderr.getvalue()
 
+    def test_rtk_check_passes_for_unpinned_latest_release_recipe_with_checksums_verification(self) -> None:
+        real_example = ROOT / "stack.example.json"
+        latest = make_release_payload(
+            "v1.2.0",
+            NEWER_X86_DIGEST,
+            NEWER_ARM_DIGEST,
+            checksums_url="https://download.invalid/checksums.txt",
+        )
+        self.write_json(self.rtk_latest_path, latest)
+        checksums_body = (
+            f"{NEWER_X86_DIGEST}  rtk-{X86_TARGET}.tar.gz\n"
+            f"{NEWER_ARM_DIGEST}  rtk-{ARM_TARGET}.tar.gz\n"
+        ).encode("utf-8")
+
+        with mock.patch.object(check_upstream, "fetch_bytes", return_value=checksums_body):
+            code, out, err = self.run_cli(
+                "--check-rtk",
+                "--fail-on-outdated",
+                "--manifest",
+                str(real_example),
+                "--rtk-latest-release-file",
+                str(self.rtk_latest_path),
+            )
+
+        self.assertEqual(code, 0, msg=out + err)
+        self.assertEqual(err, "")
+        self.assertIn("[OK]", out)
+        self.assertIn("v1.2.0", out)
+
+    def test_rtk_check_fails_when_latest_release_checksums_disagree_with_asset_digests(self) -> None:
+        real_example = ROOT / "stack.example.json"
+        latest = make_release_payload(
+            "v1.2.0",
+            NEWER_X86_DIGEST,
+            NEWER_ARM_DIGEST,
+            checksums_url="https://download.invalid/checksums.txt",
+        )
+        self.write_json(self.rtk_latest_path, latest)
+        bad_checksums = (
+            f"{'9' * 64}  rtk-{X86_TARGET}.tar.gz\n"
+            f"{NEWER_ARM_DIGEST}  rtk-{ARM_TARGET}.tar.gz\n"
+        ).encode("utf-8")
+
+        with mock.patch.object(check_upstream, "fetch_bytes", return_value=bad_checksums):
+            code, out, _ = self.run_cli(
+                "--check-rtk",
+                "--manifest",
+                str(real_example),
+                "--rtk-latest-release-file",
+                str(self.rtk_latest_path),
+            )
+
+        self.assertEqual(code, 1)
+        self.assertIn("[FAIL]", out)
+        self.assertIn("checksums.txt", out)
+
     def test_rtk_check_passes_when_manifest_and_upstream_digests_match(self) -> None:
         self.write_json(self.manifest_path, make_manifest())
         release = make_release_payload("v0.50.0", PINNED_X86_DIGEST, PINNED_ARM_DIGEST)
@@ -231,7 +287,6 @@ class UpstreamDriftCheckTests(unittest.TestCase):
         self.assertEqual(err, "")
         self.assertIn("[OK]", out)
         self.assertIn("v0.50.0", out)
-
     def test_rtk_check_fails_when_install_and_update_digests_disagree(self) -> None:
         self.write_json(
             self.manifest_path,

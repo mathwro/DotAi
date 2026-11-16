@@ -10,7 +10,7 @@ permissions:
 
 jobs:
   upstream-drift:
-    name: Check OMP routing catalog and RTK release pin
+    name: Check OMP routing catalog and Linux RTK release assets
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -19,7 +19,7 @@ jobs:
       - uses: actions/setup-python@v7
         with:
           python-version: "3.14"
-      - name: Verify upstream OMP routing catalog and pinned Linux RTK release
+      - name: Verify upstream OMP routing catalog and Linux RTK release assets
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: python scripts/check_upstream.py --fail-on-outdated

@@ -51,7 +51,7 @@ class RtkShellFixture:
         }
         if custom_dir:
             self.env["RTK_INSTALL_DIR"] = str(self.install_dir)
-        for name in ("mktemp", "rm", "mkdir", "install", "sort", "sed", "sha256sum", "gzip"):
+        for name in ("mktemp", "rm", "mkdir", "install", "sort", "sed", "sha256sum", "gzip", "awk"):
             tool = shutil.which(name)
             if not tool:
                 raise RuntimeError(f"Required Linux fixture tool is absent: {name}")
@@ -61,10 +61,26 @@ class RtkShellFixture:
 from pathlib import Path
 root = Path(os.environ['FIXTURE_ROOT'])
 args = sys.argv[1:]
+latest_tag = os.environ.get('FIXTURE_LATEST_TAG', 'v1.2.0')
+if args == ['-fsSI', '-o', '/dev/null', '-w', '%{url_effective}', '-L', 'https://github.com/rtk-ai/rtk/releases/latest']:
+    if os.environ.get('FIXTURE_REDIRECT_FAIL') == '1':
+        sys.exit(22)
+    sys.stdout.write(f'https://github.com/rtk-ai/rtk/releases/tag/{latest_tag}')
+    sys.exit(0)
 assert len(args) == 4 and args[0] == '-fsSL' and args[2] == '-o', args
 url = args[1]
 targets = ('x86_64-unknown-linux-musl', 'aarch64-unknown-linux-gnu')
-assert url.startswith('https://github.com/rtk-ai/rtk/releases/download/v')
+if url.endswith('/checksums.txt'):
+    assert url in (
+        'https://github.com/rtk-ai/rtk/releases/latest/download/checksums.txt',
+        f'https://github.com/rtk-ai/rtk/releases/download/{latest_tag}/checksums.txt',
+    ), url
+    (root / 'downloaded-checksums').write_text(url)
+    if os.environ.get('FIXTURE_CHECKSUMS_FAIL') == '1':
+        sys.exit(22)
+    shutil.copyfile(root / 'checksums.txt', args[3])
+    sys.exit(0)
+assert url.startswith('https://github.com/rtk-ai/rtk/releases/'), url
 target = next(target for target in targets if url.endswith('/rtk-' + target + '.tar.gz'))
 (root / 'downloaded-target').write_text(target)
 if os.environ.get('FIXTURE_DOWNLOAD_FAIL') == '1':
@@ -80,38 +96,42 @@ from pathlib import Path
 Path(os.environ['FIXTURE_ROOT'], 'extracted').touch()
 os.execv({real_tar!r}, [{real_tar!r}, *sys.argv[1:]])
 """)
+        checksum_lines = []
         for target in ("x86_64-unknown-linux-musl", "aarch64-unknown-linux-gnu"):
             payload = (
                 "#!/bin/sh\n"
                 "case \"$1\" in\n"
-                "  --version) printf 'rtk 0.50.0\\n';;\n"
+                "  --version) printf 'rtk 1.2.0\\n';;\n"
                 f"  --fixture-target) printf '{target}\\n';;\n"
                 "  *) exit 2;;\n"
                 "esac\n"
             ).encode()
-            with tarfile.open(root / (target + ".tar.gz"), "w:gz") as archive:
+            tar_path = root / (target + ".tar.gz")
+            with tarfile.open(tar_path, "w:gz") as archive:
                 member = tarfile.TarInfo("rtk")
                 member.size = len(payload)
                 member.mode = 0o755
                 archive.addfile(member, io.BytesIO(payload))
+            import hashlib
+            digest = hashlib.sha256(tar_path.read_bytes()).hexdigest()
+            checksum_lines.append(f"{digest}  rtk-{target}.tar.gz\n")
+            checksum_lines.append(f"{'0' * 64}  rtk-oss-{target}.tar.gz\n")
+        (root / "checksums.txt").write_text("".join(checksum_lines), encoding="utf-8")
 
     def script(self, name: str, body: str) -> None:
         path = self.bin / name
         path.write_text(f"#!{sys.executable}\n{body}", encoding="utf-8")
         path.chmod(0o755)
 
-    def accept_checksum(self) -> None:
-        # Upstream digest verification is real in mismatch tests. Success models
-        # only the verifier's successful boundary, without repinning the manifest.
-        (self.bin / "sha256sum").unlink()
-        self.script("sha256sum", r"""import re, sys
-from pathlib import Path
-assert sys.argv[1:] == ['-c', '-']
-line = sys.stdin.read().rstrip('\n')
-digest, path = line.split('  ', 1)
-assert re.fullmatch('[0-9a-f]{64}', digest)
-assert Path(path).read_bytes()[:2] == b'\x1f\x8b'
-""")
+    def corrupt_checksums(self, content: str | None = None) -> None:
+        if content is not None:
+            (self.root / "checksums.txt").write_text(content, encoding="utf-8")
+        else:
+            (self.root / "checksums.txt").write_text(
+                f"{'f' * 64}  rtk-x86_64-unknown-linux-musl.tar.gz\n"
+                f"{'e' * 64}  rtk-aarch64-unknown-linux-gnu.tar.gz\n",
+                encoding="utf-8",
+            )
 
     def existing(self, version: str = "0.40.0") -> bytes:
         self.install_dir.mkdir(parents=True, exist_ok=True)
@@ -136,18 +156,20 @@ class InstallerShellTests(unittest.TestCase):
 
     def test_checksum_mismatch_preserves_existing_binary_before_extraction(self) -> None:
         for operation in ("install", "update"):
-            with self.subTest(operation=operation), tempfile.TemporaryDirectory() as directory:
-                fixture = RtkShellFixture(Path(directory))
-                self.assert_fail_closed(fixture, operation, fixture.existing())
-                self.assertTrue((fixture.root / "downloaded-target").exists())
+            for bad_checksums in (None, "no-matching-entries-here\n"):
+                with self.subTest(operation=operation, bad_checksums=bad_checksums), tempfile.TemporaryDirectory() as directory:
+                    fixture = RtkShellFixture(Path(directory))
+                    fixture.corrupt_checksums(bad_checksums)
+                    self.assert_fail_closed(fixture, operation, fixture.existing())
+                    self.assertTrue((fixture.root / "downloaded-checksums").exists())
 
     def test_download_failure_preserves_existing_binary_before_extraction(self) -> None:
         for operation in ("install", "update"):
-            with self.subTest(operation=operation), tempfile.TemporaryDirectory() as directory:
-                fixture = RtkShellFixture(Path(directory))
-                fixture.env["FIXTURE_DOWNLOAD_FAIL"] = "1"
-                self.assert_fail_closed(fixture, operation, fixture.existing())
-                self.assertTrue((fixture.root / "downloaded-target").exists())
+            for fail_var in ("FIXTURE_DOWNLOAD_FAIL", "FIXTURE_CHECKSUMS_FAIL"):
+                with self.subTest(operation=operation, fail_var=fail_var), tempfile.TemporaryDirectory() as directory:
+                    fixture = RtkShellFixture(Path(directory))
+                    fixture.env[fail_var] = "1"
+                    self.assert_fail_closed(fixture, operation, fixture.existing())
 
     def test_unsupported_architecture_never_downloads_or_replaces_binary(self) -> None:
         for operation in ("install", "update"):
@@ -155,6 +177,7 @@ class InstallerShellTests(unittest.TestCase):
                 fixture = RtkShellFixture(Path(directory), "riscv64")
                 self.assert_fail_closed(fixture, operation, fixture.existing())
                 self.assertFalse((fixture.root / "downloaded-target").exists())
+                self.assertFalse((fixture.root / "downloaded-checksums").exists())
 
     def test_success_installs_executable_for_selected_architecture(self) -> None:
         for operation in ("install", "update"):
@@ -167,8 +190,7 @@ class InstallerShellTests(unittest.TestCase):
                 with self.subTest(operation=operation, architecture=architecture), tempfile.TemporaryDirectory() as directory:
                     fixture = RtkShellFixture(Path(directory), architecture)
                     if operation == "update":
-                        fixture.existing()
-                    fixture.accept_checksum()
+                        fixture.existing("0.50.0")
                     result = fixture.run(operation)
                     self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
                     binary = fixture.install_dir / "rtk"
@@ -180,14 +202,13 @@ class InstallerShellTests(unittest.TestCase):
     def test_install_uses_home_local_bin_when_override_is_absent(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             fixture = RtkShellFixture(Path(directory), custom_dir=False)
-            fixture.accept_checksum()
             result = fixture.run("install")
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             actual = subprocess.run([str(fixture.home / ".local" / "bin" / "rtk"), "--version"], env=fixture.env, capture_output=True, text=True, check=True)
-            self.assertEqual(actual.stdout.strip(), "rtk 0.50.0")
+            self.assertEqual(actual.stdout.strip(), "rtk 1.2.0")
 
-    def test_current_or_newer_update_is_noop_without_network(self) -> None:
-        for version in ("0.50.0", "0.51.0", "1.0.0"):
+    def test_current_or_newer_update_is_noop_without_archive_download(self) -> None:
+        for version in ("1.2.0", "1.3.0", "2.0.0"):
             with self.subTest(version=version), tempfile.TemporaryDirectory() as directory:
                 fixture = RtkShellFixture(Path(directory), "unsupported")
                 before = fixture.existing(version)
