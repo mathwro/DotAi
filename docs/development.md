@@ -11,6 +11,7 @@ stack.example.json   Tracked baseline copied for new users
 stack.json           Ignored, user-owned stack configuration
 stack.schema.json    JSON Schema for stack manifests
 routing-recommendations.json  Tracked provider/model routing recommendations
+scripts/             Maintainer verification utilities (not part of the installed runtime)
 docs/                User and contributor documentation
 tests/               Behavioral test suite
 AGENTS.md             Repository guidance for coding agents
@@ -104,6 +105,18 @@ When changing the manifest format or shared defaults, keep `stack.example.json`,
 Routing behavior tests use the shared synthetic catalog in `tests/test_dotai.py`, not current GPT or Claude versions. Keep expected provider precedence, fallback chains, and configuration effects explicit; do not calculate expected results with the production resolver. The repository catalog is validated separately and exercised for coverage of every managed role without pinning model IDs. Model refreshes should update `routing-recommendations.json` and the routing documentation, not the behavioral fixtures.
 
 Release-notice tests use explicit synthetic current and available versions, including numeric ordering, equal/older releases, and network failures. Keep these behavioral fixtures independent of `dotai_app/releases.py`'s release version and exact notice wording; verify a release's real version with `./dotai.py version` before tagging it.
+
+### Upstream drift check
+
+Verify `routing-recommendations.json` against the upstream Oh My Pi static model catalog and check the pinned Linux `RTK` release tag and per-architecture SHA-256 digests in `stack.example.json` against GitHub Releases:
+
+```sh
+rtk python3 scripts/check_upstream.py
+rtk python3 scripts/check_upstream.py --fail-on-outdated
+rtk python3 scripts/check_upstream.py --json
+```
+
+The script keeps maintainer verification outside `dotai_app/`, reuses `dotai_app.routing` and `dotai_app.manifest` validation, and honors `GITHUB_TOKEN` or `GH_TOKEN` when calling the GitHub API. Missing static catalog models, roles left with zero valid models, `install.linux`/`update.linux` inconsistencies, or SHA-256 mismatches exit `1` (`FAIL`). Newer upstream RTK releases print a `[DRIFT]` notice with the new `x86_64` and `aarch64` digests and exit `0` unless `--fail-on-outdated` is passed. `.github/workflows/upstream-drift.yml` runs `python scripts/check_upstream.py --fail-on-outdated` weekly (`0 7 * * 1`) and via `workflow_dispatch`, publishing a step summary when `GITHUB_STEP_SUMMARY` is set.
 
 ## Behavioral fixtures and CLI smoke checks
 
