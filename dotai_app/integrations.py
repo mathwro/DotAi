@@ -1,4 +1,4 @@
-"""Validate CLI additions and update declared manifest integrations."""
+"""Validate CLI additions and removals and update declared manifest integrations."""
 
 from __future__ import annotations
 
@@ -7,11 +7,13 @@ from typing import Any
 import argparse
 import copy
 import re
+import shutil
 from . import manifest as manifests
+from . import mcp as mcp_config
+from . import omp as omp_config
 from . import runtime
 from . import skills as skill_manager
 from . import terminal
-
 
 HEADER_NAME = re.compile(r"^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$")
 
@@ -134,4 +136,120 @@ def add_integration(args: argparse.Namespace, manifest: dict[str, Any], path: Pa
         if backup is not None:
             terminal.say(f"{terminal.badge('OK')} Manifest backup written to {backup}")
     terminal.say(f"{terminal.badge('OK')} Added {kind} to {path}. Run 'dotai sync' or 'dotai install' to apply it.")
+    return 0
+
+
+def _pop_skill(skills: list[dict[str, Any]], source: str) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    for index, skill in enumerate(skills):
+        if skill.get("source") == source:
+            updated = list(skills)
+            return updated, updated.pop(index)
+    normalized = skill_manager.github_repository_source(source)
+    if normalized is not None:
+        matches = [
+            index for index, skill in enumerate(skills)
+            if skill_manager.github_repository_source(skill.get("source")) == normalized
+        ]
+        if len(matches) > 1:
+            sources = ", ".join(skills[index]["source"] for index in matches)
+            raise runtime.DotAiError(f"Ambiguous skill source '{source}'; matches multiple entries: {sources}")
+        if len(matches) == 1:
+            updated = list(skills)
+            return updated, updated.pop(matches[0])
+    raise runtime.DotAiError(f"Skill source not found in manifest: {source}")
+
+
+def _pop_by_key(items: list[dict[str, Any]], key: str, identifier: str, label: str) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    for index, item in enumerate(items):
+        if item.get(key) == identifier:
+            updated = list(items)
+            return updated, updated.pop(index)
+    raise runtime.DotAiError(f"{label} not found in manifest: {identifier}")
+
+
+def remove_integration(
+    args: argparse.Namespace, manifest: dict[str, Any], path: Path, runner: runtime.Runner,
+) -> int:
+    kind = args.kind
+    uninstall = getattr(args, "uninstall", False)
+    if kind == "tool" and uninstall:
+        raise runtime.DotAiError(
+            "System packages are not uninstalled automatically; remove the manifest entry without --uninstall and use your package manager if needed"
+        )
+    updated = dict(manifest)
+    if kind == "tool":
+        updated["packages"], removed = _pop_by_key(manifest["packages"], "name", args.name, "Tool")
+        target_label = f"tool {removed['name']}"
+    elif kind == "skill":
+        updated["skills"], removed = _pop_skill(manifest["skills"], args.source)
+        target_label = f"skill {removed['source']}"
+    elif kind == "marketplace":
+        updated["marketplaces"], removed = _pop_by_key(manifest["marketplaces"], "name", args.name, "Marketplace")
+        target_label = f"marketplace {removed['name']}"
+    elif kind == "plugin":
+        updated["plugins"], removed = _pop_by_key(manifest["plugins"], "id", args.id, "Plugin")
+        target_label = f"plugin {removed['id']}"
+    elif kind == "mcp":
+        servers = dict(manifest["mcp"]["servers"])
+        if args.name not in servers:
+            raise runtime.DotAiError(f"MCP server not found in manifest: {args.name}")
+        removed = servers.pop(args.name)
+        updated["mcp"] = {**manifest["mcp"], "servers": servers}
+        target_label = f"mcp {args.name}"
+    else:
+        raise runtime.DotAiError(f"Unsupported integration kind: {kind}")
+
+    persisted = {**updated, "ompRouting": None} if updated.get("ompRouting") == {} else updated
+    manifests.validate_manifest(persisted)
+
+    environment: dict[str, str] | None = None
+    if uninstall and kind == "skill":
+        environment = skill_manager.declared_skill_environment(updated, runner)
+        if environment is None or not omp_config.validate_skill_environment_target(runner):
+            return 1
+    elif uninstall and kind == "mcp":
+        target, _ = mcp_config.desired_mcp(manifest)
+        if target.exists():
+            try:
+                mcp_config.load_mcp_config(target)
+            except (OSError, runtime.DotAiError) as exc:
+                runner.failures.append(str(exc))
+                runner.say(f"{terminal.badge('FAIL')} MCP: {exc}")
+                return 1
+
+    backup = None
+    if runner.dry_run:
+        runner.say(f"{terminal.badge('RUN')} Remove {target_label} from {path} (dry run)")
+    else:
+        backup = manifests.write_manifest(path, persisted, backup=True)
+        runner.say(f"{terminal.badge('OK')} Manifest backup written to {backup}")
+        runner.say(f"{terminal.badge('OK')} Removed {target_label} from {path}")
+
+    if uninstall:
+        if kind == "skill":
+            skill_manager.remove_retired_skills(
+                [{"kind": "remove", "source": removed["source"], "before": removed, "after": None}],
+                runner,
+            )
+            if not runner.failures and environment is not None:
+                omp_config.reconcile_skill_environment(environment, runner)
+        elif kind == "mcp":
+            try:
+                mcp_config.remove_mcp_server(manifest, args.name, runner)
+            except (OSError, runtime.DotAiError) as exc:
+                runner.failures.append(str(exc))
+                runner.say(f"{terminal.badge('FAIL')} MCP: {exc}")
+        elif kind == "marketplace":
+            omp_config.remove_marketplace(removed["name"], runner)
+        elif kind == "plugin":
+            omp_config.remove_plugin(removed, runner)
+
+        if runner.failures:
+            if backup is not None:
+                shutil.copy2(backup, path)
+                runner.say(f"{terminal.badge('OK')} Restored {path} after {kind} uninstall failure")
+            return 1
+
+    if runner.dry_run:
+        runner.say(f"{terminal.badge('RUN')} Dry run: no manifest or machine changes applied.")
     return 0

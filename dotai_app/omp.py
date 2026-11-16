@@ -28,6 +28,44 @@ def reconcile_plugins(manifest: dict[str, Any], runner: runtime.Runner, mode: st
         runner.run(command, f"Reconcile plugin {plugin['id']}")
 
 
+def remove_marketplace(name: str, runner: runtime.Runner) -> None:
+    registry = runtime.home_dir() / ".omp" / "marketplaces.json"
+    if not runner.dry_run and not registry.exists():
+        runner.say(f"{terminal.badge('OK')} Marketplace {name}: not registered in {registry}")
+        return
+    if not runner.dry_run and registry.exists():
+        try:
+            present = json_contains(manifests.load_json_object(registry), name)
+        except (OSError, UnicodeError, runtime.DotAiError):
+            present = True
+        if not present:
+            runner.say(f"{terminal.badge('OK')} Marketplace {name}: not registered in {registry}")
+            return
+    runner.run(["omp", "plugin", "marketplace", "remove", name], f"Remove marketplace {name}")
+
+
+def remove_plugin(plugin: dict[str, Any], runner: runtime.Runner) -> None:
+    scope = plugin.get("scope", "user")
+    plugin_id = plugin["id"]
+    registry = (
+        runtime.ROOT / ".omp" / "plugins" / "installed_plugins.json"
+        if scope == "project"
+        else runtime.home_dir() / ".omp" / "plugins" / "installed_plugins.json"
+    )
+    if not runner.dry_run and not registry.exists():
+        runner.say(f"{terminal.badge('OK')} Plugin {plugin_id}: not installed in {scope} scope")
+        return
+    if not runner.dry_run and registry.exists():
+        try:
+            present = json_contains(manifests.load_json_object(registry), plugin_id)
+        except (OSError, UnicodeError, runtime.DotAiError):
+            present = True
+        if not present:
+            runner.say(f"{terminal.badge('OK')} Plugin {plugin_id}: not installed in {scope} scope")
+            return
+    runner.run(["omp", "plugin", "uninstall", "--scope", scope, plugin_id], f"Uninstall plugin {plugin_id}")
+
+
 def extension_identity(value: str) -> str:
     if value.startswith(("~/", "~\\")) or Path(value).is_absolute():
         return os.path.normcase(str(runtime.expand_path(value).resolve()))
@@ -170,6 +208,18 @@ def _read_skill_environment(target: Path) -> tuple[bytes, bytes, dict[str, str]]
         managed[match[1].decode("ascii")] = match[2].decode("ascii")
     return current, b"".join(lines[:starts[0]]), managed
 
+
+
+def validate_skill_environment_target(runner: runtime.Runner) -> bool:
+    target = runtime.home_dir() / ".omp" / "agent" / ".env"
+    try:
+        _read_skill_environment(target)
+    except (OSError, UnicodeError, runtime.DotAiError) as exc:
+        detail = f"OMP skill environment: {exc}"
+        runner.failures.append(detail)
+        runner.say(f"{terminal.badge('FAIL')} {detail}")
+        return False
+    return True
 
 def reconcile_skill_environment(
     environment: dict[str, str], runner: runtime.Runner, *, preserve_existing: bool = False,
