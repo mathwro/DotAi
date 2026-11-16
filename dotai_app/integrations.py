@@ -1,4 +1,4 @@
-"""Validate CLI additions and removals and update declared manifest integrations."""
+"""Validate CLI additions and removals, scope manifests, and update declared integrations."""
 
 from __future__ import annotations
 
@@ -253,3 +253,149 @@ def remove_integration(
     if runner.dry_run:
         runner.say(f"{terminal.badge('RUN')} Dry run: no manifest or machine changes applied.")
     return 0
+
+
+COMMAND_SECTIONS: dict[str, tuple[str, ...]] = {
+    "install": ("packages", "extensions", "skills", "plugins", "mcp"),
+    "update": ("packages", "extensions", "skills", "plugins", "mcp"),
+    "sync": ("extensions", "skills", "plugins", "mcp"),
+    "status": ("packages", "skills", "plugins", "extensions", "routing", "mcp"),
+}
+
+
+def _match_skill_target(skills: list[dict[str, Any]], ident: str) -> list[int]:
+    exact = [idx for idx, skill in enumerate(skills) if skill.get("source") == ident]
+    if exact:
+        return exact
+    normalized = skill_manager.github_repository_source(ident)
+    if normalized is not None:
+        repo_matches = [
+            idx for idx, skill in enumerate(skills)
+            if skill_manager.github_repository_source(skill.get("source")) == normalized
+        ]
+        if len(repo_matches) > 1:
+            sources = ", ".join(skills[idx]["source"] for idx in repo_matches)
+            raise runtime.DotAiError(f"Ambiguous target: {ident} (matches skill sources: {sources})")
+        if len(repo_matches) == 1:
+            return repo_matches
+    name_matches = [
+        idx for idx, skill in enumerate(skills)
+        if ident in skill.get("skills", []) or ident in skill.get("checkSkills", [])
+    ]
+    if len(name_matches) > 1:
+        sources = ", ".join(skills[idx]["source"] for idx in name_matches)
+        raise runtime.DotAiError(f"Ambiguous target: {ident} (matches skill sources: {sources})")
+    return name_matches
+
+
+def scope_manifest(
+    manifest: dict[str, Any],
+    command: str,
+    only_sections: list[str] | None = None,
+    targets: list[str] | None = None,
+) -> tuple[dict[str, Any], set[str]]:
+    valid_sections = set(COMMAND_SECTIONS[command])
+    active_sections = set(only_sections) & valid_sections if only_sections else set(valid_sections)
+    if not targets:
+        scoped = dict(manifest)
+        if "packages" not in active_sections:
+            scoped["packages"] = []
+        if "extensions" not in active_sections:
+            scoped["ompExtensions"] = []
+        if "skills" not in active_sections:
+            scoped["skills"] = []
+        if "plugins" not in active_sections:
+            scoped["marketplaces"] = []
+            scoped["plugins"] = []
+        if "mcp" not in active_sections:
+            scoped["mcp"] = {**manifest["mcp"], "servers": {}}
+        if "routing" not in active_sections:
+            scoped["ompRouting"] = None
+        return scoped, active_sections
+
+    pkg_indices: set[int] = set()
+    skill_indices: set[int] = set()
+    mp_names: set[str] = set()
+    plugin_indices: set[int] = set()
+    mcp_names: set[str] = set()
+    ext_indices: set[int] = set()
+
+    packages = manifest.get("packages", [])
+    skills = manifest.get("skills", [])
+    marketplaces = manifest.get("marketplaces", [])
+    plugins = manifest.get("plugins", [])
+    servers = manifest.get("mcp", {}).get("servers", {})
+    extensions = manifest.get("ompExtensions", [])
+
+    for ident in targets:
+        matched = False
+        if "packages" in active_sections:
+            exact_pkgs = [idx for idx, pkg in enumerate(packages) if pkg.get("name") == ident]
+            if exact_pkgs:
+                pkg_indices.update(exact_pkgs)
+                matched = True
+            else:
+                lower = ident.lower()
+                ci_pkgs = [idx for idx, pkg in enumerate(packages) if str(pkg.get("name", "")).lower() == lower]
+                if len(ci_pkgs) > 1:
+                    raise runtime.DotAiError(f"Ambiguous target: {ident}")
+                if len(ci_pkgs) == 1:
+                    pkg_indices.update(ci_pkgs)
+                    matched = True
+        if "skills" in active_sections:
+            s_matches = _match_skill_target(skills, ident)
+            if s_matches:
+                skill_indices.update(s_matches)
+                matched = True
+        if "plugins" in active_sections:
+            mp_hit = [mp["name"] for mp in marketplaces if mp.get("name") == ident]
+            plug_hit = [idx for idx, plug in enumerate(plugins) if plug.get("id") == ident]
+            if mp_hit:
+                mp_names.update(mp_hit)
+                matched = True
+            if plug_hit:
+                plugin_indices.update(plug_hit)
+                for idx in plug_hit:
+                    ref_mp = str(plugins[idx].get("id", "")).partition("@")[2]
+                    if ref_mp:
+                        mp_names.add(ref_mp)
+                matched = True
+        if "mcp" in active_sections and ident in servers:
+            mcp_names.add(ident)
+            matched = True
+        if "extensions" in active_sections:
+            ident_norm = omp_config.extension_identity(ident)
+            ext_hit = [
+                idx for idx, ext in enumerate(extensions)
+                if ext == ident or omp_config.extension_identity(ext) == ident_norm
+            ]
+            if ext_hit:
+                ext_indices.update(ext_hit)
+                matched = True
+        if not matched:
+            raise runtime.DotAiError(f"Unknown target {ident!r} in active sections")
+
+    narrowed_sections: set[str] = set()
+    if pkg_indices:
+        narrowed_sections.add("packages")
+    if skill_indices:
+        narrowed_sections.add("skills")
+    if mp_names or plugin_indices:
+        narrowed_sections.add("plugins")
+    if mcp_names:
+        narrowed_sections.add("mcp")
+    if ext_indices:
+        narrowed_sections.add("extensions")
+
+    scoped = dict(manifest)
+    scoped["packages"] = [pkg for idx, pkg in enumerate(packages) if idx in pkg_indices]
+    scoped["skills"] = [skill for idx, skill in enumerate(skills) if idx in skill_indices]
+    scoped["marketplaces"] = [mp for mp in marketplaces if mp.get("name") in mp_names]
+    scoped["plugins"] = [plug for idx, plug in enumerate(plugins) if idx in plugin_indices]
+    scoped["mcp"] = {
+        **manifest["mcp"],
+        "servers": {name: srv for name, srv in servers.items() if name in mcp_names},
+    }
+    scoped["ompExtensions"] = [ext for idx, ext in enumerate(extensions) if idx in ext_indices]
+    scoped["ompRouting"] = None
+    return scoped, narrowed_sections

@@ -126,13 +126,14 @@ def declared_skill_environment(
 def reconcile_skills(
     manifest: dict[str, Any], runner: runtime.Runner, *, update_skills: bool = False,
     refresh_sources: set[str] | None = None, recommended_only: bool = False,
+    preserve_existing_env: bool = False,
 ) -> None:
     recommended_sources = {
         skill["source"] for skill in manifests.load_manifest(manifests.EXAMPLE_MANIFEST)["skills"]
     } if recommended_only else None
     environment = declared_skill_environment(manifest, runner, recommended_sources=recommended_sources)
     if environment is None or not omp_config.reconcile_skill_environment(
-        environment, runner, preserve_existing=recommended_only
+        environment, runner, preserve_existing=recommended_only or preserve_existing_env
     ):
         return
     xdg_state = os.environ.get("XDG_STATE_HOME")

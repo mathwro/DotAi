@@ -86,9 +86,14 @@ Common options:
 ./dotai.py install --dry-run
 ./dotai.py install --force
 ./dotai.py update --include-dependencies
+./dotai.py update --target RTK
+./dotai.py sync --only mcp
+./dotai.py status --only mcp --only skills
 ./dotai.py --manifest path/to/stack.json status
 ./dotai.py --manifest path/to/new-stack.json init
 ```
+
+Repeatable `--only` (`packages`, `extensions`, `skills`, `plugins`, `mcp`; plus `routing` on `status`, excluding `packages` on `sync`) and `--target IDENTIFIER` restrict `install`, `update`, `sync`, and `status` to selected sections or declared components without touching unselected items; they cannot be combined with `--recommended`, `--recommended-skills`, or `--enforce`.
 
 `init` creates only a missing manifest and refuses to overwrite an existing file. Dependency tools such as Node.js and `uv` install when missing but update only with `--include-dependencies`. OMP updates use its version-aware `omp update` command.
 

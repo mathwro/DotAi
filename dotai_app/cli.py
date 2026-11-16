@@ -43,6 +43,20 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Propose exact baseline entries for locally differing recommended items",
     )
+    install.add_argument(
+        "--only",
+        dest="only_sections",
+        action="append",
+        choices=list(integrations.COMMAND_SECTIONS["install"]),
+        help="Restrict execution to selected stack sections; repeatable",
+    )
+    install.add_argument(
+        "--target",
+        dest="targets",
+        action="append",
+        metavar="IDENTIFIER",
+        help="Restrict execution to matching declared components; repeatable",
+    )
     update = sub.add_parser("update", help="Update core components, refresh declared skills, and synchronize configuration")
     update.add_argument("--dry-run", action="store_true")
     update.add_argument(
@@ -59,6 +73,20 @@ def build_parser() -> argparse.ArgumentParser:
         "--enforce",
         action="store_true",
         help="Propose exact baseline entries for locally differing recommended items",
+    )
+    update.add_argument(
+        "--only",
+        dest="only_sections",
+        action="append",
+        choices=list(integrations.COMMAND_SECTIONS["update"]),
+        help="Restrict execution to selected stack sections; repeatable",
+    )
+    update.add_argument(
+        "--target",
+        dest="targets",
+        action="append",
+        metavar="IDENTIFIER",
+        help="Restrict execution to matching declared components; repeatable",
     )
     sync = sub.add_parser("sync", help="Synchronize skills, plugins, and MCP configuration")
     sync.add_argument("--dry-run", action="store_true")
@@ -77,6 +105,20 @@ def build_parser() -> argparse.ArgumentParser:
         "--enforce",
         action="store_true",
         help="Enforce exact recommendations (and offer user-skill cleanup with --recommended-skills)",
+    )
+    sync.add_argument(
+        "--only",
+        dest="only_sections",
+        action="append",
+        choices=list(integrations.COMMAND_SECTIONS["sync"]),
+        help="Restrict execution to selected stack sections; repeatable",
+    )
+    sync.add_argument(
+        "--target",
+        dest="targets",
+        action="append",
+        metavar="IDENTIFIER",
+        help="Restrict execution to matching declared components; repeatable",
     )
     configure = sub.add_parser("configure", help="Configure explicit post-authentication integrations")
     configure_sub = configure.add_subparsers(dest="configure_target", required=True)
@@ -177,7 +219,21 @@ def build_parser() -> argparse.ArgumentParser:
     remove_mcp.add_argument("name")
     remove_mcp.add_argument("--uninstall", action="store_true", help="Also remove the server entry from the managed MCP target file")
     remove_mcp.add_argument("--dry-run", action="store_true", help="Show actions without changing files or machine state")
-    sub.add_parser("status", help="Show installed and configured components")
+    status = sub.add_parser("status", help="Show installed and configured components")
+    status.add_argument(
+        "--only",
+        dest="only_sections",
+        action="append",
+        choices=list(integrations.COMMAND_SECTIONS["status"]),
+        help="Restrict status output to selected stack sections; repeatable",
+    )
+    status.add_argument(
+        "--target",
+        dest="targets",
+        action="append",
+        metavar="IDENTIFIER",
+        help="Restrict status output to matching declared components; repeatable",
+    )
     sub.add_parser("doctor", help="Check commands, configuration, and platform prerequisites")
     sub.add_parser("validate", help="Validate the manifest")
     sub.add_parser("platform", help="Print the detected platform")
@@ -187,6 +243,15 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
+    only_sections = getattr(args, "only_sections", None)
+    targets = getattr(args, "targets", None)
+    is_scoped = bool(only_sections or targets)
+    if is_scoped and (
+        getattr(args, "recommended", False)
+        or getattr(args, "recommended_skills", False)
+        or getattr(args, "enforce", False)
+    ):
+        parser.error("--only and --target cannot be combined with --recommended, --recommended-skills, or --enforce")
     if args.command == "sync" and args.recommended and args.recommended_skills:
         parser.error("--recommended and --recommended-skills cannot be combined")
     if args.command == "sync" and args.enforce and not (args.recommended or args.recommended_skills):
@@ -258,14 +323,26 @@ def main(argv: list[str] | None = None) -> int:
         except (OSError, runtime.DotAiError) as exc:
             terminal.say(f"{terminal.styled('dotai:', 'red', 'bold')} {exc}", file=sys.stderr)
             return 2
+    active_sections: set[str] | None = None
+    preserve_skill_env = False
+    if is_scoped:
+        try:
+            scoped_manifest, active_sections = integrations.scope_manifest(
+                manifest, args.command, only_sections, targets
+            )
+        except runtime.DotAiError as exc:
+            terminal.say(f"{terminal.styled('dotai:', 'red', 'bold')} {exc}", file=sys.stderr)
+            return 2
+        preserve_skill_env = len(scoped_manifest["skills"]) < len(manifest["skills"])
+        manifest = scoped_manifest
     if args.command == "status":
-        return 0 if health.print_status(manifest, runner) else 1
+        return 0 if health.print_status(manifest, runner, sections=active_sections) else 1
     if args.command == "doctor":
         return 0 if health.doctor(manifest, runner) else 1
     managed_skills = None
     managed_baseline = None
     refresh_sources: set[str] = set()
-    if args.command == "update":
+    if args.command == "update" and (active_sections is None or "skills" in active_sections):
         skill_manager.print_legacy_skill_notice(manifest)
     if getattr(args, "recommended", False):
         try:
@@ -285,11 +362,12 @@ def main(argv: list[str] | None = None) -> int:
             return 2
     elif args.command == "sync":
         if not args.recommended_skills:
-            try:
-                skill_recommendations.print_recommended_skill_notice(manifest, args.manifest)
-            except (OSError, runtime.DotAiError) as exc:
-                terminal.say(f"{terminal.styled('dotai:', 'red', 'bold')} {exc}", file=sys.stderr)
-                return 2
+            if not is_scoped:
+                try:
+                    skill_recommendations.print_recommended_skill_notice(manifest, args.manifest)
+                except (OSError, runtime.DotAiError) as exc:
+                    terminal.say(f"{terminal.styled('dotai:', 'red', 'bold')} {exc}", file=sys.stderr)
+                    return 2
         else:
             try:
                 old_skills = manifest["skills"]
@@ -306,7 +384,7 @@ def main(argv: list[str] | None = None) -> int:
             except (OSError, runtime.DotAiError) as exc:
                 terminal.say(f"{terminal.styled('dotai:', 'red', 'bold')} {exc}", file=sys.stderr)
                 return 2
-    elif args.command in {"install", "update"}:
+    elif args.command in {"install", "update"} and not is_scoped:
         try:
             skill_recommendations.print_recommended_stack_notice(
                 manifest, args.manifest, args.command
@@ -320,6 +398,8 @@ def main(argv: list[str] | None = None) -> int:
             update_skills=args.update_skills, refresh_sources=refresh_sources,
             recommended_only=args.recommended_skills and args.enforce,
             managed_baseline=managed_baseline,
+            active_sections=active_sections,
+            preserve_skill_env=preserve_skill_env,
         )
     return reconciliation.reconcile(
         manifest,
@@ -331,4 +411,6 @@ def main(argv: list[str] | None = None) -> int:
         managed_skills=managed_skills,
         refresh_sources=refresh_sources,
         managed_baseline=managed_baseline,
+        active_sections=active_sections,
+        preserve_skill_env=preserve_skill_env,
     )
