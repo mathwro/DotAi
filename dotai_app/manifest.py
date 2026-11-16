@@ -27,7 +27,7 @@ SUPPORTED_ROUTING_PROVIDERS = frozenset({"github-copilot", "openai-codex", "anth
 SERVER_NAME = re.compile(r"^[a-zA-Z0-9_.-]{1,100}$")
 
 
-PLUGIN_ID = re.compile(r"[a-z0-9.-]+@[a-z0-9.-]+")
+PLUGIN_ID = re.compile(r"^[A-Za-z0-9_.-]+@[A-Za-z0-9_.-]+$")
 
 
 PLATFORMS = frozenset({"windows", "wsl", "ubuntu", "arch", "macos", "linux", "unix", "default"})
@@ -186,10 +186,12 @@ def validate_platform_commands(value: Any, path: str, *, check: bool = False) ->
 def validate_mcp_server(server: Any, path: str) -> None:
     if not isinstance(server, dict):
         raise runtime.DotAiError(f"Manifest '{path}' must be an object")
-    transport = server.get("type", "stdio")
+    transport = server.get("type", "http" if "url" in server else "stdio")
     if not isinstance(transport, str):
         raise runtime.DotAiError(f"Manifest '{path}.type' must be 'stdio', 'http', or 'sse'")
     if transport == "stdio":
+        if "url" in server:
+            raise runtime.DotAiError(f"Manifest '{path}.url' is not valid for stdio servers")
         require_nonempty_string(server.get("command"), f"{path}.command")
         if "args" in server and (
             not isinstance(server["args"], list)
@@ -204,6 +206,8 @@ def validate_mcp_server(server: Any, path: str) -> None:
         if "cwd" in server and not isinstance(server["cwd"], str):
             raise runtime.DotAiError(f"Manifest '{path}.cwd' must be a string")
     elif transport in {"http", "sse"}:
+        if "command" in server:
+            raise runtime.DotAiError(f"Manifest '{path}.command' is not valid for {transport} servers")
         url = server.get("url")
         if not isinstance(url, str) or any(char.isspace() for char in url):
             raise runtime.DotAiError(f"Manifest '{path}.url' must be an HTTP(S) URL")

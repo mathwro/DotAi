@@ -1,6 +1,6 @@
 # Extending the stack
 
-Use `./dotai.py` on Linux, WSL, and macOS, or `python dotai.py` in PowerShell. The `add` commands validate and save entries in your user-owned `stack.json`; they do not install or start integrations. Reusing a skill source, MCP or marketplace name, plugin ID, or tool name replaces that entire manifest entry, so repeat every skill selection or option you want to retain.
+Use `./dotai.py` on Linux, WSL, and macOS, or `python dotai.py` in PowerShell. The `add` commands validate and save entries in your user-owned `stack.json`; they do not install or start integrations. Modifying an existing manifest writes a private timestamped `stack.json.bak.*` backup before replacement, while repeating an identical `add` leaves the file untouched without creating another backup. Reusing a skill source, MCP or marketplace name, plugin ID, or tool name replaces that entire manifest entry, so repeat every skill selection or option you want to retain.
 
 For skills, MCP servers, marketplaces, and plugins, preview with `./dotai.py sync --dry-run`, then apply with `./dotai.py sync`. For command-line tools, use `./dotai.py install --dry-run` and `./dotai.py install`; `sync` skips package checks, installation, updates, and package configuration. Invalid additions leave the existing manifest unchanged, so correct the input and retry. On a fresh clone, initialize the default manifest with `./dotai.py validate` before previews if you want to separate first-use initialization from a dry run.
 
@@ -119,7 +119,7 @@ Use repeatable `--env NAME=VALUE` options to define the environment passed to th
 
 Define referenced variables in the environment where OMP starts; adding a reference to the manifest does not define the variable. Keep credential values out of command arguments and version control.
 
-`--header` is valid only with `--url`; `--env` is valid only with `--command`. Both options are repeatable, reject duplicate names, and preserve values containing additional `=` characters.
+`--header` is valid only with `--url`; `--arg`, `--env`, and `--cwd` are valid only with `--command`. Both `--header` and `--env` are repeatable, reject duplicate names, and preserve values containing additional `=` characters. Use `--cwd PATH` to set a stdio server's working directory, and `--timeout SECONDS` (non-negative integer) on either stdio or remote HTTP/SSE servers. In `stack.json`, omitting `type` defaults to `http` when `url` is set and `stdio` when `command` is set.
 
 ## Add an OMP marketplace and plugin
 
@@ -128,7 +128,7 @@ Define referenced variables in the environment where OMP starts; adding a refere
 ./dotai.py add plugin review@team --scope user
 ```
 
-Plugin scope can be `user` or `project`.
+Plugin IDs match `[A-Za-z0-9_.-]+@[A-Za-z0-9_.-]+`, and plugin scope can be `user` or `project`.
 
 `status` and `doctor` check marketplace registration and the plugin's selected user or project registry. Missing, malformed, or unreadable registries, including invalid UTF-8, are unhealthy rather than successful installations. Extension health independently requires both global registration and an available source file; registering a path alone does not make the extension healthy.
 
@@ -142,9 +142,9 @@ Plugin scope can be `user` or `project`.
   --install "linux=curl -fsSL https://example.com/install.sh | sh"
 ```
 
-Add repeatable `--update PLATFORM=COMMAND` options when the tool has a separate update operation. Platform keys are `windows`, `wsl`, `ubuntu`, `arch`, `macos`, `linux`, and `default`.
+Add repeatable `--update PLATFORM=COMMAND` options when the tool has a separate update operation, and repeatable `--configure PLATFORM=COMMAND` options for post-install/update configuration commands. Platform keys are `windows`, `wsl`, `ubuntu`, `arch`, `macos`, `linux`, `unix`, and `default`.
 
-Use `--update-group dependency` for supporting tools that should be installed when missing but updated only by `./dotai.py update --include-dependencies`.
+Use `--minimum-version VERSION` (`major.minor` or `major.minor.patch`) to enforce a minimum installed version check, and `--update-group dependency` for supporting tools that should be installed when missing but updated only by `./dotai.py update --include-dependencies`.
 
 For more complex entries, edit the local `stack.json` directly and run the runtime validator; [`stack.schema.json`](../stack.schema.json) also describes the format for editors:
 

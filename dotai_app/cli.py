@@ -21,7 +21,7 @@ from . import terminal
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="dotai", description="Install and reconcile a portable AI development stack.")
     parser.add_argument("--manifest", type=Path, default=manifests.DEFAULT_MANIFEST, help="Stack manifest (default: stack.json)")
-    parser.add_argument("--platform", choices=["windows", "wsl", "ubuntu", "arch", "macos", "linux"], help=argparse.SUPPRESS)
+    parser.add_argument("--platform", choices=["windows", "wsl", "ubuntu", "arch", "macos", "linux", "unix"], help=argparse.SUPPRESS)
     parser.add_argument("--verbose", action="store_true", help="Show sanitized commands and bounded diagnostic output")
     parser.add_argument(
         "--color",
@@ -74,6 +74,8 @@ def build_parser() -> argparse.ArgumentParser:
     add_tool.add_argument("--check", dest="check_command", required=True, help="Command that exits zero when installed")
     add_tool.add_argument("--install", dest="install_commands", action="append", required=True, metavar="PLATFORM=COMMAND")
     add_tool.add_argument("--update", dest="update_commands", action="append", metavar="PLATFORM=COMMAND")
+    add_tool.add_argument("--configure", dest="configure_commands", action="append", metavar="PLATFORM=COMMAND")
+    add_tool.add_argument("--minimum-version", metavar="VERSION", help="Minimum major.minor[.patch] version required")
     add_tool.add_argument(
         "--update-group",
         choices=["core", "dependency"],
@@ -120,6 +122,8 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="NAME=VALUE",
         help="stdio environment NAME=VALUE; repeatable",
     )
+    add_mcp.add_argument("--cwd", help="Working directory for stdio servers")
+    add_mcp.add_argument("--timeout", type=int, metavar="SECONDS", help="Server timeout in non-negative seconds")
     sub.add_parser("status", help="Show installed and configured components")
     sub.add_parser("doctor", help="Check commands, configuration, and platform prerequisites")
     sub.add_parser("validate", help="Validate the manifest")
@@ -137,14 +141,17 @@ def main(argv: list[str] | None = None) -> int:
         os.environ["DOTAI_PLATFORM"] = args.platform
     if args.command == "version":
         terminal.say(releases.VERSION)
-        releases.print_release_notice()
+        releases.print_release_notice(force_refresh=True)
         return 0
     platform_name = runtime.detect_platform()
     if args.command == "platform":
         terminal.say(platform_name)
         return 0
     if args.command in {"install", "status", "sync"}:
-        releases.print_release_notice()
+        if getattr(args, "dry_run", False):
+            releases.print_release_notice(persist_cache=False)
+        else:
+            releases.print_release_notice()
     if args.command == "init":
         try:
             if not manifests.initialize_manifest(args.manifest, allow_custom=True):
