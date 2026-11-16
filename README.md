@@ -126,6 +126,17 @@ Then preview with `./dotai.py sync --dry-run` and apply with `./dotai.py sync`. 
 
 Reusing a skill source, MCP or marketplace name, plugin ID, or tool name replaces that manifest entry. See [Extending the stack](docs/extending.md) for tool examples, stdio/SSE servers, authentication headers and environment references, skill checks, and recommendation management.
 
+Use `remove` to delete a declared entry from `stack.json` (with a private timestamped backup), and pass `--uninstall` to also retire the managed skill, MCP target entry, plugin, or marketplace registration (`--dry-run` previews without changing files or machine state):
+
+```sh
+./dotai.py remove skill owner/repository --uninstall --dry-run
+./dotai.py remove skill owner/repository --uninstall
+./dotai.py remove mcp example --uninstall
+./dotai.py remove plugin review@team --uninstall
+./dotai.py remove marketplace team --uninstall
+./dotai.py remove tool Example
+```
+
 ## Managed stack
 
 | Type | Components |
@@ -156,7 +167,7 @@ RTK is optional for running tests; omit `rtk` if it is not installed. On Windows
 ## Guides
 
 - [Configuration](docs/configuration.md) — manifest lifecycle, safety guarantees, and OMP provider routing
-- [Extending the stack](docs/extending.md) — add skills, MCP servers, plugins, and command-line tools
+- [Extending the stack](docs/extending.md) — add or remove skills, MCP servers, plugins, and command-line tools
 - [Vetted project skills](docs/project-skills.md) — conditional recommendations, project-local installation commands, and runtime boundaries
 - [Agents, skills, and commands](docs/agents-skills-commands.md) — when to use or create each, how they combine, and OMP-specific boundaries
 - [Development](docs/development.md) — repository layout and contributor verification

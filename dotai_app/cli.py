@@ -120,6 +120,34 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="NAME=VALUE",
         help="stdio environment NAME=VALUE; repeatable",
     )
+
+    remove = sub.add_parser("remove", help="Remove a tool, skill, marketplace, plugin, or MCP server from the manifest")
+    remove_sub = remove.add_subparsers(dest="kind", required=True)
+
+    remove_tool = remove_sub.add_parser("tool", help="Remove a command-line tool from the manifest")
+    remove_tool.add_argument("name")
+    remove_tool.add_argument("--uninstall", action="store_true", help=argparse.SUPPRESS)
+    remove_tool.add_argument("--dry-run", action="store_true", help="Show actions without changing files or machine state")
+
+    remove_skill = remove_sub.add_parser("skill", help="Remove a skills.sh source")
+    remove_skill.add_argument("source")
+    remove_skill.add_argument("--uninstall", action="store_true", help="Also retire installed skill copies and managed OMP environment defaults")
+    remove_skill.add_argument("--dry-run", action="store_true", help="Show actions without changing files or machine state")
+
+    remove_marketplace = remove_sub.add_parser("marketplace", help="Remove an OMP marketplace")
+    remove_marketplace.add_argument("name")
+    remove_marketplace.add_argument("--uninstall", action="store_true", help="Also remove the marketplace registration from OMP")
+    remove_marketplace.add_argument("--dry-run", action="store_true", help="Show actions without changing files or machine state")
+
+    remove_plugin = remove_sub.add_parser("plugin", help="Remove an OMP marketplace plugin")
+    remove_plugin.add_argument("id")
+    remove_plugin.add_argument("--uninstall", action="store_true", help="Also uninstall the plugin from its configured OMP scope")
+    remove_plugin.add_argument("--dry-run", action="store_true", help="Show actions without changing files or machine state")
+
+    remove_mcp = remove_sub.add_parser("mcp", help="Remove an OMP MCP server")
+    remove_mcp.add_argument("name")
+    remove_mcp.add_argument("--uninstall", action="store_true", help="Also remove the server entry from the managed MCP target file")
+    remove_mcp.add_argument("--dry-run", action="store_true", help="Show actions without changing files or machine state")
     sub.add_parser("status", help="Show installed and configured components")
     sub.add_parser("doctor", help="Check commands, configuration, and platform prerequisites")
     sub.add_parser("validate", help="Validate the manifest")
@@ -174,6 +202,12 @@ def main(argv: list[str] | None = None) -> int:
             terminal.say(f"{terminal.styled('dotai:', 'red', 'bold')} {exc}", file=sys.stderr)
             return 2
     runner = runtime.Runner(platform_name, getattr(args, "dry_run", False), args.verbose)
+    if args.command == "remove":
+        try:
+            return integrations.remove_integration(args, manifest, args.manifest, runner)
+        except (OSError, runtime.DotAiError) as exc:
+            terminal.say(f"{terminal.styled('dotai:', 'red', 'bold')} {exc}", file=sys.stderr)
+            return 2
     if args.command == "configure":
         try:
             return model_routing.configure_omp_routing(

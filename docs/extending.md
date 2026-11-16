@@ -1,6 +1,6 @@
 # Extending the stack
 
-Use `./dotai.py` on Linux, WSL, and macOS, or `python dotai.py` in PowerShell. The `add` commands validate and save entries in your user-owned `stack.json`; they do not install or start integrations. Reusing a skill source, MCP or marketplace name, plugin ID, or tool name replaces that entire manifest entry, so repeat every skill selection or option you want to retain.
+Use `./dotai.py` on Linux, WSL, and macOS, or `python dotai.py` in PowerShell. The `add` and `remove` commands validate and update entries in your user-owned `stack.json`; `add` does not install or start integrations, and `remove` leaves installed artifacts in place unless `--uninstall` is supplied. Reusing a skill source, MCP or marketplace name, plugin ID, or tool name with `add` replaces that entire manifest entry, so repeat every skill selection or option you want to retain.
 
 For skills, MCP servers, marketplaces, and plugins, preview with `./dotai.py sync --dry-run`, then apply with `./dotai.py sync`. For command-line tools, use `./dotai.py install --dry-run` and `./dotai.py install`; `sync` skips package checks, installation, updates, and package configuration. Invalid additions leave the existing manifest unchanged, so correct the input and retry. On a fresh clone, initialize the default manifest with `./dotai.py validate` before previews if you want to separate first-use initialization from a dry run.
 
@@ -151,6 +151,36 @@ For more complex entries, edit the local `stack.json` directly and run the runti
 ```sh
 ./dotai.py validate
 ```
+
+## Remove an integration
+
+Use `remove` to delete a declared entry from `stack.json` with a private timestamped backup. Missing identifiers (or ambiguous GitHub skill-source shorthands) exit with code `2` without writing files or creating backups. Preview any removal with `--dry-run`:
+
+```sh
+./dotai.py remove skill owner/repository --dry-run
+./dotai.py remove skill owner/repository
+./dotai.py remove mcp example
+./dotai.py remove plugin review@team
+./dotai.py remove marketplace team
+./dotai.py remove tool Example
+```
+
+`remove skill` matches an exact `source` first and falls back to an equivalent normalized GitHub repository root (`owner/repo`, `github:owner/repo`, or `https://github.com/owner/repo[.git]`) only when a single manifest entry matches unambiguously. Removing a repository-recommended skill preserves that local removal as a user modification during ordinary `sync --recommended-skills`; pass `--enforce` if you later want to re-adopt the baseline recommendation. If a skill declared `ompEnvironment`, removing the manifest entry alone updates `~/.omp/agent/.env` on the next `sync`, `install`, or `update` (or immediately when `--uninstall` is used).
+
+Add `--uninstall` on skills, MCP servers, plugins, or marketplaces to clean up the managed machine integration at the same time:
+
+```sh
+./dotai.py remove skill owner/repository --uninstall
+./dotai.py remove mcp example --uninstall
+./dotai.py remove plugin review@team --uninstall
+./dotai.py remove marketplace team --uninstall
+```
+
+- `remove skill --uninstall` retires source-proven skill directories in the entry's configured agent root using the same shared-link safety checks as recommendation retirement, and rebuilds `~/.omp/agent/.env` from the remaining skills' `ompEnvironment` declarations.
+- `remove mcp --uninstall` removes the named server only from the configured MCP target file's `mcpServers` object (after creating a private timestamped backup), preserving unrelated target servers, top-level keys, and external provider configs (`.cursor/mcp.json`, `.claude/mcp.json`, etc.).
+- `remove plugin --uninstall` uninstalls the plugin from its declared `user` or `project` OMP scope when registered, and `remove marketplace --uninstall` removes the OMP marketplace registration when present.
+- If `--uninstall` fails, DotAi restores `stack.json` from its backup and exits `1`.
+- `remove tool` is manifest-only: `--uninstall` is refused with exit code `2` so shared system binaries (`curl`, `node`, `uv`, `gh`, etc.) are never uninstalled automatically. Use your platform package manager directly if you also want to uninstall the binary.
 
 ### Adopt GitHub CLI
 

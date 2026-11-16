@@ -27,7 +27,7 @@ The Python entry point, manifests, and schema stay at the repository root becaus
 | `terminal.py` | Color policy, headings, status badges, credential redaction, and safe display formatting |
 | `releases.py` | Application version and best-effort release notices |
 | `manifest.py` | Manifest validation, initialization, backups, and safe JSON writes |
-| `integrations.py` | Parse and persist declared integrations from `add` commands |
+| `integrations.py` | Parse, persist, and remove declared integrations from `add` and `remove` commands |
 | `packages.py` | Package presence, minimum versions, and install/update decisions |
 | `skills.py` | Agent-scoped installation, ownership checks, health, retirement, and legacy migration |
 | `recommendations.py` | Plan, review, and apply recommended skill changes |

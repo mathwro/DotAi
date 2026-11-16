@@ -106,14 +106,10 @@ def skill_source_owned(skill: dict[str, Any], owners: dict[str, Any]) -> bool:
     return True
 
 
-def reconcile_skills(
-    manifest: dict[str, Any], runner: runtime.Runner, *, update_skills: bool = False,
-    refresh_sources: set[str] | None = None, recommended_only: bool = False,
-) -> None:
-    recommended_sources = {
-        skill["source"] for skill in manifests.load_manifest(manifests.EXAMPLE_MANIFEST)["skills"]
-    } if recommended_only else None
-    environment = {}
+def declared_skill_environment(
+    manifest: dict[str, Any], runner: runtime.Runner, *, recommended_sources: set[str] | None = None,
+) -> dict[str, str] | None:
+    environment: dict[str, str] = {}
     for skill in manifest["skills"]:
         if recommended_sources is not None and skill["source"] not in recommended_sources:
             continue
@@ -122,9 +118,22 @@ def reconcile_skills(
                 detail = f"OMP skill environment: conflicting declarations for {name}"
                 runner.failures.append(detail)
                 runner.say(f"{terminal.badge('FAIL')} {detail}")
-                return
+                return None
             environment[name] = value
-    if not omp_config.reconcile_skill_environment(environment, runner, preserve_existing=recommended_only):
+    return environment
+
+
+def reconcile_skills(
+    manifest: dict[str, Any], runner: runtime.Runner, *, update_skills: bool = False,
+    refresh_sources: set[str] | None = None, recommended_only: bool = False,
+) -> None:
+    recommended_sources = {
+        skill["source"] for skill in manifests.load_manifest(manifests.EXAMPLE_MANIFEST)["skills"]
+    } if recommended_only else None
+    environment = declared_skill_environment(manifest, runner, recommended_sources=recommended_sources)
+    if environment is None or not omp_config.reconcile_skill_environment(
+        environment, runner, preserve_existing=recommended_only
+    ):
         return
     xdg_state = os.environ.get("XDG_STATE_HOME")
     lock_path = Path(xdg_state) / "skills" / ".skill-lock.json" if xdg_state else runtime.home_dir() / ".agents" / ".skill-lock.json"

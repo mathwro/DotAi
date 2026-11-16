@@ -218,6 +218,41 @@ def sync_mcp(manifest: dict[str, Any], runner: runtime.Runner) -> bool:
     return True
 
 
+def remove_mcp_server(
+    manifest: dict[str, Any], name: str, required: dict[str, Any], runner: runtime.Runner,
+) -> bool:
+    target, _ = desired_mcp(manifest)
+    if not target.exists():
+        runner.say(f"{terminal.badge('OK')} MCP: target {target} does not exist; nothing to remove")
+        return False
+    existing = load_mcp_config(target)
+    servers = dict(existing.get("mcpServers", {}))
+    if name not in servers:
+        runner.say(f"{terminal.badge('OK')} MCP: server {name} is not present in {target}")
+        return False
+    del servers[name]
+    merged = dict(existing)
+    merged["mcpServers"] = servers
+    if runner.dry_run:
+        runner.say(f"{terminal.badge('RUN')} MCP: remove server {name} from {target} (dry run)")
+        return True
+    backup = manifests.backup_manifest(target)
+    runner.say(f"{terminal.badge('OK')} MCP: backup written to {backup}")
+    payload = json.dumps(merged, indent=2, sort_keys=True) + "\n"
+    temp_path = None
+    try:
+        with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=target.parent, delete=False) as handle:
+            temp_path = Path(handle.name)
+            handle.write(payload)
+        os.replace(temp_path, target)
+    except Exception:
+        if temp_path is not None:
+            temp_path.unlink(missing_ok=True)
+        raise
+    runner.say(f"{terminal.badge('OK')} MCP: removed server {name} from {target}")
+    return True
+
+
 def mcp_status(manifest: dict[str, Any]) -> tuple[bool, str]:
     target, mcp = desired_mcp(manifest)
     try:
