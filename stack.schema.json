@@ -170,7 +170,13 @@
         "source": {"type": "string", "minLength": 1},
         "agent": {"type": "string", "default": "universal"},
         "skills": {"type": "array", "items": {"type": "string"}, "default": ["*"]},
-        "checkSkills": {"type": "array", "items": {"type": "string"}}
+        "checkSkills": {"type": "array", "items": {"type": "string"}},
+        "ompEnvironment": {
+          "type": "object",
+          "description": "Persistent OMP child-command environment defaults, not MCP variables. Names and nonempty literal values use the restricted grammar below; no quoting or expansion. The final negative lookahead requires absolute end of input, including rejection of trailing newlines.",
+          "propertyNames": {"pattern": "^[A-Za-z_][A-Za-z0-9_]*(?![\\s\\S])"},
+          "additionalProperties": {"type": "string", "pattern": "^[A-Za-z0-9_./:-]+(?![\\s\\S])"}
+        }
       }
     },
     "mcpServer": {

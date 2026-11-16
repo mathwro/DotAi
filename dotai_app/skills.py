@@ -11,6 +11,7 @@ import re
 import shutil
 import stat
 from . import manifest as manifests
+from . import omp as omp_config
 from . import runtime
 from . import terminal
 
@@ -112,6 +113,19 @@ def reconcile_skills(
     recommended_sources = {
         skill["source"] for skill in manifests.load_manifest(manifests.EXAMPLE_MANIFEST)["skills"]
     } if recommended_only else None
+    environment = {}
+    for skill in manifest["skills"]:
+        if recommended_sources is not None and skill["source"] not in recommended_sources:
+            continue
+        for name, value in skill.get("ompEnvironment", {}).items():
+            if name in environment and environment[name] != value:
+                detail = f"OMP skill environment: conflicting declarations for {name}"
+                runner.failures.append(detail)
+                runner.say(f"{terminal.badge('FAIL')} {detail}")
+                return
+            environment[name] = value
+    if not omp_config.reconcile_skill_environment(environment, runner, preserve_existing=recommended_only):
+        return
     xdg_state = os.environ.get("XDG_STATE_HOME")
     lock_path = Path(xdg_state) / "skills" / ".skill-lock.json" if xdg_state else runtime.home_dir() / ".agents" / ".skill-lock.json"
     try:
@@ -128,7 +142,17 @@ def reconcile_skills(
         if not refresh and skill_status(skill)[0] and skill_source_owned(skill, owners):
             terminal.say(f"{terminal.badge('OK')} Skills from {skill['source']}: already installed")
             continue
-        runner.run(skill_command(skill), f"Reconcile skills from {skill['source']}")
+        declared = skill.get("ompEnvironment", {})
+        previous = {name: runner.env.get(name) for name in declared}
+        runner.env.update(declared)
+        try:
+            runner.run(skill_command(skill), f"Reconcile skills from {skill['source']}")
+        finally:
+            for name, value in previous.items():
+                if value is None:
+                    runner.env.pop(name, None)
+                else:
+                    runner.env[name] = value
 
 
 def agent_display_matches(agent: str, display: Any) -> bool:
@@ -288,6 +312,9 @@ def skill_status(skill: dict[str, Any]) -> tuple[bool, str]:
     if "*" in checks:
         return False, f"unverified for {agent}: wildcard skills cannot be checked"
     if all((root / name / "SKILL.md").is_file() for name in checks):
+        environment_ok, detail = omp_config.skill_environment_status(skill.get("ompEnvironment", {}))
+        if not environment_ok:
+            return False, f"installed for {agent}, but {detail}"
         return True, f"installed for {agent}"
     plugin_cache = runtime.home_dir() / ".codex" / "plugins" / "cache"
     if checks and plugin_cache.is_dir():
