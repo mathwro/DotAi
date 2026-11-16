@@ -213,7 +213,7 @@ def remove_integration(
                 omp_config.reconcile_skill_environment(environment, runner)
         elif kind == "mcp":
             try:
-                mcp_config.remove_mcp_server(manifest, args.name, removed, runner)
+                mcp_config.remove_mcp_server(manifest, args.name, runner)
             except (OSError, runtime.DotAiError) as exc:
                 runner.failures.append(str(exc))
                 runner.say(f"{terminal.badge('FAIL')} MCP: {exc}")

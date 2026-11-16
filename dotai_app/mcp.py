@@ -219,7 +219,7 @@ def sync_mcp(manifest: dict[str, Any], runner: runtime.Runner) -> bool:
 
 
 def remove_mcp_server(
-    manifest: dict[str, Any], name: str, required: dict[str, Any], runner: runtime.Runner,
+    manifest: dict[str, Any], name: str, runner: runtime.Runner,
 ) -> bool:
     target, _ = desired_mcp(manifest)
     if not target.exists():

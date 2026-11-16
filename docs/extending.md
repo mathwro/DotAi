@@ -179,7 +179,7 @@ Add `--uninstall` on skills, MCP servers, plugins, or marketplaces to clean up t
 - `remove skill --uninstall` retires source-proven skill directories in the entry's configured agent root using the same shared-link safety checks as recommendation retirement, and rebuilds `~/.omp/agent/.env` from the remaining skills' `ompEnvironment` declarations.
 - `remove mcp --uninstall` removes the named server only from the configured MCP target file's `mcpServers` object (after creating a private timestamped backup), preserving unrelated target servers, top-level keys, and external provider configs (`.cursor/mcp.json`, `.claude/mcp.json`, etc.).
 - `remove plugin --uninstall` uninstalls the plugin from its declared `user` or `project` OMP scope when registered, and `remove marketplace --uninstall` removes the OMP marketplace registration when present.
-- If `--uninstall` fails, DotAi restores `stack.json` from its backup and exits `1`.
+- If `--uninstall` fails, DotAi restores `stack.json` from its backup and exits `1`; already removed skill directories are not restored, so rerun `sync` or `remove` after resolving the failure.
 - `remove tool` is manifest-only: `--uninstall` is refused with exit code `2` so shared system binaries (`curl`, `node`, `uv`, `gh`, etc.) are never uninstalled automatically. Use your platform package manager directly if you also want to uninstall the binary.
 
 ### Adopt GitHub CLI
