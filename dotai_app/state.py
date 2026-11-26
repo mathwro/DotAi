@@ -131,6 +131,17 @@ def save_managed_stack_baseline(manifest_path: Path, baseline: dict[str, Any]) -
     }
     _write_state_file(target, values)
 
+def record_initialized_baseline(manifest_path: Path) -> None:
+    """A manifest copied from the example owns all of it, even if the first reconciliation fails."""
+    initialized = manifests.load_manifest(manifest_path)
+    save_managed_recommendations(manifest_path, initialized["skills"])
+    save_managed_stack_baseline(manifest_path, {
+        "packages": initialized["packages"],
+        "mcpServers": initialized["mcp"]["servers"],
+        "ompExtensions": initialized.get("ompExtensions", []),
+    })
+
+
 def save_state(
     manifest_path: Path,
     runner: runtime.Runner,

@@ -15,6 +15,7 @@ from . import releases
 from . import routing as model_routing
 from . import runtime
 from . import skills as skill_manager
+from . import state as app_state
 from . import terminal
 
 
@@ -278,6 +279,7 @@ def main(argv: list[str] | None = None) -> int:
         try:
             if not manifests.initialize_manifest(args.manifest, allow_custom=True):
                 raise runtime.DotAiError(f"Manifest already exists: {args.manifest}")
+            app_state.record_initialized_baseline(args.manifest)
         except (OSError, runtime.DotAiError) as exc:
             terminal.say(f"{terminal.styled('dotai:', 'red', 'bold')} {exc}", file=sys.stderr)
             return 2
@@ -286,7 +288,8 @@ def main(argv: list[str] | None = None) -> int:
         args.command == "configure" and args.configure_target == "omp-routing"
     )
     try:
-        manifests.initialize_default_manifest(args.manifest)
+        if manifests.initialize_default_manifest(args.manifest):
+            app_state.record_initialized_baseline(args.manifest)
         manifest = manifests.load_manifest(
             args.manifest, allow_legacy_routing=allow_legacy_routing
         )

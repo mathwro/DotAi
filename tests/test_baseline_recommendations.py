@@ -508,6 +508,24 @@ class BaselineRecommendationTests(unittest.TestCase):
         self.assertEqual(conflicts, [])
         self.assertEqual(baseline["ompExtensions"], ["~/.pi/agent/extensions/rtk.ts"])
 
+    def test_initialized_manifest_owns_example_baseline_before_any_successful_run(self) -> None:
+        # A first install that fails must still let later example recipe changes be adopted, not DRIFT.
+        old_graphify = make_package("Graphify", check="graphify", install_cmd="uv tool install graphifyy")
+        new_graphify = make_package("Graphify", check="graphify", install_cmd="uv tool install --python 3.13 graphifyy")
+        skill = {"source": "owner/skills", "agent": "pi", "skills": ["one"]}
+        example = minimal_manifest(str(self.mcp_target))
+        example["packages"] = [old_graphify]
+        example["skills"] = [skill]
+        self.example_path.write_text(json.dumps(example, indent=2) + "\n", encoding="utf-8")
+        with mock.patch.object(manifests, "DEFAULT_MANIFEST", self.path), contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(cli.main(["--manifest", str(self.path), "validate"]), 0)
+
+        example["packages"] = [new_graphify]
+        self.example_path.write_text(json.dumps(example, indent=2) + "\n", encoding="utf-8")
+        _, changes, conflicts = recommendations.recommended_stack_plan(manifests.load_manifest(self.path), self.path)
+        self.assertEqual(conflicts, [])
+        self.assertEqual([(change["section"], change["id"], change["kind"]) for change in changes], [("packages", "Graphify", "update")])
+
 
 if __name__ == "__main__":
     unittest.main()
