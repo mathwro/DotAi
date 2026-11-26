@@ -14,7 +14,7 @@ from . import runtime
 from . import terminal
 
 
-VERSION = "0.7.3"
+VERSION = "0.7.4"
 
 
 RELEASE_URL = "https://api.github.com/repos/mathwro/DotAi/releases/latest"
