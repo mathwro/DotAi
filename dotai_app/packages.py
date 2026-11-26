@@ -127,5 +127,10 @@ def reconcile_packages(
         if package.get("configure"):
             runtime.run_steps(runtime.selected(package["configure"], runner.platform), runner, f"Configure {name}")
         if not runner.dry_run and not package_check(package, runner):
-            runner.failures.append(f"{name}: verification command failed after reconciliation")
-            runner.say(f"{terminal.badge('FAIL')} {name}: verification failed")
+            _, stdout, stderr = _run_probe(runner, runtime.selected(package.get("check", []), runner.platform))
+            cause = terminal.diagnostic(
+                stderr or stdout or "no output captured, or the command could not start", runner.secrets, limit=400, lines=3
+            )
+            runner.failures.append(f"{name}: verification command failed after reconciliation: {cause}")
+            runner.say(f"{terminal.badge('FAIL')} {name}: verification failed: {cause}")
+            runner.say("  Next step: Run the check command directly or retry with --verbose for sanitized diagnostics.")

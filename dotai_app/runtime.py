@@ -125,8 +125,8 @@ class Runner:
     def display_command(self, command: str | list[str]) -> str:
         values = terminal.credential_values(self.env) + terminal.credential_values(command)
         if isinstance(command, str):
-            return terminal.diagnostic(command, values)
-        return terminal.diagnostic(" ".join(terminal.omit_structured(str(part)) for part in command), values)
+            return terminal.diagnostic(command, values, tail=False)
+        return terminal.diagnostic(" ".join(terminal.omit_structured(str(part)) for part in command), values, tail=False)
 
     def _diagnostics(self, result: subprocess.CompletedProcess[str]) -> None:
         for stream in ("stdout", "stderr"):

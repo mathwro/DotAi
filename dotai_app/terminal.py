@@ -150,15 +150,19 @@ def omit_structured(text: str) -> str:
     return "".join(parts)
 
 
-def diagnostic(text: str, secrets: Iterable[str] = (), *, limit: int = 2000, lines: int = 12) -> str:
+def diagnostic(text: str, secrets: Iterable[str] = (), *, limit: int = 2000, lines: int = 12, tail: bool = True) -> str:
     # Sanitize before truncating: truncation must not expose part of a credential.
     text = _ESCAPE.sub("", text)
     text = "".join(char for char in text if char in "\n\t" or char.isprintable())
     text = redact(omit_structured(text), secrets).strip()
-    selected = "\n".join(text.splitlines()[:lines])
-    if len(selected) > limit or len(text.splitlines()) > lines:
-        return selected[:limit] + "\n<diagnostic truncated>"
-    return selected
+    # Output keeps its tail, where tracebacks and most tool errors state the cause; commands keep their head.
+    all_lines = text.splitlines()
+    joined = "\n".join(all_lines)
+    if len(all_lines) <= lines and len(joined) <= limit:
+        return joined
+    if tail:
+        return "<diagnostic truncated>\n" + "\n".join(all_lines[-lines:])[-limit:]
+    return "\n".join(all_lines[:lines])[:limit] + "\n<diagnostic truncated>"
 
 
 def say(text: str, *, secrets: Iterable[str] = (), file: Any = None) -> None:

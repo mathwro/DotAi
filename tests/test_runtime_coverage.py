@@ -415,6 +415,22 @@ class RuntimeCoverageTests(unittest.TestCase):
         self.assertTrue(packages.package_check(package, runner))
         self.assertEqual(runner.failures, [])
 
+    def test_verification_failure_reports_final_traceback_line(self) -> None:
+        # Tracebacks put the exception last; a head-truncated cause hides it.
+        check = self.python(
+            "import sys\nprint('Traceback (most recent call last):', file=sys.stderr)\n"
+            "for i in range(30): print(f'  File \"frame{i}.py\", line {i}', file=sys.stderr)\n"
+            "print('RuntimeError: final verification cause', file=sys.stderr)\nsys.exit(1)\n"
+        )
+        package = {"name": "broken", "check": check, "install": {"default": [self.python("pass")]}}
+        for verbose in (False, True):
+            with self.subTest(verbose=verbose):
+                runner = runtime.Runner(self.platform, verbose=verbose)
+                with contextlib.redirect_stdout(io.StringIO()) as report:
+                    packages.reconcile_packages(self.manifest(package), runner, "install")
+                self.assertIn("RuntimeError: final verification cause", report.getvalue())
+                self.assertIn("RuntimeError: final verification cause", runner.failures[-1])
+
     def test_dry_reconciliation_preserves_files_and_success_state(self) -> None:
         marker = self.home / "not-installed"
         package = {"name": "missing", "check": self.python("import sys; sys.exit(1)"), "install": {"default": [self.marker_command(marker, "wrong")]}}
