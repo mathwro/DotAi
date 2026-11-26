@@ -1567,6 +1567,25 @@ class DotAiTests(unittest.TestCase):
                     [str(home), str(runtime.ROOT), sys.executable, literal_json],
                 )
 
+    def test_windows_runner_resolves_list_commands_from_runner_path(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory).resolve()
+            bin_dir = home / ".local" / "bin"
+            bin_dir.mkdir(parents=True)
+            # Windows launches script shims such as scoop.cmd and npx.cmd only by full path.
+            tool = bin_dir / ("dotai-shim-tool.cmd" if os.name == "nt" else "dotai-shim-tool")
+            tool.write_text("", encoding="utf-8")
+            tool.chmod(0o755)
+            with mock.patch.dict(os.environ, {"DOTAI_HOME": str(home)}):
+                runner = runtime.Runner("windows")
+                resolved = runner.argv(["dotai-shim-tool", "install", "{home}"])
+                self.assertEqual(Path(resolved[0]).resolve(), tool)
+                self.assertEqual(resolved[1:], ["install", str(home)])
+                with mock.patch.object(runtime.Runner, "_refresh_windows_path"), contextlib.redirect_stdout(io.StringIO()):
+                    runner.run(["dotai-missing-tool", "install"], "Install missing")
+                self.assertEqual(len(runner.failures), 1)
+                self.assertIn("dotai-missing-tool", runner.failures[0])
+
     def test_configure_omp_routing_parser_and_lifecycle_are_explicit(self) -> None:
         args = cli.build_parser().parse_args(
             ["configure", "omp-routing", "--primary", "anthropic", "--dry-run"]

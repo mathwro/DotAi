@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 import os
 import re
+import shutil
 import subprocess
 import sys
 from . import terminal
@@ -112,7 +113,11 @@ class Runner:
             if self.platform == "windows":
                 return ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", text]
             return ["/bin/sh", "-c", text]
-        return [self._format(str(part)) for part in command]
+        argv = [self._format(str(part)) for part in command]
+        if self.platform == "windows" and argv:
+            # CreateProcess neither applies PATHEXT (scoop.cmd, npx.cmd) nor searches the child's PATH.
+            argv[0] = shutil.which(argv[0], path=self.env["PATH"]) or argv[0]
+        return argv
 
     def say(self, text: str) -> None:
         terminal.say(text, secrets=self.secrets | set(terminal.credential_values(self.env)))
@@ -168,7 +173,8 @@ class Runner:
                 check=False,
             )
         except OSError as exc:
-            self._failure(label, str(exc), required)
+            detail = f"command not found: {command[0]}" if isinstance(exc, FileNotFoundError) and isinstance(command, list) else str(exc)
+            self._failure(label, detail, required)
             return None
         if result.returncode != 0:
             raw_cause = (result.stderr or "").strip() or (result.stdout or "").strip() or "No diagnostic output was captured."
